@@ -19,6 +19,8 @@ use tauri::State;
 struct AppState {
     project: Mutex<Project>,
     media: Mutex<HashMap<String, MediaInfo>>,
+    /// open decode engines, keyed by source path
+    engines: Mutex<HashMap<String, cutlass_engine::MediaEngine>>,
 }
 
 fn err_str(e: impl std::fmt::Display) -> String {
@@ -39,6 +41,7 @@ fn media_json(info: &MediaInfo) -> Result<serde_json::Value, String> {
     Ok(json!({
         "id": info.id,
         "name": info.name,
+        "path": info.path,
         "duration_s": info.duration_s,
         "scrub_fps": info.scrub_fps,
         "thumbs": thumbs?,
@@ -87,11 +90,47 @@ fn move_clip(
     Ok(project.snapshot())
 }
 
+/// Full-quality frame at source time `t`, via the in-process engine.
+/// Used when the playhead settles: the preview snaps from the 480p scrub
+/// proxy to a real decoded frame. Frame-accurate, so on long-GOP sources
+/// this can take a GOP of decode — the frontend calls it debounced.
+#[tauri::command]
+fn exact_frame(path: String, t: f64, state: State<AppState>) -> Result<String, String> {
+    let mut engines = state.engines.lock().unwrap();
+    let engine = match engines.entry(path.clone()) {
+        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+        std::collections::hash_map::Entry::Vacant(v) => {
+            v.insert(cutlass_engine::MediaEngine::open(&path).map_err(err_str)?)
+        }
+    };
+    let frame = engine.frame_at(t, 1920).map_err(err_str)?;
+
+    // JPEG has no alpha channel and image's encoder rejects Rgba8
+    let rgb: Vec<u8> = frame
+        .data
+        .chunks_exact(4)
+        .flat_map(|px| [px[0], px[1], px[2]])
+        .collect();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 88)
+        .encode(&rgb, frame.width, frame.height, image::ExtendedColorType::Rgb8)
+        .map_err(err_str)?;
+    Ok(format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(jpeg)
+    ))
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![import_media, get_project, move_clip])
+        .invoke_handler(tauri::generate_handler![
+            import_media,
+            get_project,
+            move_clip,
+            exact_frame
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");
 }

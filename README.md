@@ -40,6 +40,18 @@ The two bets the company rests on, proven before anything else is built:
 | [`spikes/crdt-timeline`](spikes/crdt-timeline) | Can a video timeline be a CRDT? What are sane merge semantics for concurrent edits? | ✅ GO — 7/7 scenarios converge |
 | [`spikes/media-engine`](spikes/media-engine) | Can we decode + scrub 4K H.264 at 60fps in Rust/wgpu on a mid-range machine? | ✅ GO — 236 fps sw / 141 fps hw decode; in-process libav required |
 
+## Current state
+
+- `crates/cutlass-core` — CRDT project model (Automerge) + scrub-proxy import
+- `crates/cutlass-engine` — in-process libav decode: 261 fps 4K decode,
+  6.2 ms frame-accurate proxy seeks ([FINDINGS](crates/cutlass-engine/FINDINGS.md))
+- `apps/desktop` — Tauri 2 editor shell: import, timeline, drag clips,
+  proxy scrubbing, full-quality paused frames from the engine
+
+Dev setup (Windows): Rust MSVC + LLVM (`LIBCLANG_PATH`) + BtbN FFmpeg
+lgpl-shared in `vendor/ffmpeg` (`FFMPEG_DIR`, `bin` on PATH). Run with
+`npm run tauri dev` from `apps/desktop`.
+
 ## v1 scope (ruthless)
 
 Great cutting · captions · transcript editing · color presets · multiplayer.

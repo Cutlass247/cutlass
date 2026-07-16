@@ -2,6 +2,8 @@ node_modules/
 dist/
 target/
 test4k.mp4
+vendor/
 *.log
 .DS_Store
 Thumbs.db
+test4k_proxy.mp4

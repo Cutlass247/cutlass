@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cutlass-core", "apps/desktop/src-tauri"]
+members = ["crates/cutlass-core", "crates/cutlass-engine", "apps/desktop/src-tauri"]
 # spikes/* are standalone experiments, intentionally outside the workspace
 
 [workspace.package]

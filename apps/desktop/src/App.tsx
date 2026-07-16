@@ -3,6 +3,7 @@ import {
   Clip,
   MediaItem,
   ProjectSnapshot,
+  exactFrame,
   getProject,
   importMedia,
   inTauri,
@@ -57,7 +58,7 @@ export default function App() {
   );
 
   // preview: topmost clip (V2 over V1) under the playhead
-  const previewSrc = useMemo(() => {
+  const underPlayhead = useMemo(() => {
     for (const track of TRACKS) {
       const clip = clips.find(
         (c) => c.track === track && playhead >= c.start && playhead < c.start + c.len
@@ -66,11 +67,40 @@ export default function App() {
       const m = media[clip.media];
       if (!m || m.thumbs.length === 0) continue;
       const srcT = playhead - clip.start + clip.src_in;
-      const idx = Math.min(m.thumbs.length - 1, Math.max(0, Math.floor(srcT * m.scrub_fps)));
-      return m.thumbs[idx];
+      return { media: m, srcT };
     }
     return null;
   }, [clips, media, playhead]);
+
+  const proxySrc = useMemo(() => {
+    if (!underPlayhead) return null;
+    const { media: m, srcT } = underPlayhead;
+    const idx = Math.min(m.thumbs.length - 1, Math.max(0, Math.floor(srcT * m.scrub_fps)));
+    return m.thumbs[idx];
+  }, [underPlayhead]);
+
+  // when the playhead settles, snap the preview from the scrub proxy to a
+  // full-quality frame from the decode engine
+  const [hq, setHq] = useState<{ key: string; src: string } | null>(null);
+  const hqKey = underPlayhead
+    ? `${underPlayhead.media.id}@${underPlayhead.srcT.toFixed(3)}`
+    : null;
+  useEffect(() => {
+    if (!hqKey || !underPlayhead || drag) return;
+    const { media: m, srcT } = underPlayhead;
+    const timer = setTimeout(async () => {
+      try {
+        const src = await exactFrame(m.path, srcT);
+        if (src) setHq({ key: hqKey, src });
+      } catch {
+        /* engine miss is non-fatal — proxy frame stays up */
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hqKey, drag]);
+
+  const previewSrc = hq && hq.key === hqKey ? hq.src : proxySrc;
 
   const doImport = useCallback(async () => {
     setError(null);
