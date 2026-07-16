@@ -9,7 +9,13 @@
       "PowerShell(npm --version)",
       "PowerShell(git symbolic-ref HEAD refs/heads/main)",
       "PowerShell(git config user.email)",
-      "PowerShell(git config user.name)"
+      "PowerShell(git config user.name)",
+      "PowerShell(winget --version; \\(Get-PSDrive C\\).Free / 1GB)",
+      "PowerShell(winget install --id Microsoft.VisualStudio.2022.BuildTools -e --silent --accept-package-agreements --accept-source-agreements --override \"--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended\")",
+      "PowerShell(Invoke-WebRequest -Uri \"https://win.rustup.rs/x86_64\" -OutFile \"$env:TEMP\\\\rustup-init.exe\"; & \"$env:TEMP\\\\rustup-init.exe\" -y --default-toolchain stable-x86_64-pc-windows-msvc --profile minimal)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Isaiah Aniemeka\\\\Desktop\\\\Video Editing Idea\\\\spikes\\\\media-engine\"; & \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" fetch 2>&1 | Select-Object -Last 5)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Isaiah Aniemeka\\\\Desktop\\\\Video Editing Idea\\\\spikes\\\\media-engine\"; & \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" check 2>&1 | Select-Object -Last 30)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Isaiah Aniemeka\\\\Desktop\\\\Video Editing Idea\\\\spikes\\\\media-engine\"; & \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" build --release 2>&1 | Select-Object -Last 5)"
     ]
   }
 }

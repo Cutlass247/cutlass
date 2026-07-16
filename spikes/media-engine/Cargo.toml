@@ -1,0 +1,12 @@
+[package]
+name = "media-engine-spike"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "24"
+pollster = "0.4"
+ffmpeg-sidecar = "2"
+
+[profile.release]
+opt-level = 3
