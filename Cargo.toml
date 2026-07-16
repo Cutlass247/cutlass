@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/cutlass-core", "apps/desktop/src-tauri"]
+# spikes/* are standalone experiments, intentionally outside the workspace
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[profile.dev]
+# media decode is unusable at opt-level 0
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
