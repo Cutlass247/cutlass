@@ -1,0 +1,13 @@
+{
+  "name": "cutlass-spike-crdt-timeline",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Spike A: can a video timeline be a CRDT? Two simulated clients edit concurrently and must converge.",
+  "scripts": {
+    "spike": "node spike.ts"
+  },
+  "dependencies": {
+    "@automerge/automerge": "^2.2.8"
+  }
+}

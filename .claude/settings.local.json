@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "PowerShell($tools = \"git\", \"cargo\", \"rustc\", \"node\", \"npm\", \"ffmpeg\"; foreach \\($t in $tools\\) { $c = Get-Command $t -ErrorAction SilentlyContinue; if \\($c\\) { Write-Output \"$t : $\\($c.Source\\)\" } else { Write-Output \"$t : NOT FOUND\" } })",
+      "PowerShell(git init)",
+      "PowerShell(git branch -m main)",
+      "PowerShell(node --version)",
+      "PowerShell(npm --version)",
+      "PowerShell(git symbolic-ref HEAD refs/heads/main)",
+      "PowerShell(git config user.email)",
+      "PowerShell(git config user.name)"
+    ]
+  }
+}
