@@ -20,6 +20,7 @@ export interface ProjectSnapshot {
 export interface MediaItem {
   id: string;
   name: string;
+  path: string;
   duration_s: number;
   scrub_fps: number;
   thumbs: string[]; // data URLs, in time order
@@ -76,6 +77,13 @@ export async function moveClip(
   return invoke<ProjectSnapshot>("move_clip", { id, track, start });
 }
 
+/// Full-quality frame from the native decode engine at source time `t`.
+/// Returns null in browser-mock mode (the proxy frame stays up).
+export async function exactFrame(path: string, t: number): Promise<string | null> {
+  if (!inTauri) return null;
+  return invoke<string>("exact_frame", { path, t });
+}
+
 // ── browser-only mock ──────────────────────────────────────────────────
 
 const mockState: { project: ProjectSnapshot; nextClip: number } = {
@@ -115,6 +123,7 @@ async function mockImport(path: string): Promise<ImportResult> {
   const media: MediaItem = {
     id: `mock-media-${n}`,
     name,
+    path,
     duration_s: duration,
     scrub_fps: fps,
     thumbs: mockThumbs(duration, fps, name),
