@@ -1,6 +1,7 @@
 node_modules/
 dist/
 target/
+test4k.mp4
 *.log
 .DS_Store
 Thumbs.db
