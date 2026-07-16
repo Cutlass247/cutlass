@@ -115,8 +115,9 @@ fn generate_test_file(path: &str) {
 fn bench_sequential(path: &str, gpu: Option<&Gpu>) -> f64 {
     let mut child = FfmpegCommand::new()
         .input(path)
-        .args(["-pix_fmt", "yuv420p"])
-        .rawvideo()
+        // NOT .rawvideo(): that helper hard-codes rgb24; we want yuv420p
+        // (12.4 MB/frame vs 24.9 — and it's what a real YUV pipeline ships).
+        .args(["-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])
         .spawn()
         .expect("spawn ffmpeg");
 
@@ -142,8 +143,7 @@ fn bench_cold_seek(path: &str, ts: f64) -> f64 {
     let mut child = FfmpegCommand::new()
         .args(["-ss", &format!("{ts:.3}")])
         .input(path)
-        .args(["-frames:v", "1", "-pix_fmt", "yuv420p"])
-        .rawvideo()
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])
         .spawn()
         .expect("spawn ffmpeg");
     let mut latency = f64::NAN;

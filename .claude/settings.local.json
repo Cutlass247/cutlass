@@ -15,7 +15,9 @@
       "PowerShell(Invoke-WebRequest -Uri \"https://win.rustup.rs/x86_64\" -OutFile \"$env:TEMP\\\\rustup-init.exe\"; & \"$env:TEMP\\\\rustup-init.exe\" -y --default-toolchain stable-x86_64-pc-windows-msvc --profile minimal)",
       "PowerShell(Set-Location \"C:\\\\Users\\\\Isaiah Aniemeka\\\\Desktop\\\\Video Editing Idea\\\\spikes\\\\media-engine\"; & \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" fetch 2>&1 | Select-Object -Last 5)",
       "PowerShell(Set-Location \"C:\\\\Users\\\\Isaiah Aniemeka\\\\Desktop\\\\Video Editing Idea\\\\spikes\\\\media-engine\"; & \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" check 2>&1 | Select-Object -Last 30)",
-      "PowerShell(Set-Location \"C:\\\\Users\\\\Isaiah Aniemeka\\\\Desktop\\\\Video Editing Idea\\\\spikes\\\\media-engine\"; & \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" build --release 2>&1 | Select-Object -Last 5)"
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Isaiah Aniemeka\\\\Desktop\\\\Video Editing Idea\\\\spikes\\\\media-engine\"; & \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" build --release 2>&1 | Select-Object -Last 5)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Isaiah Aniemeka\\\\Desktop\\\\Video Editing Idea\\\\spikes\\\\media-engine\"; & \"$env:USERPROFILE\\\\.cargo\\\\bin\\\\cargo.exe\" build --release 2>&1 | Select-Object -Last 2; .\\\\target\\\\release\\\\media-engine-spike.exe)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\Isaiah Aniemeka\\\\Desktop\\\\Video Editing Idea\\\\spikes\\\\media-engine\"; Write-Output \"=== software decode, no pipe ===\"; .\\\\target\\\\release\\\\ffmpeg.exe -benchmark -i test4k.mp4 -f null - 2>&1 | Select-String \"speed|rtime\" | ForEach-Object Line; Write-Output \"=== d3d11va hardware decode ===\"; .\\\\target\\\\release\\\\ffmpeg.exe -benchmark -hwaccel d3d11va -i test4k.mp4 -f null - 2>&1 | Select-String \"speed|rtime\" | ForEach-Object Line)"
     ]
   }
 }
