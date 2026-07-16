@@ -90,6 +90,34 @@ fn move_clip(
     Ok(project.snapshot())
 }
 
+#[tauri::command]
+fn trim_clip(
+    id: String,
+    start: f64,
+    len: f64,
+    src_in: f64,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    let mut project = state.project.lock().unwrap();
+    project.trim_clip(&id, start, len, src_in).map_err(err_str)?;
+    Ok(project.snapshot())
+}
+
+#[tauri::command]
+fn remove_clip(
+    id: String,
+    ripple: bool,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    let mut project = state.project.lock().unwrap();
+    if ripple {
+        project.remove_clip_ripple(&id).map_err(err_str)?;
+    } else {
+        project.remove_clip(&id).map_err(err_str)?;
+    }
+    Ok(project.snapshot())
+}
+
 /// Full-quality frame at source time `t`, via the in-process engine.
 /// Used when the playhead settles: the preview snaps from the 480p scrub
 /// proxy to a real decoded frame. Frame-accurate, so on long-GOP sources
@@ -129,6 +157,8 @@ fn main() {
             import_media,
             get_project,
             move_clip,
+            trim_clip,
+            remove_clip,
             exact_frame
         ])
         .run(tauri::generate_context!())

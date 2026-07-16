@@ -94,6 +94,55 @@ impl Project {
         Ok(())
     }
 
+    /// Trim = (start, len, src_in) written together so a trim merges as a
+    /// unit. Left-edge trims change all three; right-edge trims only len.
+    pub fn trim_clip(
+        &mut self,
+        id: &str,
+        start: f64,
+        len: f64,
+        src_in: f64,
+    ) -> anyhow::Result<()> {
+        let clips = self.clips_obj();
+        let (_, obj) = self
+            .doc
+            .get(&clips, id)?
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?;
+        self.doc.put(&obj, "start", start)?;
+        self.doc.put(&obj, "len", len)?;
+        self.doc.put(&obj, "src_in", src_in)?;
+        Ok(())
+    }
+
+    /// Ripple delete: remove the clip and close the gap — every later clip
+    /// on the same track shifts left by the removed length.
+    pub fn remove_clip_ripple(&mut self, id: &str) -> anyhow::Result<()> {
+        let snap = self.snapshot();
+        let clips = snap["clips"].as_array().cloned().unwrap_or_default();
+        let removed = clips
+            .iter()
+            .find(|c| c["id"] == id)
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?
+            .clone();
+        let (track, start, len) = (
+            removed["track"].as_str().unwrap_or("").to_string(),
+            removed["start"].as_f64().unwrap_or(0.0),
+            removed["len"].as_f64().unwrap_or(0.0),
+        );
+        self.remove_clip(id)?;
+        let clips_obj = self.clips_obj();
+        for c in &clips {
+            let cid = c["id"].as_str().unwrap_or("");
+            let cstart = c["start"].as_f64().unwrap_or(0.0);
+            if cid != id && c["track"] == track.as_str() && cstart > start {
+                if let Some((_, obj)) = self.doc.get(&clips_obj, cid)? {
+                    self.doc.put(&obj, "start", (cstart - len).max(0.0))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Materialize the known schema to JSON for the UI. Clip order in the
     /// returned array is the derived render order: (track, start).
     pub fn snapshot(&self) -> serde_json::Value {
@@ -193,6 +242,41 @@ mod tests {
         assert_eq!(clips[1]["id"], "a");
         assert_eq!(clips[1]["start"], 1.5);
         assert_eq!(p.track_end("V1"), 8.0);
+    }
+
+    #[test]
+    fn trim_writes_all_three_fields() {
+        let mut p = Project::new("T");
+        p.add_clip(&demo_clip("a", "V1", 2.0)).unwrap();
+        // left-edge trim 1s into the clip
+        p.trim_clip("a", 3.0, 3.0, 1.0).unwrap();
+        let snap = p.snapshot();
+        assert_eq!(snap["clips"][0]["start"], 3.0);
+        assert_eq!(snap["clips"][0]["len"], 3.0);
+        assert_eq!(snap["clips"][0]["src_in"], 1.0);
+    }
+
+    #[test]
+    fn ripple_delete_closes_the_gap() {
+        let mut p = Project::new("T");
+        p.add_clip(&demo_clip("a", "V1", 0.0)).unwrap();
+        p.add_clip(&demo_clip("b", "V1", 4.0)).unwrap();
+        p.add_clip(&demo_clip("c", "V1", 8.0)).unwrap();
+        p.add_clip(&demo_clip("x", "V2", 6.0)).unwrap(); // other track: untouched
+        p.remove_clip_ripple("a").unwrap();
+        let snap = p.snapshot();
+        let get = |id: &str| {
+            snap["clips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == id)
+                .map(|c| c["start"].as_f64().unwrap())
+        };
+        assert_eq!(get("a"), None);
+        assert_eq!(get("b"), Some(0.0));
+        assert_eq!(get("c"), Some(4.0));
+        assert_eq!(get("x"), Some(6.0));
     }
 
     #[test]
