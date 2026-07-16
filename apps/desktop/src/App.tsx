@@ -9,6 +9,8 @@ import {
   inTauri,
   moveClip,
   pickVideo,
+  removeClip,
+  trimClip,
 } from "./ipc";
 
 const PPS = 48; // timeline pixels per second
@@ -25,18 +27,33 @@ function capture(e: React.PointerEvent) {
 const TRACKS = ["V2", "V1"]; // rendered top→bottom; V2 wins for preview
 const TRACK_H = 64;
 
-interface DragState {
-  clipId: string;
-  track: string;
-  start: number;
-  grabOffsetS: number; // pointer offset into the clip, seconds
-}
+const TRIM_ZONE_PX = 10; // clip-edge width that grabs as a trim handle
+const MIN_LEN_S = 0.1;
+
+type DragState =
+  | {
+      kind: "move";
+      clipId: string;
+      track: string;
+      start: number;
+      grabOffsetS: number; // pointer offset into the clip, seconds
+    }
+  | {
+      kind: "trim-l" | "trim-r";
+      clipId: string;
+      start: number;
+      len: number;
+      srcIn: number;
+      orig: { start: number; len: number; srcIn: number };
+    };
 
 export default function App() {
   const [project, setProject] = useState<ProjectSnapshot>({ name: "Untitled", clips: [] });
   const [media, setMedia] = useState<Record<string, MediaItem>>({});
   const [playhead, setPlayhead] = useState(0);
   const [drag, setDrag] = useState<DragState | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
@@ -47,15 +64,59 @@ export default function App() {
 
   const clips = useMemo(() => {
     if (!drag) return project.clips;
-    return project.clips.map((c) =>
-      c.id === drag.clipId ? { ...c, track: drag.track, start: drag.start } : c
-    );
+    return project.clips.map((c) => {
+      if (c.id !== drag.clipId) return c;
+      return drag.kind === "move"
+        ? { ...c, track: drag.track, start: drag.start }
+        : { ...c, start: drag.start, len: drag.len, src_in: drag.srcIn };
+    });
   }, [project, drag]);
 
-  const timelineEndS = useMemo(
-    () => Math.max(30, ...clips.map((c) => c.start + c.len + 5)),
+  const contentEndS = useMemo(
+    () => clips.reduce((m, c) => Math.max(m, c.start + c.len), 0),
     [clips]
   );
+  const timelineEndS = Math.max(30, contentEndS + 5);
+
+  // ── playback: interval clock over the proxy frames ─────────────────
+  // interval + performance.now deltas rather than rAF: rAF stops dead in
+  // hidden/minimized windows. Audio will own this clock eventually.
+  useEffect(() => {
+    if (!playing) return;
+    let last = performance.now();
+    const timer = setInterval(() => {
+      const now = performance.now();
+      const dt = (now - last) / 1000;
+      last = now;
+      setPlayhead((t) => {
+        const nt = t + dt;
+        if (nt >= contentEndS) {
+          setPlaying(false);
+          return contentEndS;
+        }
+        return nt;
+      });
+    }, 33);
+    return () => clearInterval(timer);
+  }, [playing, contentEndS]);
+
+  // ── keyboard: space = play/pause, delete = lift, shift+delete = ripple
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === "Space") {
+        e.preventDefault();
+        setPlaying((p) => !p);
+      } else if ((e.key === "Delete" || e.key === "Backspace") && selected) {
+        e.preventDefault();
+        removeClip(selected, e.shiftKey)
+          .then(setProject)
+          .catch((err) => setError(String(err)));
+        setSelected(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
 
   // preview: topmost clip (V2 over V1) under the playhead
   const underPlayhead = useMemo(() => {
@@ -86,7 +147,7 @@ export default function App() {
     ? `${underPlayhead.media.id}@${underPlayhead.srcT.toFixed(3)}`
     : null;
   useEffect(() => {
-    if (!hqKey || !underPlayhead || drag) return;
+    if (!hqKey || !underPlayhead || drag || playing) return;
     const { media: m, srcT } = underPlayhead;
     const timer = setTimeout(async () => {
       try {
@@ -98,7 +159,7 @@ export default function App() {
     }, 250);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hqKey, drag]);
+  }, [hqKey, drag, playing]);
 
   const previewSrc = hq && hq.key === hqKey ? hq.src : proxySrc;
 
@@ -140,19 +201,30 @@ export default function App() {
     [scrubTo]
   );
 
-  // ── clip dragging ───────────────────────────────────────────────────
+  // ── clip dragging: move, or trim when grabbing an edge ─────────────
   const onClipPointerDown = useCallback(
     (e: React.PointerEvent, clip: Clip) => {
       e.stopPropagation();
       capture(e);
+      setSelected(clip.id);
+      setPlaying(false);
       const lanes = lanesRef.current!;
       const x = e.clientX - lanes.getBoundingClientRect().left;
-      setDrag({
-        clipId: clip.id,
-        track: clip.track,
-        start: clip.start,
-        grabOffsetS: x / PPS - clip.start,
-      });
+      const localPx = x - clip.start * PPS;
+      const orig = { start: clip.start, len: clip.len, srcIn: clip.src_in };
+      if (localPx <= TRIM_ZONE_PX) {
+        setDrag({ kind: "trim-l", clipId: clip.id, ...orig, orig });
+      } else if (localPx >= clip.len * PPS - TRIM_ZONE_PX) {
+        setDrag({ kind: "trim-r", clipId: clip.id, ...orig, orig });
+      } else {
+        setDrag({
+          kind: "move",
+          clipId: clip.id,
+          track: clip.track,
+          start: clip.start,
+          grabOffsetS: x / PPS - clip.start,
+        });
+      }
     },
     []
   );
@@ -163,21 +235,46 @@ export default function App() {
       const lanes = lanesRef.current!;
       const rect = lanes.getBoundingClientRect();
       const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const lane = Math.min(TRACKS.length - 1, Math.max(0, Math.floor(y / TRACK_H)));
-      const start = Math.max(0, x / PPS - drag.grabOffsetS);
-      setDrag({ ...drag, track: TRACKS[lane], start });
-      setPlayhead(start);
+      const t = x / PPS;
+
+      if (drag.kind === "move") {
+        const y = e.clientY - rect.top;
+        const lane = Math.min(TRACKS.length - 1, Math.max(0, Math.floor(y / TRACK_H)));
+        const start = Math.max(0, t - drag.grabOffsetS);
+        setDrag({ ...drag, track: TRACKS[lane], start });
+        setPlayhead(start);
+        return;
+      }
+
+      const { orig } = drag;
+      const clip = project.clips.find((c) => c.id === drag.clipId);
+      const srcLen = clip ? media[clip.media]?.duration_s ?? Infinity : Infinity;
+      if (drag.kind === "trim-l") {
+        // dragging the in-point: start/src_in shift together, len absorbs
+        const d = Math.max(-orig.srcIn, Math.min(t - orig.start, orig.len - MIN_LEN_S));
+        const start = orig.start + d;
+        setDrag({ ...drag, start, len: orig.len - d, srcIn: orig.srcIn + d });
+        setPlayhead(start);
+      } else {
+        // dragging the out-point: only len changes, capped by source media
+        const len = Math.max(MIN_LEN_S, Math.min(t - orig.start, srcLen - orig.srcIn));
+        setDrag({ ...drag, len });
+        setPlayhead(orig.start + len);
+      }
     },
-    [drag]
+    [drag, project, media]
   );
 
   const onClipPointerUp = useCallback(async () => {
     if (!drag) return;
-    const { clipId, track, start } = drag;
     setDrag(null);
+    const r2 = (v: number) => Math.round(v * 100) / 100;
     try {
-      setProject(await moveClip(clipId, track, Math.round(start * 100) / 100));
+      if (drag.kind === "move") {
+        setProject(await moveClip(drag.clipId, drag.track, r2(drag.start)));
+      } else {
+        setProject(await trimClip(drag.clipId, r2(drag.start), r2(drag.len), r2(drag.srcIn)));
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -195,6 +292,14 @@ export default function App() {
       <header className="topbar">
         <span className="logo">⚔️ Cutlass</span>
         <span className="project-name">{project.name}</span>
+        <button
+          className="play-btn"
+          onClick={() => setPlaying((p) => !p)}
+          disabled={clips.length === 0}
+          title="Space"
+        >
+          {playing ? "❚❚" : "▶"}
+        </button>
         <button className="import-btn" onClick={doImport} disabled={busy !== null}>
           {busy ? "Importing…" : "Import media"}
         </button>
@@ -256,7 +361,11 @@ export default function App() {
               ))}
             </div>
 
-            <div className="lanes" ref={lanesRef}>
+            <div
+              className="lanes"
+              ref={lanesRef}
+              onPointerDown={() => setSelected(null)}
+            >
               {TRACKS.map((track) => (
                 <div className="lane" key={track} style={{ height: TRACK_H }}>
                   <span className="lane-label">{track}</span>
@@ -268,6 +377,7 @@ export default function App() {
                         clip={clip}
                         media={media[clip.media]}
                         dragging={drag?.clipId === clip.id}
+                        selected={selected === clip.id}
                         onPointerDown={onClipPointerDown}
                         onPointerMove={onClipPointerMove}
                         onPointerUp={onClipPointerUp}
@@ -288,6 +398,7 @@ function ClipView({
   clip,
   media,
   dragging,
+  selected,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -295,6 +406,7 @@ function ClipView({
   clip: Clip;
   media?: MediaItem;
   dragging: boolean;
+  selected: boolean;
   onPointerDown: (e: React.PointerEvent, clip: Clip) => void;
   onPointerMove: (e: React.PointerEvent) => void;
   onPointerUp: () => void;
@@ -313,7 +425,7 @@ function ClipView({
 
   return (
     <div
-      className={`clip${dragging ? " dragging" : ""}`}
+      className={`clip${dragging ? " dragging" : ""}${selected ? " selected" : ""}`}
       style={{ left: clip.start * PPS, width: w }}
       onPointerDown={(e) => onPointerDown(e, clip)}
       onPointerMove={onPointerMove}
@@ -325,6 +437,8 @@ function ClipView({
         ))}
       </div>
       <span className="clip-name">{clip.name}</span>
+      <div className="trim-handle trim-l" />
+      <div className="trim-handle trim-r" />
     </div>
   );
 }

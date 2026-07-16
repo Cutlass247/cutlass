@@ -77,6 +77,41 @@ export async function moveClip(
   return invoke<ProjectSnapshot>("move_clip", { id, track, start });
 }
 
+export async function trimClip(
+  id: string,
+  start: number,
+  len: number,
+  srcIn: number
+): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip) {
+      clip.start = start;
+      clip.len = len;
+      clip.src_in = srcIn;
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("trim_clip", { id, start, len, srcIn });
+}
+
+export async function removeClip(id: string, ripple: boolean): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    const clips = mockState.project.clips;
+    const removed = clips.find((c) => c.id === id);
+    mockState.project.clips = clips.filter((c) => c.id !== id);
+    if (ripple && removed) {
+      for (const c of mockState.project.clips) {
+        if (c.track === removed.track && c.start > removed.start) {
+          c.start = Math.max(0, c.start - removed.len);
+        }
+      }
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("remove_clip", { id, ripple });
+}
+
 /// Full-quality frame from the native decode engine at source time `t`.
 /// Returns null in browser-mock mode (the proxy frame stays up).
 export async function exactFrame(path: string, t: number): Promise<string | null> {

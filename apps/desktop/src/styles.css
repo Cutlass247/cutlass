@@ -55,8 +55,23 @@ body {
   color: var(--muted);
 }
 
-.import-btn {
+.play-btn {
   margin-left: auto;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 18px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.play-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.import-btn {
   background: var(--accent);
   color: #1a1608;
   border: none;
@@ -267,6 +282,32 @@ body {
   border-color: var(--accent);
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
   z-index: 3;
+}
+
+.clip.selected {
+  border-color: var(--accent-2);
+  outline: 1px solid var(--accent-2);
+}
+
+.trim-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+}
+
+.trim-handle.trim-l {
+  left: 0;
+}
+
+.trim-handle.trim-r {
+  right: 0;
+}
+
+.clip:hover .trim-handle,
+.clip.selected .trim-handle {
+  background: linear-gradient(to bottom, transparent, rgba(232, 179, 57, 0.55), transparent);
 }
 
 .clip-strip {
