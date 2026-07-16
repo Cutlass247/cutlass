@@ -37,8 +37,8 @@ The two bets the company rests on, proven before anything else is built:
 
 | Spike | Question it answers | Status |
 |---|---|---|
-| [`spikes/crdt-timeline`](spikes/crdt-timeline) | Can a video timeline be a CRDT? What are sane merge semantics for concurrent edits? | ✅ working |
-| [`spikes/media-engine`](spikes/media-engine) | Can we decode + scrub 4K H.264 at 60fps in Rust/wgpu on a mid-range machine? | 📋 planned (needs Rust toolchain) |
+| [`spikes/crdt-timeline`](spikes/crdt-timeline) | Can a video timeline be a CRDT? What are sane merge semantics for concurrent edits? | ✅ GO — 7/7 scenarios converge |
+| [`spikes/media-engine`](spikes/media-engine) | Can we decode + scrub 4K H.264 at 60fps in Rust/wgpu on a mid-range machine? | ✅ GO — 236 fps sw / 141 fps hw decode; in-process libav required |
 
 ## v1 scope (ruthless)
 

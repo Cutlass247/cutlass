@@ -3,7 +3,10 @@
 **Question:** can we decode and scrub 4K H.264 at 60fps on a mid-range
 Windows machine, in Rust, with GPU presentation via wgpu?
 
-**Status: blocked on toolchain.** This machine has git + Node only. Needed:
+**Status: EXECUTED — see [FINDINGS.md](FINDINGS.md). Verdict: GO,
+with in-process decode required.** Original plan below.
+
+Toolchain needed (now installed 2026-07-16):
 
 1. **Rust toolchain** — `rustup-init.exe` from https://rustup.rs (~10 MB),
    which also requires the **MSVC Build Tools** (Visual Studio Build Tools
