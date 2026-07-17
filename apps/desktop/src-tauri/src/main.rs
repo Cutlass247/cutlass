@@ -484,6 +484,8 @@ fn exact_frame(path: String, t: f64, state: State<AppState>) -> Result<String, S
 #[tauri::command]
 fn export_project(
     path: String,
+    width: Option<u32>,
+    height: Option<u32>,
     app: tauri::AppHandle,
     state: State<AppState>,
 ) -> Result<String, String> {
@@ -519,15 +521,14 @@ fn export_project(
         return Err("nothing on V1 to export".into());
     }
     let segments = cutlass_core::export::segments_for_track(clips);
-    cutlass_core::export::export(
-        &segments,
-        &overlays,
-        Path::new(&path),
-        &Default::default(),
-        &mut |p| {
-            let _ = app.emit("export-progress", p);
-        },
-    )
+    let settings = cutlass_core::export::ExportSettings {
+        width: width.unwrap_or(1920),
+        height: height.unwrap_or(1080),
+        fps: 30,
+    };
+    cutlass_core::export::export(&segments, &overlays, Path::new(&path), &settings, &mut |p| {
+        let _ = app.emit("export-progress", p);
+    })
     .map_err(err_str)
 }
 
