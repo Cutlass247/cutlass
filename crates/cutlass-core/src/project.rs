@@ -42,6 +42,8 @@ impl Project {
         doc.put(automerge::ROOT, "name", name).expect("init name");
         doc.put_object(automerge::ROOT, "clips", ObjType::Map)
             .expect("init clips");
+        doc.put_object(automerge::ROOT, "media", ObjType::Map)
+            .expect("init media");
         Self { doc }
     }
 
@@ -62,6 +64,57 @@ impl Project {
             .expect("read clips")
             .expect("clips map exists");
         id
+    }
+
+    /// The media pool lives in the document so a saved/synced project
+    /// carries everything needed to rebuild itself.
+    fn media_obj(&mut self) -> ObjId {
+        if let Ok(Some((_, id))) = self.doc.get(automerge::ROOT, "media") {
+            return id;
+        }
+        self.doc
+            .put_object(automerge::ROOT, "media", ObjType::Map)
+            .expect("create media map")
+    }
+
+    pub fn set_media(
+        &mut self,
+        id: &str,
+        name: &str,
+        path: &str,
+        duration_s: f64,
+    ) -> anyhow::Result<()> {
+        let media = self.media_obj();
+        let obj = self.doc.put_object(&media, id, ObjType::Map)?;
+        self.doc.put(&obj, "name", name)?;
+        self.doc.put(&obj, "path", path)?;
+        self.doc.put(&obj, "duration_s", duration_s)?;
+        Ok(())
+    }
+
+    /// (id, name, path, duration_s) for every media entry in the doc.
+    pub fn media_entries(&mut self) -> Vec<(String, String, String, f64)> {
+        let media = self.media_obj();
+        let ids: Vec<String> = self.doc.keys(&media).collect();
+        ids.into_iter()
+            .filter_map(|id| {
+                let (_, obj) = self.doc.get(&media, &id).ok()??;
+                let s = |k: &str| -> Option<String> {
+                    match self.doc.get(&obj, k).ok()?? {
+                        (Value::Scalar(v), _) => match v.as_ref() {
+                            ScalarValue::Str(v) => Some(v.to_string()),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                };
+                let d = match self.doc.get(&obj, "duration_s").ok()?? {
+                    (Value::Scalar(v), _) => v.as_ref().to_f64()?,
+                    _ => return None,
+                };
+                Some((id, s("name")?, s("path")?, d))
+            })
+            .collect()
     }
 
     pub fn add_clip(&mut self, clip: &Clip) -> anyhow::Result<()> {
@@ -259,6 +312,26 @@ impl Project {
         })
     }
 
+    // ── sync (Automerge sync protocol; used by the collab session) ─────
+    pub fn generate_sync_message(
+        &mut self,
+        state: &mut automerge::sync::State,
+    ) -> Option<Vec<u8>> {
+        use automerge::sync::SyncDoc;
+        self.doc.sync().generate_sync_message(state).map(|m| m.encode())
+    }
+
+    pub fn receive_sync_message(
+        &mut self,
+        state: &mut automerge::sync::State,
+        bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        use automerge::sync::SyncDoc;
+        let msg = automerge::sync::Message::decode(bytes)?;
+        self.doc.sync().receive_sync_message(state, msg)?;
+        Ok(())
+    }
+
     /// End of the last clip on `track` — where an appended clip starts.
     pub fn track_end(&self, track: &str) -> f64 {
         self.snapshot()["clips"]
@@ -389,8 +462,44 @@ mod tests {
     fn save_load_roundtrip() {
         let mut p = Project::new("Trailer");
         p.add_clip(&demo_clip("a", "V1", 0.0)).unwrap();
+        p.set_media("m-a", "a.mp4", "C:/media/a.mp4", 12.5).unwrap();
         let bytes = p.save();
-        let p2 = Project::load(&bytes).unwrap();
+        let mut p2 = Project::load(&bytes).unwrap();
         assert_eq!(p2.snapshot(), p.snapshot());
+        assert_eq!(
+            p2.media_entries(),
+            vec![("m-a".into(), "a.mp4".into(), "C:/media/a.mp4".into(), 12.5)]
+        );
+    }
+
+    #[test]
+    fn two_projects_converge_over_sync_protocol() {
+        let mut a = Project::new("Collab");
+        a.add_clip(&demo_clip("a1", "V1", 0.0)).unwrap();
+        let mut b = Project::load(&a.save()).unwrap();
+        b.add_clip(&demo_clip("b1", "V2", 2.0)).unwrap();
+        a.move_clip("a1", "V1", 5.0).unwrap();
+
+        let mut sa = automerge::sync::State::new();
+        let mut sb = automerge::sync::State::new();
+        // ping-pong until quiescent
+        for _ in 0..20 {
+            let ma = a.generate_sync_message(&mut sa);
+            if let Some(m) = &ma {
+                b.receive_sync_message(&mut sb, m).unwrap();
+            }
+            let mb = b.generate_sync_message(&mut sb);
+            if let Some(m) = &mb {
+                a.receive_sync_message(&mut sa, m).unwrap();
+            }
+            if ma.is_none() && mb.is_none() {
+                break;
+            }
+        }
+        assert_eq!(a.snapshot(), b.snapshot());
+        let snap = a.snapshot();
+        assert_eq!(snap["clips"].as_array().unwrap().len(), 2);
+        assert_eq!(snap["clips"][0]["id"], "a1");
+        assert_eq!(snap["clips"][0]["start"], 5.0);
     }
 }

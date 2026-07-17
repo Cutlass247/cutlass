@@ -6,9 +6,12 @@ import {
   audioClock,
   exactFrame,
   getProject,
+  hydrateMedia,
   importMedia,
   inTauri,
   moveClip,
+  openProject,
+  saveProject,
   pauseAudio,
   pickVideo,
   playAudio,
@@ -142,10 +145,56 @@ export default function App() {
     };
   }, [playing]);
 
-  // ── keyboard: space = play/pause, delete = lift, shift+delete = ripple
+  // ── save / open ─────────────────────────────────────────────────────
+  const doSave = useCallback(async () => {
+    try {
+      if (await saveProject()) setBusy(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const doOpen = useCallback(async () => {
+    try {
+      const res = await openProject();
+      if (!res) return;
+      setProject(res.project);
+      const map: Record<string, MediaItem> = {};
+      for (const m of res.media) map[m.id] = m;
+      setMedia(map);
+      setSelected(null);
+      setWordSel(null);
+      setTranscripts({});
+      setPlayhead(0);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  // hydrate media referenced by the project but not local (opened project
+  // or collab peer) — the doc carries name/path/duration for each id
+  const hydrating = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const c of project.clips) {
+      if (media[c.media] || hydrating.current.has(c.media)) continue;
+      hydrating.current.add(c.media);
+      hydrateMedia(c.media).then((m) => {
+        hydrating.current.delete(c.media);
+        if (m) setMedia((prev) => ({ ...prev, [m.id]: m }));
+      });
+    }
+  }, [project, media]);
+
+  // ── keyboard: space, delete, ctrl+s / ctrl+o ────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === "Space") {
+      if (e.ctrlKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        doSave();
+      } else if (e.ctrlKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        doOpen();
+      } else if (e.code === "Space") {
         e.preventDefault();
         setPlaying((p) => !p);
       } else if ((e.key === "Delete" || e.key === "Backspace") && selected) {
@@ -158,7 +207,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected]);
+  }, [selected, doSave, doOpen]);
 
   // preview: topmost clip (V2 over V1) under the playhead
   const underPlayhead = useMemo(() => {
@@ -416,6 +465,12 @@ export default function App() {
       <header className="topbar">
         <span className="logo">⚔️ Cutlass</span>
         <span className="project-name">{project.name}</span>
+        <button className="ghost-btn" onClick={doOpen} title="Ctrl+O">
+          Open
+        </button>
+        <button className="ghost-btn" onClick={doSave} title="Ctrl+S">
+          Save
+        </button>
         <button
           className="play-btn"
           onClick={() => setPlaying((p) => !p)}
