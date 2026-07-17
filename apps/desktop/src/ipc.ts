@@ -290,10 +290,10 @@ export async function razorOut(
 
 /// Start timeline audio from `fromT`. False = no audio (browser mock or
 /// no output device) — the UI falls back to its silent local clock.
-export async function playAudio(fromT: number): Promise<boolean> {
+export async function playAudio(fromT: number, muted: string[] = []): Promise<boolean> {
   if (!inTauri) return false;
   try {
-    return await invoke<boolean>("play", { fromT });
+    return await invoke<boolean>("play", { fromT, muted });
   } catch {
     return false;
   }
