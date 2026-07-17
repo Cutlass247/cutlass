@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Clip,
   MediaItem,
+  Presence,
   ProjectSnapshot,
+  Word,
   audioClock,
+  currentRoom,
+  cutRanges,
   exactFrame,
   exportProject,
   getProject,
@@ -11,62 +15,40 @@ import {
   importMedia,
   inTauri,
   joinSession,
-  currentRoom,
-  cutRanges,
   moveClip,
   onExportProgress,
   onPresence,
   onProjectChanged,
   openProject,
-  Presence,
-  sendPresence,
-  saveProject,
   pauseAudio,
   pickVideo,
   playAudio,
   razorOut,
   redoEdit,
   removeClip,
+  saveProject,
+  sendPresence,
   transcribeMedia,
   trimClip,
   undoEdit,
-  Word,
 } from "./ipc";
+import { Mode, TopBar } from "./components/TopBar";
+import { MediaPanel } from "./components/MediaPanel";
+import { Monitor, RESOLUTIONS, Resolution } from "./components/Monitor";
+import { Inspector } from "./components/Inspector";
+import { PPS_MAX, PPS_MIN, TRACK_H, Timeline, TrackCtl } from "./components/Timeline";
+import { Resizer } from "./components/ui";
 
+const TRACKS = ["V2", "V1"]; // rendered top→bottom; V2 wins for preview
+const TRIM_ZONE_PX = 10;
+const MIN_LEN_S = 0.1;
+const PPS_DEFAULT = 48;
 const FILLERS = new Set(["um", "uh", "uhh", "umm", "erm", "er", "ah", "hmm", "mm", "mhm"]);
 const cleanWord = (t: string) => t.toLowerCase().replace(/[^a-z']/g, "");
 const SILENCE_GAP_S = 0.8;
 
-// timeline pixels per second (zoomable)
-const PPS_DEFAULT = 48;
-const PPS_MIN = 12;
-const PPS_MAX = 160;
-
-type Mode = "create" | "studio";
-
-// pointer capture keeps drags alive outside the element, but its failure
-// (synthetic events, released pointers) must never kill the interaction
-function capture(e: React.PointerEvent) {
-  try {
-    e.currentTarget.setPointerCapture(e.pointerId);
-  } catch {
-    /* drag still works while the pointer stays over the element */
-  }
-}
-const TRACKS = ["V2", "V1"]; // rendered top→bottom; V2 wins for preview
-const TRACK_H = 64;
-
-const TRIM_ZONE_PX = 10; // clip-edge width that grabs as a trim handle
-const MIN_LEN_S = 0.1;
-
 type DragState =
-  | {
-      kind: "move";
-      clipId: string;
-      track: string;
-      start: number;
-      grabOffsetS: number; // pointer offset into the clip, seconds
-    }
+  | { kind: "move"; clipId: string; track: string; start: number; grabOffsetS: number }
   | {
       kind: "trim-l" | "trim-r";
       clipId: string;
@@ -77,20 +59,11 @@ type DragState =
     };
 
 export default function App() {
+  // ── project + media state ───────────────────────────────────────────
   const [project, setProject] = useState<ProjectSnapshot>({ name: "Untitled", clips: [] });
   const [media, setMedia] = useState<Record<string, MediaItem>>({});
+  const [dirty, setDirty] = useState(false);
   const [playhead, setPlayhead] = useState(0);
-  // progressive disclosure: Create = the magic loop only; Studio = all
-  const [mode, setMode] = useState<Mode>(
-    () => (localStorage.getItem("cutlass-mode") as Mode) || "create"
-  );
-  const switchMode = useCallback((m: Mode) => {
-    setMode(m);
-    localStorage.setItem("cutlass-mode", m);
-  }, []);
-  const tracks = mode === "create" ? ["V1"] : TRACKS;
-
-  const [pps, setPps] = useState(PPS_DEFAULT);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -99,28 +72,61 @@ export default function App() {
   const [transcripts, setTranscripts] = useState<Record<string, Word[]>>({});
   const [transcribing, setTranscribing] = useState<string | null>(null);
   const [wordSel, setWordSel] = useState<{ media: string; a: number; b: number } | null>(null);
-  const lanesRef = useRef<HTMLDivElement>(null);
-
   const [room, setRoom] = useState<string | null>(null);
-
   const [exporting, setExporting] = useState<number | null>(null);
+  const [peers, setPeers] = useState<Record<string, Presence & { ts: number }>>({});
 
-  // presence: who else is in the room, and where their playheads are
-  const me = useRef({
-    id: Math.random().toString(36).slice(2, 8),
-    name: "",
-    color: "",
-  });
+  // ── shell state ─────────────────────────────────────────────────────
+  const [mode, setMode] = useState<Mode>(
+    () => (localStorage.getItem("cutlass-mode") as Mode) || "create"
+  );
+  const [pps, setPps] = useState(PPS_DEFAULT);
+  const [snap, setSnap] = useState(true);
+  const [markers, setMarkers] = useState<number[]>([]);
+  const [resolution, setResolution] = useState<Resolution>(RESOLUTIONS[1]);
+  const [trackCtl, setTrackCtl] = useState<Record<string, TrackCtl>>({});
+  const [leftW, setLeftW] = useState(268);
+  const [rightW, setRightW] = useState(316);
+  const [tlH, setTlH] = useState(280);
+
+  const lanesRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const switchMode = useCallback((m: Mode) => {
+    setMode(m);
+    localStorage.setItem("cutlass-mode", m);
+  }, []);
+  const tracks = mode === "create" ? ["V1"] : TRACKS;
+  const setTrack = useCallback(
+    (track: string, patch: Partial<TrackCtl>) =>
+      setTrackCtl((prev) => {
+        const base = prev[track] ?? { lock: false, mute: false, hide: false };
+        return { ...prev, [track]: { ...base, ...patch } };
+      }),
+    []
+  );
+  const ctlOf = useCallback(
+    (track: string): TrackCtl => trackCtl[track] ?? { lock: false, mute: false, hide: false },
+    [trackCtl]
+  );
+
+  // every local edit funnels through this: snapshot in, dirty out
+  const applyEdit = useCallback((snap: ProjectSnapshot) => {
+    setProject(snap);
+    setDirty(true);
+  }, []);
+
+  // ── presence identity ───────────────────────────────────────────────
+  const me = useRef({ id: Math.random().toString(36).slice(2, 8), name: "", color: "" });
   if (!me.current.name) {
     me.current.name = `editor-${me.current.id.slice(0, 4)}`;
     me.current.color = `hsl(${((parseInt(me.current.id, 36) % 360) + 360) % 360}, 75%, 60%)`;
   }
-  const [peers, setPeers] = useState<Record<string, Presence & { ts: number }>>({});
 
+  // ── mount: load project, subscribe to events ────────────────────────
   useEffect(() => {
     getProject().then(setProject).catch((e) => setError(String(e)));
-    currentRoom().then((r) => r && setRoom(r)); // CUTLASS_ROOM auto-join
-    // remote collab edits land here
+    currentRoom().then((r) => r && setRoom(r));
     const un = onProjectChanged((snap) => setProject(snap));
     const unExport = onExportProgress((p) => setExporting(p));
     const unPresence = onPresence((p) =>
@@ -130,7 +136,7 @@ export default function App() {
       setPeers((prev) => {
         const now = Date.now();
         const next = Object.fromEntries(
-          Object.entries(prev).filter(([, p]) => now - p.ts < 6000)
+          Object.entries(prev).filter(([, v]) => now - v.ts < 6000)
         );
         return Object.keys(next).length === Object.keys(prev).length ? prev : next;
       });
@@ -143,31 +149,7 @@ export default function App() {
     };
   }, []);
 
-  const doExport = useCallback(async () => {
-    setError(null);
-    setExporting(0);
-    try {
-      const encoder = await exportProject();
-      setExporting(null);
-      if (encoder) setBusy(`Exported ✓ (${encoder})`);
-      setTimeout(() => setBusy(null), 4000);
-    } catch (e) {
-      setExporting(null);
-      setError(String(e));
-    }
-  }, []);
-
-  const doCollab = useCallback(async () => {
-    const name = window.prompt("Room name (share it with your collaborator):", "cutlass-demo");
-    if (!name) return;
-    try {
-      await joinSession(name.trim());
-      setRoom(name.trim());
-    } catch (e) {
-      setError(String(e));
-    }
-  }, []);
-
+  // ── derived clip state (drag overrides applied) ─────────────────────
   const clips = useMemo(() => {
     if (!drag) return project.clips;
     return project.clips.map((c) => {
@@ -183,38 +165,35 @@ export default function App() {
     [clips]
   );
   const timelineEndS = Math.max(30, contentEndS + 5);
+  const selectedClip = useMemo(
+    () => clips.find((c) => c.id === selected) ?? null,
+    [clips, selected]
+  );
 
-  // ── playback ────────────────────────────────────────────────────────
-  // The native audio player owns the transport clock when it's running:
-  // a local interval clock (not rAF — rAF freezes in hidden windows)
-  // animates the playhead smoothly, and re-syncs to the audio clock every
-  // 250 ms. Without audio (mock mode / no device) the local clock rules.
+  // ── playback (audio owns the clock when live) ───────────────────────
   const playheadRef = useRef(0);
   useEffect(() => {
     playheadRef.current = playhead;
   }, [playhead]);
-
-  // broadcast my playhead while in a room (throttled)
-  useEffect(() => {
-    if (!room) return;
-    const timer = setInterval(() => {
-      sendPresence({ ...me.current, playhead: playheadRef.current }).catch(() => {});
-    }, 300);
-    return () => clearInterval(timer);
-  }, [room]);
   const contentEndRef = useRef(0);
   useEffect(() => {
     contentEndRef.current = contentEndS;
   }, [contentEndS]);
+  const trackCtlRef = useRef(trackCtl);
+  useEffect(() => {
+    trackCtlRef.current = trackCtl;
+  }, [trackCtl]);
 
   useEffect(() => {
     if (!playing) return;
     let cancelled = false;
     let audioLive = false;
-    playAudio(playheadRef.current).then((ok) => {
+    const muted = Object.entries(trackCtlRef.current)
+      .filter(([, c]) => c.mute)
+      .map(([t]) => t);
+    playAudio(playheadRef.current, muted).then((ok) => {
       if (!cancelled) audioLive = ok;
     });
-
     let last = performance.now();
     const local = setInterval(() => {
       const now = performance.now();
@@ -229,7 +208,6 @@ export default function App() {
         return nt;
       });
     }, 33);
-
     const sync = setInterval(async () => {
       if (!audioLive) return;
       const c = await audioClock();
@@ -237,21 +215,116 @@ export default function App() {
       setPlayhead(c.t);
       if (c.ended) setPlaying(false);
     }, 250);
-
     return () => {
       cancelled = true;
       clearInterval(local);
       clearInterval(sync);
       pauseAudio().then((t) => {
-        if (t != null) setPlayhead(t); // land exactly where the audio stopped
+        if (t != null) setPlayhead(t);
       });
     };
   }, [playing]);
 
-  // ── save / open ─────────────────────────────────────────────────────
+  // broadcast presence while in a room
+  useEffect(() => {
+    if (!room) return;
+    const timer = setInterval(() => {
+      sendPresence({ ...me.current, playhead: playheadRef.current }).catch(() => {});
+    }, 300);
+    return () => clearInterval(timer);
+  }, [room]);
+
+  // ── program monitor source ──────────────────────────────────────────
+  const underPlayhead = useMemo(() => {
+    for (const track of tracks) {
+      if (ctlOf(track).hide) continue;
+      const clip = clips.find(
+        (c) => c.track === track && playhead >= c.start && playhead < c.start + c.len
+      );
+      if (!clip) continue;
+      const m = media[clip.media];
+      if (!m || m.thumbs.length === 0) continue;
+      return { media: m, srcT: playhead - clip.start + clip.src_in };
+    }
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clips, media, playhead, mode, trackCtl]);
+
+  const proxySrc = useMemo(() => {
+    if (!underPlayhead) return null;
+    const { media: m, srcT } = underPlayhead;
+    const idx = Math.min(m.thumbs.length - 1, Math.max(0, Math.floor(srcT * m.scrub_fps)));
+    return m.thumbs[idx];
+  }, [underPlayhead]);
+
+  const [hq, setHq] = useState<{ key: string; src: string } | null>(null);
+  const hqKey = underPlayhead
+    ? `${underPlayhead.media.id}@${underPlayhead.srcT.toFixed(3)}`
+    : null;
+  useEffect(() => {
+    if (!hqKey || !underPlayhead || drag || playing) return;
+    const { media: m, srcT } = underPlayhead;
+    const timer = setTimeout(async () => {
+      try {
+        const src = await exactFrame(m.path, srcT);
+        if (src) setHq({ key: hqKey, src });
+      } catch {
+        /* proxy frame stays up */
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hqKey, drag, playing]);
+  const previewSrc = hq && hq.key === hqKey ? hq.src : proxySrc;
+
+  // ── import / transcribe ─────────────────────────────────────────────
+  const doTranscribe = useCallback(async (mediaId: string) => {
+    setTranscribing(mediaId);
+    try {
+      const words = await transcribeMedia(mediaId);
+      setTranscripts((t) => ({ ...t, [mediaId]: words }));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setTranscribing(null);
+    }
+  }, []);
+
+  const doImport = useCallback(async () => {
+    setError(null);
+    const path = await pickVideo();
+    if (!path) return;
+    setBusy(`Importing ${path.split(/[\\/]/).pop()}…`);
+    try {
+      const res = await importMedia(path);
+      setMedia((m) => ({ ...m, [res.media.id]: res.media }));
+      applyEdit(res.project);
+      if (mode === "create") doTranscribe(res.media.id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  // hydrate media known to the doc but not local (open/collab)
+  const hydrating = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const c of project.clips) {
+      if (media[c.media] || hydrating.current.has(c.media)) continue;
+      hydrating.current.add(c.media);
+      hydrateMedia(c.media).then((m) => {
+        hydrating.current.delete(c.media);
+        if (m) setMedia((prev) => ({ ...prev, [m.id]: m }));
+      });
+    }
+  }, [project, media]);
+
+  // ── save / open / export / collab ───────────────────────────────────
   const doSave = useCallback(async () => {
     try {
-      if (await saveProject()) setBusy(null);
+      if (await saveProject()) setDirty(false);
     } catch (e) {
       setError(String(e));
     }
@@ -269,36 +342,67 @@ export default function App() {
       setWordSel(null);
       setTranscripts({});
       setPlayhead(0);
+      setDirty(false);
+      setMarkers([]);
     } catch (e) {
       setError(String(e));
     }
   }, []);
 
-  // hydrate media referenced by the project but not local (opened project
-  // or collab peer) — the doc carries name/path/duration for each id
-  const hydrating = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    for (const c of project.clips) {
-      if (media[c.media] || hydrating.current.has(c.media)) continue;
-      hydrating.current.add(c.media);
-      hydrateMedia(c.media).then((m) => {
-        hydrating.current.delete(c.media);
-        if (m) setMedia((prev) => ({ ...prev, [m.id]: m }));
-      });
+  const doExport = useCallback(async () => {
+    setError(null);
+    setExporting(0);
+    try {
+      const encoder = await exportProject(resolution.w, resolution.h);
+      setExporting(null);
+      if (encoder) {
+        setBusy(`Exported ✓ ${resolution.label} (${encoder})`);
+        setTimeout(() => setBusy(null), 4000);
+      }
+    } catch (e) {
+      setExporting(null);
+      setError(String(e));
     }
-  }, [project, media]);
+  }, [resolution]);
 
-  // ── keyboard: space, delete, ctrl+s / ctrl+o ────────────────────────
+  const doCollab = useCallback(async () => {
+    const name = window.prompt("Room name (share it with your collaborator):", "cutlass-demo");
+    if (!name) return;
+    try {
+      await joinSession(name.trim());
+      setRoom(name.trim());
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  const doUndo = useCallback(
+    () => undoEdit().then(applyEdit).catch((e) => setError(String(e))),
+    [applyEdit]
+  );
+  const doRedo = useCallback(
+    () => redoEdit().then(applyEdit).catch((e) => setError(String(e))),
+    [applyEdit]
+  );
+  const doDeleteSel = useCallback(
+    (ripple: boolean) => {
+      if (!selected) return;
+      removeClip(selected, ripple).then(applyEdit).catch((e) => setError(String(e)));
+      setSelected(null);
+    },
+    [selected, applyEdit]
+  );
+
+  // ── keyboard ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.tagName === "INPUT") return;
       if (e.ctrlKey && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        (e.shiftKey ? redoEdit() : undoEdit())
-          .then(setProject)
-          .catch((err) => setError(String(err)));
+        e.shiftKey ? doRedo() : doUndo();
       } else if (e.ctrlKey && e.key.toLowerCase() === "y") {
         e.preventDefault();
-        redoEdit().then(setProject).catch((err) => setError(String(err)));
+        doRedo();
       } else if (e.ctrlKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
         doSave();
@@ -308,229 +412,75 @@ export default function App() {
       } else if (e.code === "Space") {
         e.preventDefault();
         setPlaying((p) => !p);
+      } else if (e.key === "Home") {
+        setPlayhead(0);
+      } else if (e.key === "End") {
+        setPlayhead(contentEndRef.current);
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        const step = (e.shiftKey ? 1 : 1 / 30) * (e.key === "ArrowLeft" ? -1 : 1);
+        setPlayhead((t) => Math.max(0, t + step));
+      } else if (e.key.toLowerCase() === "m") {
+        setMarkers((ms) => {
+          const t = playheadRef.current;
+          const near = ms.findIndex((m) => Math.abs(m - t) < 0.2);
+          return near >= 0 ? ms.filter((_, i) => i !== near) : [...ms, t].sort((a, b) => a - b);
+        });
       } else if ((e.key === "Delete" || e.key === "Backspace") && selected) {
         e.preventDefault();
-        removeClip(selected, e.shiftKey)
-          .then(setProject)
-          .catch((err) => setError(String(err)));
-        setSelected(null);
+        doDeleteSel(e.shiftKey);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected, doSave, doOpen]);
+  }, [selected, doSave, doOpen, doUndo, doRedo, doDeleteSel]);
 
-  // preview: topmost visible clip (V2 over V1) under the playhead
-  const underPlayhead = useMemo(() => {
-    for (const track of tracks) {
-      const clip = clips.find(
-        (c) => c.track === track && playhead >= c.start && playhead < c.start + c.len
-      );
-      if (!clip) continue;
-      const m = media[clip.media];
-      if (!m || m.thumbs.length === 0) continue;
-      const srcT = playhead - clip.start + clip.src_in;
-      return { media: m, srcT };
-    }
-    return null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clips, media, playhead, mode]);
-
-  const proxySrc = useMemo(() => {
-    if (!underPlayhead) return null;
-    const { media: m, srcT } = underPlayhead;
-    const idx = Math.min(m.thumbs.length - 1, Math.max(0, Math.floor(srcT * m.scrub_fps)));
-    return m.thumbs[idx];
-  }, [underPlayhead]);
-
-  // when the playhead settles, snap the preview from the scrub proxy to a
-  // full-quality frame from the decode engine
-  const [hq, setHq] = useState<{ key: string; src: string } | null>(null);
-  const hqKey = underPlayhead
-    ? `${underPlayhead.media.id}@${underPlayhead.srcT.toFixed(3)}`
-    : null;
-  useEffect(() => {
-    if (!hqKey || !underPlayhead || drag || playing) return;
-    const { media: m, srcT } = underPlayhead;
-    const timer = setTimeout(async () => {
-      try {
-        const src = await exactFrame(m.path, srcT);
-        if (src) setHq({ key: hqKey, src });
-      } catch {
-        /* engine miss is non-fatal — proxy frame stays up */
-      }
-    }, 250);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hqKey, drag, playing]);
-
-  const previewSrc = hq && hq.key === hqKey ? hq.src : proxySrc;
-
-  // ── transcript ──────────────────────────────────────────────────────
-  const doTranscribe = useCallback(async (mediaId: string) => {
-    setTranscribing(mediaId);
+  // ── scrubbing + clip dragging (with snapping) ───────────────────────
+  const capture = (e: React.PointerEvent) => {
     try {
-      const words = await transcribeMedia(mediaId);
-      setTranscripts((t) => ({ ...t, [mediaId]: words }));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setTranscribing(null);
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* drag still works while hovered */
     }
-  }, []);
+  };
 
-  const srcToTimeline = useCallback(
-    (mediaId: string, srcT: number): number | null => {
-      for (const c of project.clips) {
-        if (c.media !== mediaId || c.track !== "V1") continue;
-        if (srcT >= c.src_in - 1e-9 && srcT < c.src_in + c.len) {
-          return c.start + (srcT - c.src_in);
-        }
-      }
-      return null;
-    },
-    [project]
-  );
-
-  // transcript shown: selected clip's media, else clip under playhead,
-  // else the first transcribed media
-  const transcriptMedia = useMemo(() => {
-    const selClip = selected ? project.clips.find((c) => c.id === selected) : null;
-    if (selClip && transcripts[selClip.media]) return selClip.media;
-    if (underPlayhead && transcripts[underPlayhead.media.id]) return underPlayhead.media.id;
-    return Object.keys(transcripts)[0] ?? null;
-  }, [selected, project, transcripts, underPlayhead]);
-
-  const onWordClick = useCallback(
-    (mediaId: string, idx: number, words: Word[], shift: boolean) => {
-      setWordSel((sel) =>
-        shift && sel && sel.media === mediaId ? { ...sel, b: idx } : { media: mediaId, a: idx, b: idx }
-      );
-      const t = srcToTimeline(mediaId, (words[idx].start + words[idx].end) / 2);
-      if (t != null) setPlayhead(t);
-    },
-    [srcToTimeline]
-  );
-
-  const cutWords = useCallback(async () => {
-    if (!wordSel) return;
-    const words = transcripts[wordSel.media];
-    if (!words) return;
-    const [i0, i1] = [Math.min(wordSel.a, wordSel.b), Math.max(wordSel.a, wordSel.b)];
-    const from = words[i0].start;
-    const to = words[i1].end;
-    const mid = (from + to) / 2;
-    const clip = project.clips.find(
-      (c) =>
-        c.media === wordSel.media &&
-        c.track === "V1" &&
-        mid >= c.src_in &&
-        mid < c.src_in + c.len
-    );
-    if (!clip) {
-      setError("No clip on V1 covers those words");
-      return;
-    }
-    try {
-      setProject(await razorOut(clip.id, from, to));
-      setWordSel(null);
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [wordSel, transcripts, project]);
-
-  // suggested cuts: filler words + long silences, from word timestamps —
-  // only ranges still present on the timeline
-  const smartCuts = useMemo(() => {
-    if (!transcriptMedia) return null;
-    const words = transcripts[transcriptMedia];
-    if (!words || words.length === 0) return null;
-    const alive = (r: [number, number]) =>
-      srcToTimeline(transcriptMedia, (r[0] + r[1]) / 2) !== null;
-    const fillers: [number, number][] = words
-      .filter((w) => FILLERS.has(cleanWord(w.text)))
-      .map((w) => [w.start, w.end] as [number, number])
-      .filter(alive);
-    const silences: [number, number][] = [];
-    for (let i = 1; i < words.length; i++) {
-      const gap = words[i].start - words[i - 1].end;
-      if (gap >= SILENCE_GAP_S) {
-        const r: [number, number] = [words[i - 1].end + 0.12, words[i].start - 0.12];
-        if (alive(r)) silences.push(r);
-      }
-    }
-    return { fillers, silences };
-  }, [transcriptMedia, transcripts, srcToTimeline]);
-
-  const doCutRanges = useCallback(
-    async (ranges: [number, number][]) => {
-      if (!transcriptMedia || ranges.length === 0) return;
-      try {
-        setProject(await cutRanges(transcriptMedia, ranges));
-        setWordSel(null);
-      } catch (e) {
-        setError(String(e));
-      }
-    },
-    [transcriptMedia]
-  );
-
-  // live caption: the word under the playhead
-  const caption = useMemo(() => {
-    if (!underPlayhead) return null;
-    const words = transcripts[underPlayhead.media.id];
-    if (!words) return null;
-    const srcT = underPlayhead.srcT;
-    return words.find((w) => srcT >= w.start && srcT < w.end)?.text ?? null;
-  }, [underPlayhead, transcripts]);
-
-  const doImport = useCallback(async () => {
-    setError(null);
-    const path = await pickVideo();
-    if (!path) return;
-    setBusy(`Importing ${path.split(/[\\/]/).pop()} — building scrub proxy…`);
-    try {
-      const res = await importMedia(path);
-      setMedia((m) => ({ ...m, [res.media.id]: res.media }));
-      setProject(res.project);
-      if (mode === "create") {
-        // Create mode: the transcript IS the interface — start it now
-        doTranscribe(res.media.id);
-      }
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
-
-  // ── scrubbing (ruler + lanes background) ────────────────────────────
   const scrubTo = useCallback(
     (clientX: number) => {
       const lanes = lanesRef.current;
       if (!lanes) return;
-      const x = clientX - lanes.getBoundingClientRect().left;
-      setPlayhead(Math.max(0, x / pps));
+      setPlayhead(Math.max(0, (clientX - lanes.getBoundingClientRect().left) / pps));
     },
     [pps]
   );
 
-  // ctrl+wheel zoom (non-passive listener so preventDefault works)
-  const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      setPps((z) =>
-        Math.min(PPS_MAX, Math.max(PPS_MIN, z * (e.deltaY < 0 ? 1.25 : 0.8)))
-      );
+      setPps((z) => Math.min(PPS_MAX, Math.max(PPS_MIN, z * (e.deltaY < 0 ? 1.25 : 0.8))));
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
+
+  const snapStart = useCallback(
+    (start: number, dur: number, movingId: string): number => {
+      if (!snap) return start;
+      const tol = 8 / pps;
+      const cands = [0, playheadRef.current, ...markers];
+      for (const c of project.clips) {
+        if (c.id === movingId) continue;
+        cands.push(c.start, c.start + c.len);
+      }
+      for (const c of cands) {
+        if (Math.abs(start - c) < tol) return c;
+        if (Math.abs(start + dur - c) < tol) return c - dur;
+      }
+      return start;
+    },
+    [snap, pps, markers, project]
+  );
 
   const onRulerPointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -546,13 +496,13 @@ export default function App() {
     [scrubTo]
   );
 
-  // ── clip dragging: move, or trim when grabbing an edge ─────────────
   const onClipPointerDown = useCallback(
     (e: React.PointerEvent, clip: Clip) => {
       e.stopPropagation();
-      capture(e);
       setSelected(clip.id);
       setPlaying(false);
+      if (ctlOf(clip.track).lock) return; // locked: select only
+      capture(e);
       const lanes = lanesRef.current!;
       const x = e.clientX - lanes.getBoundingClientRect().left;
       const localPx = x - clip.start * pps;
@@ -571,7 +521,7 @@ export default function App() {
         });
       }
     },
-    [pps]
+    [pps, ctlOf]
   );
 
   const onClipPointerMove = useCallback(
@@ -581,34 +531,32 @@ export default function App() {
       const rect = lanes.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const t = x / pps;
-
       if (drag.kind === "move") {
         const y = e.clientY - rect.top;
         const lane = Math.min(tracks.length - 1, Math.max(0, Math.floor(y / TRACK_H)));
-        const start = Math.max(0, t - drag.grabOffsetS);
+        const clip = project.clips.find((c) => c.id === drag.clipId);
+        let start = Math.max(0, t - drag.grabOffsetS);
+        start = Math.max(0, snapStart(start, clip?.len ?? 0, drag.clipId));
         setDrag({ ...drag, track: tracks[lane], start });
         setPlayhead(start);
         return;
       }
-
       const { orig } = drag;
       const clip = project.clips.find((c) => c.id === drag.clipId);
       const srcLen = clip ? media[clip.media]?.duration_s ?? Infinity : Infinity;
       if (drag.kind === "trim-l") {
-        // dragging the in-point: start/src_in shift together, len absorbs
         const d = Math.max(-orig.srcIn, Math.min(t - orig.start, orig.len - MIN_LEN_S));
         const start = orig.start + d;
         setDrag({ ...drag, start, len: orig.len - d, srcIn: orig.srcIn + d });
         setPlayhead(start);
       } else {
-        // dragging the out-point: only len changes, capped by source media
         const len = Math.max(MIN_LEN_S, Math.min(t - orig.start, srcLen - orig.srcIn));
         setDrag({ ...drag, len });
         setPlayhead(orig.start + len);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [drag, project, media, pps, mode]
+    [drag, project, media, pps, mode, snapStart]
   );
 
   const onClipPointerUp = useCallback(async () => {
@@ -617,107 +565,138 @@ export default function App() {
     const r2 = (v: number) => Math.round(v * 100) / 100;
     try {
       if (drag.kind === "move") {
-        setProject(await moveClip(drag.clipId, drag.track, r2(drag.start)));
+        applyEdit(await moveClip(drag.clipId, drag.track, r2(drag.start)));
       } else {
-        setProject(await trimClip(drag.clipId, r2(drag.start), r2(drag.len), r2(drag.srcIn)));
+        applyEdit(await trimClip(drag.clipId, r2(drag.start), r2(drag.len), r2(drag.srcIn)));
       }
     } catch (e) {
       setError(String(e));
     }
-  }, [drag]);
+  }, [drag, applyEdit]);
 
-  // ── render ──────────────────────────────────────────────────────────
-  const mediaList = Object.values(media);
-  const ticks = useMemo(
-    () => Array.from({ length: Math.ceil(timelineEndS) + 1 }, (_, i) => i),
-    [timelineEndS]
+  // ── transcript editing ──────────────────────────────────────────────
+  const srcToTimeline = useCallback(
+    (mediaId: string, srcT: number): number | null => {
+      for (const c of project.clips) {
+        if (c.media !== mediaId || c.track !== "V1") continue;
+        if (srcT >= c.src_in - 1e-9 && srcT < c.src_in + c.len) {
+          return c.start + (srcT - c.src_in);
+        }
+      }
+      return null;
+    },
+    [project]
   );
+
+  const transcriptMedia = useMemo(() => {
+    const selClip = selected ? project.clips.find((c) => c.id === selected) : null;
+    if (selClip && transcripts[selClip.media]) return selClip.media;
+    if (underPlayhead && transcripts[underPlayhead.media.id]) return underPlayhead.media.id;
+    return Object.keys(transcripts)[0] ?? null;
+  }, [selected, project, transcripts, underPlayhead]);
+  const words = transcriptMedia ? transcripts[transcriptMedia] ?? null : null;
+
+  const onWordClick = useCallback(
+    (idx: number, shift: boolean) => {
+      if (!transcriptMedia || !words) return;
+      setWordSel((sel) =>
+        shift && sel && sel.media === transcriptMedia
+          ? { ...sel, b: idx }
+          : { media: transcriptMedia, a: idx, b: idx }
+      );
+      const t = srcToTimeline(transcriptMedia, (words[idx].start + words[idx].end) / 2);
+      if (t != null) setPlayhead(t);
+    },
+    [transcriptMedia, words, srcToTimeline]
+  );
+
+  const cutWords = useCallback(async () => {
+    if (!wordSel || !words || wordSel.media !== transcriptMedia) return;
+    const [i0, i1] = [Math.min(wordSel.a, wordSel.b), Math.max(wordSel.a, wordSel.b)];
+    const from = words[i0].start;
+    const to = words[i1].end;
+    const mid = (from + to) / 2;
+    const clip = project.clips.find(
+      (c) => c.media === wordSel.media && c.track === "V1" && mid >= c.src_in && mid < c.src_in + c.len
+    );
+    if (!clip) {
+      setError("No clip on V1 covers those words");
+      return;
+    }
+    try {
+      applyEdit(await razorOut(clip.id, from, to));
+      setWordSel(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [wordSel, words, transcriptMedia, project, applyEdit]);
+
+  const smartCuts = useMemo(() => {
+    if (!transcriptMedia || !words || words.length === 0) return null;
+    const alive = (r: [number, number]) => srcToTimeline(transcriptMedia, (r[0] + r[1]) / 2) !== null;
+    const fillers = words
+      .filter((w) => FILLERS.has(cleanWord(w.text)))
+      .map((w) => [w.start, w.end] as [number, number])
+      .filter(alive);
+    const silences: [number, number][] = [];
+    for (let i = 1; i < words.length; i++) {
+      const gap = words[i].start - words[i - 1].end;
+      if (gap >= SILENCE_GAP_S) {
+        const r: [number, number] = [words[i - 1].end + 0.12, words[i].start - 0.12];
+        if (alive(r)) silences.push(r);
+      }
+    }
+    return { fillers, silences };
+  }, [transcriptMedia, words, srcToTimeline]);
+
+  const doCutRanges = useCallback(
+    async (ranges: [number, number][]) => {
+      if (!transcriptMedia || ranges.length === 0) return;
+      try {
+        applyEdit(await cutRanges(transcriptMedia, ranges));
+        setWordSel(null);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [transcriptMedia, applyEdit]
+  );
+
+  const caption = useMemo(() => {
+    if (!underPlayhead) return null;
+    const w = transcripts[underPlayhead.media.id];
+    if (!w) return null;
+    const srcT = underPlayhead.srcT;
+    return w.find((x) => srcT >= x.start && srcT < x.end)?.text ?? null;
+  }, [underPlayhead, transcripts]);
+
+  // ── layout ──────────────────────────────────────────────────────────
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
   return (
     <div className="app">
-      <header className="topbar">
-        <span className="logo">⚔️ Cutlass</span>
-        <span className="project-name">{project.name}</span>
-        <div className="mode-toggle">
-          {(["create", "studio"] as Mode[]).map((m) => (
-            <button
-              key={m}
-              className={mode === m ? "on" : ""}
-              onClick={() => switchMode(m)}
-            >
-              {m === "create" ? "Create" : "Studio"}
-            </button>
-          ))}
-        </div>
-        {mode === "studio" && (
-          <>
-            <button
-              className="ghost-btn"
-              title="Ctrl+Z"
-              onClick={() => undoEdit().then(setProject).catch((e) => setError(String(e)))}
-            >
-              ↩
-            </button>
-            <button
-              className="ghost-btn slim"
-              title="Ctrl+Y"
-              onClick={() => redoEdit().then(setProject).catch((e) => setError(String(e)))}
-            >
-              ↪
-            </button>
-            {room ? (
-              <span className="badge live">🔗 {room}</span>
-            ) : (
-              <button className="ghost-btn slim" onClick={doCollab} disabled={!inTauri}>
-                Collab
-              </button>
-            )}
-          </>
-        )}
-        <button className="ghost-btn" onClick={doOpen} title="Ctrl+O">
-          Open
-        </button>
-        <button className="ghost-btn" onClick={doSave} title="Ctrl+S">
-          Save
-        </button>
-        <button
-          className="ghost-btn"
-          onClick={doExport}
-          disabled={!inTauri || exporting !== null || clips.length === 0}
-        >
-          {exporting !== null ? `Exporting ${Math.round(exporting * 100)}%` : "Export"}
-        </button>
-        <button
-          className="play-btn"
-          onClick={() => setPlaying((p) => !p)}
-          disabled={clips.length === 0}
-          title="Space"
-        >
-          {playing ? "❚❚" : "▶"}
-        </button>
-        {mode === "studio" && (
-          <>
-            <button
-              className="ghost-btn slim"
-              title="Zoom out (Ctrl+wheel)"
-              onClick={() => setPps((z) => Math.max(PPS_MIN, z * 0.8))}
-            >
-              −
-            </button>
-            <button
-              className="ghost-btn slim"
-              title="Zoom in (Ctrl+wheel)"
-              onClick={() => setPps((z) => Math.min(PPS_MAX, z * 1.25))}
-            >
-              +
-            </button>
-          </>
-        )}
-        <button className="import-btn" onClick={doImport} disabled={busy !== null}>
-          {busy ? "Importing…" : "Import media"}
-        </button>
-        {!inTauri && <span className="badge">browser mock</span>}
-      </header>
+      <TopBar
+        projectName={project.name}
+        dirty={dirty}
+        mode={mode}
+        room={room}
+        exporting={exporting}
+        canEdit={clips.length > 0}
+        inTauri={inTauri}
+        onMode={switchMode}
+        onImport={doImport}
+        onOpen={doOpen}
+        onSave={doSave}
+        onExport={doExport}
+        onUndo={doUndo}
+        onRedo={doRedo}
+        onDeleteSel={doDeleteSel}
+        onCollab={doCollab}
+        onZoom={(dir) =>
+          setPps((z) => clamp(z * (dir > 0 ? 1.25 : 0.8), PPS_MIN, PPS_MAX))
+        }
+        hasSelection={selected !== null}
+      />
 
       {busy && <div className="notice">{busy}</div>}
       {transcribing && mode === "create" && (
@@ -725,250 +704,97 @@ export default function App() {
       )}
       {error && (
         <div className="notice error" onClick={() => setError(null)}>
-          {error} (click to dismiss)
+          {error} <span className="dismiss">dismiss</span>
         </div>
       )}
 
       <main className="workspace">
         {mode === "studio" && (
-        <aside className="bin">
-          <h2>Media</h2>
-          {mediaList.length === 0 && (
-            <p className="hint">
-              Import a video to begin.
-              <br />
-              Scrub proxies are generated on import; scrubbing never touches the source file.
-            </p>
-          )}
-          {mediaList.map((m) => (
-            <div className="bin-item" key={m.id}>
-              <img src={m.thumbs[0]} alt="" />
-              <div>
-                <div className="bin-name">{m.name}</div>
-                <div className="bin-meta">
-                  {m.duration_s.toFixed(1)}s · {m.thumbs.length} proxy frames
-                </div>
-                {transcripts[m.id] ? (
-                  <div className="bin-meta">📝 {transcripts[m.id].length} words</div>
-                ) : (
-                  <button
-                    className="mini-btn"
-                    disabled={transcribing !== null}
-                    onClick={() => doTranscribe(m.id)}
-                  >
-                    {transcribing === m.id ? "Transcribing…" : "Transcribe"}
-                  </button>
-                )}
-              </div>
+          <>
+            <div style={{ width: leftW, display: "flex", minWidth: 0 }}>
+              <MediaPanel
+                media={Object.values(media)}
+                transcripts={transcripts}
+                transcribing={transcribing}
+                onImport={doImport}
+                onTranscribe={doTranscribe}
+                busy={busy !== null}
+              />
             </div>
-          ))}
-        </aside>
+            <Resizer direction="h" onDelta={(d) => setLeftW((w) => clamp(w + d, 200, 440))} />
+          </>
         )}
 
-        <section className="preview">
-          {previewSrc ? (
-            <img src={previewSrc} alt="preview" />
-          ) : (
-            <div className="preview-empty">no clip under playhead</div>
-          )}
-          {caption && <div className="caption">{caption}</div>}
-          <div className="tc">{formatTC(playhead)}</div>
-        </section>
+        <Monitor
+          src={previewSrc}
+          caption={caption}
+          playhead={playhead}
+          playing={playing}
+          canPlay={clips.length > 0}
+          resolution={resolution}
+          onResolution={setResolution}
+          onTogglePlay={() => setPlaying((p) => !p)}
+          onSeek={setPlayhead}
+          contentEnd={contentEndS}
+        />
 
-        {transcriptMedia && transcripts[transcriptMedia] && (
-          <aside className="transcript">
-            <h2>Transcript</h2>
-            <p className="hint">
-              Click a word to seek · Shift-click to select a range · Cut removes it from the
-              video
-            </p>
-            <div className="words">
-              {transcripts[transcriptMedia].map((w, i) => {
-                const sel =
-                  wordSel &&
-                  wordSel.media === transcriptMedia &&
-                  i >= Math.min(wordSel.a, wordSel.b) &&
-                  i <= Math.max(wordSel.a, wordSel.b);
-                const cut = srcToTimeline(transcriptMedia, (w.start + w.end) / 2) === null;
-                const filler = FILLERS.has(cleanWord(w.text));
-                return (
-                  <span
-                    key={i}
-                    className={`word${sel ? " sel" : ""}${cut ? " cut" : ""}${filler ? " filler" : ""}`}
-                    onClick={(e) =>
-                      onWordClick(transcriptMedia, i, transcripts[transcriptMedia], e.shiftKey)
-                    }
-                  >
-                    {w.text}
-                  </span>
-                );
-              })}
-            </div>
-            {wordSel && wordSel.media === transcriptMedia && (
-              <button className="cut-btn" onClick={cutWords}>
-                ✂ Cut {Math.abs(wordSel.b - wordSel.a) + 1} word
-                {wordSel.a === wordSel.b ? "" : "s"} from video
-              </button>
-            )}
-            {smartCuts && (smartCuts.fillers.length > 0 || smartCuts.silences.length > 0) && (
-              <div className="smart-cuts">
-                {smartCuts.fillers.length > 0 && (
-                  <button className="smart-btn" onClick={() => doCutRanges(smartCuts.fillers)}>
-                    ✂ {smartCuts.fillers.length} filler word
-                    {smartCuts.fillers.length === 1 ? "" : "s"}
-                  </button>
-                )}
-                {smartCuts.silences.length > 0 && (
-                  <button className="smart-btn" onClick={() => doCutRanges(smartCuts.silences)}>
-                    ✂ {smartCuts.silences.length} silence
-                    {smartCuts.silences.length === 1 ? "" : "s"} (≥{SILENCE_GAP_S}s)
-                  </button>
-                )}
-              </div>
-            )}
-          </aside>
-        )}
+        <Resizer direction="h" onDelta={(d) => setRightW((w) => clamp(w - d, 240, 480))} />
+        <div style={{ width: rightW, display: "flex", minWidth: 0 }}>
+          <Inspector
+            mode={mode}
+            clip={selectedClip}
+            media={media}
+            onMove={(id, track, start) =>
+              moveClip(id, track, Math.max(0, start)).then(applyEdit).catch((e) => setError(String(e)))
+            }
+            onTrim={(id, start, len, srcIn) =>
+              trimClip(id, start, len, srcIn).then(applyEdit).catch((e) => setError(String(e)))
+            }
+            words={words}
+            transcriptMediaName={transcriptMedia ? media[transcriptMedia]?.name ?? null : null}
+            wordSel={wordSel && wordSel.media === transcriptMedia ? wordSel : null}
+            isWordCut={(w) =>
+              transcriptMedia ? srcToTimeline(transcriptMedia, (w.start + w.end) / 2) === null : false
+            }
+            isFiller={(w) => FILLERS.has(cleanWord(w.text))}
+            onWordClick={onWordClick}
+            onCutSelection={cutWords}
+            smartCuts={smartCuts}
+            onCutRanges={doCutRanges}
+            silenceGapS={SILENCE_GAP_S}
+          />
+        </div>
       </main>
 
-      <section className="timeline">
-        <div className="timeline-scroll" ref={scrollRef}>
-          <div className="timeline-inner" style={{ width: timelineEndS * pps }}>
-            <div
-              className="ruler"
-              onPointerDown={onRulerPointerDown}
-              onPointerMove={onRulerPointerMove}
-            >
-              {ticks.map((s) => (
-                <div className="tick" key={s} style={{ left: s * pps }}>
-                  {s % 5 === 0 && <span>{formatTC(s)}</span>}
-                </div>
-              ))}
-            </div>
-
-            <div
-              className="lanes"
-              ref={lanesRef}
-              onPointerDown={() => setSelected(null)}
-            >
-              {tracks.map((track) => (
-                <div className="lane" key={track} style={{ height: TRACK_H }}>
-                  <span className="lane-label">{track}</span>
-                  {clips
-                    .filter((c) => c.track === track)
-                    .map((clip) => (
-                      <ClipView
-                        key={clip.id}
-                        clip={clip}
-                        media={media[clip.media]}
-                        pps={pps}
-                        dragging={drag?.clipId === clip.id}
-                        selected={selected === clip.id}
-                        onPointerDown={onClipPointerDown}
-                        onPointerMove={onClipPointerMove}
-                        onPointerUp={onClipPointerUp}
-                      />
-                    ))}
-                </div>
-              ))}
-              {Object.values(peers).map((p) => (
-                <div
-                  className="peer-playhead"
-                  key={p.id}
-                  style={{ left: p.playhead * pps, background: p.color }}
-                >
-                  <span style={{ background: p.color }}>{p.name}</span>
-                </div>
-              ))}
-              <div className="playhead" style={{ left: playhead * pps }} />
-            </div>
-          </div>
-        </div>
-      </section>
+      <Resizer direction="v" onDelta={(d) => setTlH((h) => clamp(h - d, 180, 520))} />
+      <Timeline
+        tracks={tracks}
+        clips={clips}
+        media={media}
+        pps={pps}
+        onPps={setPps}
+        playhead={playhead}
+        peers={Object.values(peers)}
+        selected={selected}
+        dragClipId={drag?.clipId ?? null}
+        timelineEndS={timelineEndS}
+        snap={snap}
+        onSnap={setSnap}
+        markers={markers}
+        trackCtl={trackCtl}
+        onTrackCtl={setTrack}
+        height={tlH}
+        lanesRef={lanesRef}
+        scrollRef={scrollRef}
+        onRulerPointerDown={onRulerPointerDown}
+        onRulerPointerMove={onRulerPointerMove}
+        onLanesPointerDown={() => setSelected(null)}
+        onClipPointerDown={onClipPointerDown}
+        onClipPointerMove={onClipPointerMove}
+        onClipPointerUp={onClipPointerUp}
+        onSeek={setPlayhead}
+        showTrackHeads={mode === "studio"}
+      />
     </div>
   );
-}
-
-function ClipView({
-  clip,
-  media,
-  pps,
-  dragging,
-  selected,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-}: {
-  clip: Clip;
-  media?: MediaItem;
-  pps: number;
-  dragging: boolean;
-  selected: boolean;
-  onPointerDown: (e: React.PointerEvent, clip: Clip) => void;
-  onPointerMove: (e: React.PointerEvent) => void;
-  onPointerUp: () => void;
-}) {
-  const w = clip.len * pps;
-  const filmstrip = useMemo(() => {
-    if (!media) return [];
-    const cellW = 56;
-    const n = Math.max(1, Math.floor(w / cellW));
-    return Array.from({ length: n }, (_, i) => {
-      const srcT = clip.src_in + (i / n) * clip.len;
-      const idx = Math.min(media.thumbs.length - 1, Math.floor(srcT * media.scrub_fps));
-      return media.thumbs[idx];
-    });
-  }, [media, w, clip.src_in, clip.len]);
-
-  // audio peaks for this clip's source slice, as one filled SVG path
-  const wave = useMemo(() => {
-    const wf = media?.waveform;
-    if (!media || !wf || wf.length < 2) return null;
-    const dur = media.duration_s || 1;
-    const i0 = Math.max(0, Math.floor((clip.src_in / dur) * wf.length));
-    const i1 = Math.min(wf.length, Math.ceil(((clip.src_in + clip.len) / dur) * wf.length));
-    const slice = wf.slice(i0, i1);
-    const n = Math.min(220, slice.length);
-    if (n < 2) return null;
-    const pts: string[] = [];
-    for (let i = 0; i < n; i++) {
-      const v = slice[Math.floor((i / n) * slice.length)] ?? 0;
-      pts.push(`${i},${30 - v * 28}`);
-    }
-    return { d: `M0,30 L${pts.join(" L")} L${n - 1},30 Z`, n };
-  }, [media, clip.src_in, clip.len]);
-
-  return (
-    <div
-      className={`clip${dragging ? " dragging" : ""}${selected ? " selected" : ""}`}
-      style={{ left: clip.start * pps, width: w }}
-      onPointerDown={(e) => onPointerDown(e, clip)}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-    >
-      <div className="clip-strip">
-        {filmstrip.map((src, i) => (
-          <img key={i} src={src} alt="" draggable={false} />
-        ))}
-      </div>
-      {wave && (
-        <svg
-          className="clip-wave"
-          viewBox={`0 0 ${wave.n - 1} 30`}
-          preserveAspectRatio="none"
-        >
-          <path d={wave.d} />
-        </svg>
-      )}
-      <span className="clip-name">{clip.name}</span>
-      <div className="trim-handle trim-l" />
-      <div className="trim-handle trim-r" />
-    </div>
-  );
-}
-
-function formatTC(t: number): string {
-  const m = Math.floor(t / 60);
-  const s = Math.floor(t % 60);
-  const f = Math.floor((t % 1) * 30);
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(f).padStart(2, "0")}`;
 }

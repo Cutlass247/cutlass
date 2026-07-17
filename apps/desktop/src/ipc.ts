@@ -141,7 +141,10 @@ export async function onPresence(cb: (p: Presence) => void): Promise<() => void>
 
 /// Render the V1 track to an MP4. Resolves to the encoder used, or null
 /// if the user cancelled the file picker.
-export async function exportProject(): Promise<string | null> {
+export async function exportProject(
+  width = 1920,
+  height = 1080
+): Promise<string | null> {
   if (!inTauri) throw new Error("export requires the desktop app");
   const { save } = await import("@tauri-apps/plugin-dialog");
   const path = await save({
@@ -149,7 +152,7 @@ export async function exportProject(): Promise<string | null> {
     defaultPath: "export.mp4",
   });
   if (!path) return null;
-  return invoke<string>("export_project", { path });
+  return invoke<string>("export_project", { path, width, height });
 }
 
 export async function onExportProgress(

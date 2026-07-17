@@ -1,0 +1,123 @@
+import { Kbd, MenuBarMenu, Segmented } from "./ui";
+
+export type Mode = "create" | "studio";
+
+export function TopBar(p: {
+  projectName: string;
+  dirty: boolean;
+  mode: Mode;
+  room: string | null;
+  exporting: number | null;
+  canEdit: boolean;
+  inTauri: boolean;
+  onMode: (m: Mode) => void;
+  onImport: () => void;
+  onOpen: () => void;
+  onSave: () => void;
+  onExport: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onDeleteSel: (ripple: boolean) => void;
+  onCollab: () => void;
+  onZoom: (dir: 1 | -1) => void;
+  hasSelection: boolean;
+}) {
+  return (
+    <header className="topbar">
+      <span className="logo" title="Cutlass">
+        ⚔️
+      </span>
+      <nav className="menubar">
+        <MenuBarMenu
+          title="File"
+          items={[
+            { label: "Import media…", onSelect: p.onImport },
+            { separator: true, label: "" },
+            { label: "Open project…", hint: "Ctrl+O", onSelect: p.onOpen },
+            { label: "Save project", hint: "Ctrl+S", onSelect: p.onSave },
+            { separator: true, label: "" },
+            { label: "Export MP4…", onSelect: p.onExport, disabled: !p.inTauri },
+          ]}
+        />
+        <MenuBarMenu
+          title="Edit"
+          items={[
+            { label: "Undo", hint: "Ctrl+Z", onSelect: p.onUndo },
+            { label: "Redo", hint: "Ctrl+Y", onSelect: p.onRedo },
+            { separator: true, label: "" },
+            {
+              label: "Delete clip (lift)",
+              hint: "Del",
+              disabled: !p.hasSelection,
+              onSelect: () => p.onDeleteSel(false),
+            },
+            {
+              label: "Ripple delete clip",
+              hint: "Shift+Del",
+              disabled: !p.hasSelection,
+              onSelect: () => p.onDeleteSel(true),
+            },
+          ]}
+        />
+        <MenuBarMenu
+          title="View"
+          items={[
+            { label: "Zoom in", hint: "Ctrl+Wheel", onSelect: () => p.onZoom(1) },
+            { label: "Zoom out", onSelect: () => p.onZoom(-1) },
+            { separator: true, label: "" },
+            {
+              label: p.mode === "create" ? "Switch to Studio" : "Switch to Create",
+              onSelect: () => p.onMode(p.mode === "create" ? "studio" : "create"),
+            },
+          ]}
+        />
+      </nav>
+
+      <div className="title-block">
+        <span className="project-name">{p.projectName}</span>
+        <span className={`save-dot${p.dirty ? " dirty" : ""}`}>
+          {p.dirty ? "● Unsaved" : "Saved"}
+        </span>
+        {p.room && <span className="badge live">🔗 {p.room}</span>}
+      </div>
+
+      <Segmented
+        options={[
+          { value: "create", label: "Create" },
+          { value: "studio", label: "Studio" },
+        ]}
+        value={p.mode}
+        onChange={p.onMode}
+      />
+      {p.mode === "create" && (
+        <button className="tool-btn wide" onClick={p.onImport}>
+          + Import
+        </button>
+      )}
+      {p.mode === "studio" && (
+        <div className="topbar-actions">
+          <button className="tool-btn" title="Undo (Ctrl+Z)" onClick={p.onUndo}>
+            ↩
+          </button>
+          <button className="tool-btn" title="Redo (Ctrl+Y)" onClick={p.onRedo}>
+            ↪
+          </button>
+          {!p.room && (
+            <button className="tool-btn wide" onClick={p.onCollab} disabled={!p.inTauri}>
+              Collab
+            </button>
+          )}
+        </div>
+      )}
+      <button
+        className="export-btn"
+        onClick={p.onExport}
+        disabled={!p.inTauri || p.exporting !== null || !p.canEdit}
+        title="Render the timeline to MP4"
+      >
+        {p.exporting !== null ? `Exporting ${Math.round(p.exporting * 100)}%` : "Export"}
+        {p.exporting === null && <Kbd>MP4</Kbd>}
+      </button>
+    </header>
+  );
+}
