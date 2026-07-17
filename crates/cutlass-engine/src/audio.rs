@@ -15,12 +15,22 @@ pub struct AudioDecoder {
     resampler: resampling::Context,
     stream_index: usize,
     time_base: f64,
+    out_channels: usize,
     eof: bool,
 }
 
 impl AudioDecoder {
     /// Errors if the file has no audio stream — callers treat that as silence.
     pub fn open(path: &str, target_rate: u32) -> anyhow::Result<Self> {
+        Self::open_with(path, target_rate, 2)
+    }
+
+    /// Mono variant (e.g. 16 kHz for whisper).
+    pub fn open_mono(path: &str, target_rate: u32) -> anyhow::Result<Self> {
+        Self::open_with(path, target_rate, 1)
+    }
+
+    fn open_with(path: &str, target_rate: u32, out_channels: usize) -> anyhow::Result<Self> {
         ffmpeg::init().context("ffmpeg init")?;
         let ictx = ffmpeg::format::input(&path).with_context(|| format!("open {path}"))?;
         let stream = ictx
@@ -37,7 +47,11 @@ impl AudioDecoder {
             decoder.ch_layout().clone(),
             decoder.rate(),
             Sample::F32(SampleType::Packed),
-            ChannelLayout::STEREO,
+            if out_channels == 1 {
+                ChannelLayout::MONO
+            } else {
+                ChannelLayout::STEREO
+            },
             target_rate,
         )?;
         Ok(Self {
@@ -46,6 +60,7 @@ impl AudioDecoder {
             resampler,
             stream_index,
             time_base,
+            out_channels,
             eof: false,
         })
     }
@@ -114,7 +129,7 @@ impl AudioDecoder {
         if out.samples() == 0 {
             return Ok(Some(Vec::new()));
         }
-        let n = out.samples() * 2; // stereo interleaved
+        let n = out.samples() * self.out_channels; // interleaved
         let bytes = &out.data(0)[..n * 4];
         let samples = bytes
             .chunks_exact(4)

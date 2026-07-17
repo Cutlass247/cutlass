@@ -114,6 +114,70 @@ impl Project {
         Ok(())
     }
 
+    /// Razor out a source range [src_from, src_to) from a clip — the
+    /// transcript edit primitive ("delete these words"). The clip splits
+    /// into up to two, and later clips on the track ripple left by the
+    /// removed duration. `new_id` names the right-hand part if one exists.
+    pub fn razor_out(
+        &mut self,
+        id: &str,
+        src_from: f64,
+        src_to: f64,
+        new_id: &str,
+    ) -> anyhow::Result<()> {
+        let snap = self.snapshot();
+        let clip = snap["clips"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["id"] == id))
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?
+            .clone();
+        let (start, len, src_in) = (
+            clip["start"].as_f64().unwrap_or(0.0),
+            clip["len"].as_f64().unwrap_or(0.0),
+            clip["src_in"].as_f64().unwrap_or(0.0),
+        );
+        let src_end = src_in + len;
+        let from = src_from.clamp(src_in, src_end);
+        let to = src_to.clamp(src_in, src_end);
+        let removed = to - from;
+        if removed <= 1e-9 {
+            return Ok(());
+        }
+        let left_len = from - src_in;
+        let right_len = src_end - to;
+
+        if right_len > 1e-9 {
+            self.add_clip(&Clip {
+                id: new_id.to_string(),
+                name: clip["name"].as_str().unwrap_or("").to_string(),
+                media: clip["media"].as_str().unwrap_or("").to_string(),
+                track: clip["track"].as_str().unwrap_or("V1").to_string(),
+                start: start + left_len,
+                len: right_len,
+                src_in: to,
+            })?;
+        }
+        if left_len > 1e-9 {
+            self.trim_clip(id, start, left_len, src_in)?;
+        } else {
+            self.remove_clip(id)?;
+        }
+        // ripple everything after the original clip left by the cut length
+        let clips_obj = self.clips_obj();
+        if let Some(cs) = snap["clips"].as_array() {
+            for c in cs {
+                let cid = c["id"].as_str().unwrap_or("");
+                let cstart = c["start"].as_f64().unwrap_or(0.0);
+                if cid != id && c["track"] == clip["track"] && cstart > start + len - 1e-9 {
+                    if let Some((_, obj)) = self.doc.get(&clips_obj, cid)? {
+                        self.doc.put(&obj, "start", (cstart - removed).max(0.0))?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Ripple delete: remove the clip and close the gap — every later clip
     /// on the same track shifts left by the removed length.
     pub fn remove_clip_ripple(&mut self, id: &str) -> anyhow::Result<()> {
@@ -254,6 +318,48 @@ mod tests {
         assert_eq!(snap["clips"][0]["start"], 3.0);
         assert_eq!(snap["clips"][0]["len"], 3.0);
         assert_eq!(snap["clips"][0]["src_in"], 1.0);
+    }
+
+    #[test]
+    fn razor_out_splits_and_ripples() {
+        let mut p = Project::new("T");
+        let mut a = demo_clip("a", "V1", 0.0);
+        a.len = 10.0;
+        p.add_clip(&a).unwrap();
+        p.add_clip(&demo_clip("b", "V1", 10.0)).unwrap();
+        // cut source 3..5 out of clip a (src_in 0)
+        p.razor_out("a", 3.0, 5.0, "a-r").unwrap();
+        let snap = p.snapshot();
+        let get = |id: &str| {
+            snap["clips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == id)
+                .cloned()
+                .unwrap()
+        };
+        let left = get("a");
+        assert_eq!((left["start"].as_f64(), left["len"].as_f64(), left["src_in"].as_f64()),
+                   (Some(0.0), Some(3.0), Some(0.0)));
+        let right = get("a-r");
+        assert_eq!((right["start"].as_f64(), right["len"].as_f64(), right["src_in"].as_f64()),
+                   (Some(3.0), Some(5.0), Some(5.0)));
+        assert_eq!(get("b")["start"], 8.0); // rippled left by 2
+    }
+
+    #[test]
+    fn razor_out_at_clip_head_drops_left_part() {
+        let mut p = Project::new("T");
+        p.add_clip(&demo_clip("a", "V1", 2.0)).unwrap(); // len 4, src_in 0
+        p.razor_out("a", 0.0, 1.5, "a-r").unwrap();
+        let snap = p.snapshot();
+        let clips = snap["clips"].as_array().unwrap();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0]["id"], "a-r");
+        assert_eq!(clips[0]["start"], 2.0);
+        assert_eq!(clips[0]["len"], 2.5);
+        assert_eq!(clips[0]["src_in"], 1.5);
     }
 
     #[test]

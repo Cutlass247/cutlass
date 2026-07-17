@@ -11,6 +11,7 @@
 
 pub mod audio;
 pub mod player;
+pub mod transcribe;
 
 use anyhow::{anyhow, Context as _};
 use ffmpeg_the_third as ffmpeg;

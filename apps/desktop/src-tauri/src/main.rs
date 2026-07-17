@@ -119,6 +119,58 @@ fn remove_clip(
     Ok(project.snapshot())
 }
 
+/// Find the whisper model: CUTLASS_WHISPER_MODEL env var, or walk up
+/// from the current dir looking for vendor/whisper/ggml-base.en.bin.
+fn whisper_model_path() -> Result<std::path::PathBuf, String> {
+    if let Ok(p) = std::env::var("CUTLASS_WHISPER_MODEL") {
+        return Ok(p.into());
+    }
+    let mut dir = std::env::current_dir().map_err(err_str)?;
+    loop {
+        let candidate = dir.join("vendor").join("whisper").join("ggml-base.en.bin");
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        if !dir.pop() {
+            return Err("whisper model not found (vendor/whisper/ggml-base.en.bin)".into());
+        }
+    }
+}
+
+/// On-device transcription with word timestamps. Slow-ish (≈ 1/5 of the
+/// clip duration on CPU); runs on a worker thread.
+#[tauri::command]
+fn transcribe_media(
+    media_id: String,
+    state: State<AppState>,
+) -> Result<Vec<cutlass_engine::transcribe::Word>, String> {
+    let path = state
+        .media
+        .lock()
+        .unwrap()
+        .get(&media_id)
+        .map(|m| m.path.clone())
+        .ok_or_else(|| format!("unknown media {media_id}"))?;
+    let model = whisper_model_path()?;
+    cutlass_engine::transcribe::transcribe(&path, &model.to_string_lossy()).map_err(err_str)
+}
+
+/// Delete a source range from a clip (the "delete these words" edit).
+#[tauri::command]
+fn razor_out(
+    id: String,
+    src_from: f64,
+    src_to: f64,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    let mut project = state.project.lock().unwrap();
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    project
+        .razor_out(&id, src_from, src_to, &format!("c{nanos:x}"))
+        .map_err(err_str)?;
+    Ok(project.snapshot())
+}
+
 /// Start audio for the V1 track from `from_t`. Returns false (not an
 /// error) when audio can't start — the UI then runs its silent local
 /// clock, so playback still works on machines with no output device.
@@ -221,7 +273,9 @@ fn main() {
             exact_frame,
             play,
             pause,
-            playback_clock
+            playback_clock,
+            transcribe_media,
+            razor_out
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");
