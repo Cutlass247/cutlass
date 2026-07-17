@@ -40,19 +40,25 @@ The two bets the company rests on, proven before anything else is built:
 | [`spikes/crdt-timeline`](spikes/crdt-timeline) | Can a video timeline be a CRDT? What are sane merge semantics for concurrent edits? | ✅ GO — 7/7 scenarios converge |
 | [`spikes/media-engine`](spikes/media-engine) | Can we decode + scrub 4K H.264 at 60fps in Rust/wgpu on a mid-range machine? | ✅ GO — 236 fps sw / 141 fps hw decode; in-process libav required |
 
-## Current state
+## Current state — alpha feature-complete
 
-- `crates/cutlass-core` — CRDT project model (Automerge) + scrub-proxy import
-- `crates/cutlass-engine` — in-process libav decode: 261 fps 4K decode,
-  6.2 ms frame-accurate proxy seeks; audio playback (cpal, audio clock owns
-  transport); on-device whisper transcription
+- `crates/cutlass-core` — CRDT project model (Automerge, deterministic
+  bootstrap so any two projects can merge), trim/ripple/razor ops,
+  export pipeline (QSV hw encode + x264 fallback, V2 compositing + amix)
+- `crates/cutlass-engine` — in-process libav: 261 fps 4K decode, 6.2 ms
+  proxy seeks, one-pass proxy sampling, audio decode/mixing (per-track
+  readers, audio clock owns transport), on-device whisper transcription
   ([FINDINGS](crates/cutlass-engine/FINDINGS.md))
-- `crates/cutlass-sync-server` — collab relay: rooms + Automerge sync
-  protocol over websockets (`cargo run -p cutlass-sync-server`)
-- `apps/desktop` — Tauri 2 editor: import, timeline (move/trim/ripple),
-  proxy scrubbing + engine-quality paused frames, audio playback,
-  transcript editing (delete words → cut video) with live captions,
-  .cutlass save/open, live collab (Collab button or CUTLASS_ROOM env)
+- `crates/cutlass-sync-server` — collab relay: rooms, Automerge sync,
+  presence side-channel (`cargo run -p cutlass-sync-server`)
+- `apps/desktop` — Tauri 2 pro NLE shell: menu bar, media browser,
+  program monitor (transport, safe margins, resolution → export),
+  inspector, multi-track timeline (lock/mute/hide, snapping, markers,
+  zoom, colored clips, waveforms, filmstrips), transcript editing with
+  one-click filler/silence cuts + live captions, collab-safe undo/redo,
+  Create/Studio modes, .cutlass save/open, live multiplayer + presence
+  cursors, NSIS installer (`npm run tauri build`)
+- `site/` + `marketing/` — landing page and beta pitch drafts
 
 Dev setup (Windows): Rust MSVC + LLVM (`LIBCLANG_PATH`) + BtbN FFmpeg
 lgpl-shared in `vendor/ffmpeg` (`FFMPEG_DIR`, `bin` on PATH). Run with
