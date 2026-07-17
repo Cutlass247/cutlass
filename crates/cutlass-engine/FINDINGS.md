@@ -41,7 +41,17 @@ ffmpeg -f lavfi -i testsrc2=size=3840x2160:rate=30 -t 20 -c:v libx264 -preset ve
 ffmpeg -i spikes/media-engine/test4k.mp4 -vf scale=960:540 -c:v libx264 -preset veryfast -g 1 -crf 20 spikes/media-engine/test4k_proxy.mp4
 # 720p A/V clip with 440 Hz sine (audio_check, player_check)
 ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 10 -c:v libx264 -preset veryfast -c:a aac -ac 2 -shortest spikes/media-engine/testav.mp4
+# speech clip for transcribe_check: generate WAV with Windows TTS first —
+#   PowerShell: Add-Type -AssemblyName System.Speech;
+#   (New-Object System.Speech.Synthesis.SpeechSynthesizer) …SetOutputToWaveFile + Speak
+# then mux:
+ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30 -i speech.wav -c:v libx264 -preset veryfast -c:a aac -ac 2 -shortest spikes/media-engine/testspeech.mp4
 ```
+
+Whisper model: `vendor/whisper/ggml-base.en.bin` (148 MB) from
+https://huggingface.co/ggerganov/whisper.cpp — gitignored with the rest
+of vendor/. Building whisper-rs needs cmake (VS Build Tools ships one at
+`…\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`).
 
 ## Build requirements (Windows)
 
