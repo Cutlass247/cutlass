@@ -42,6 +42,8 @@ const PPS_DEFAULT = 48;
 const PPS_MIN = 12;
 const PPS_MAX = 160;
 
+type Mode = "create" | "studio";
+
 // pointer capture keeps drags alive outside the element, but its failure
 // (synthetic events, released pointers) must never kill the interaction
 function capture(e: React.PointerEvent) {
@@ -78,6 +80,16 @@ export default function App() {
   const [project, setProject] = useState<ProjectSnapshot>({ name: "Untitled", clips: [] });
   const [media, setMedia] = useState<Record<string, MediaItem>>({});
   const [playhead, setPlayhead] = useState(0);
+  // progressive disclosure: Create = the magic loop only; Studio = all
+  const [mode, setMode] = useState<Mode>(
+    () => (localStorage.getItem("cutlass-mode") as Mode) || "create"
+  );
+  const switchMode = useCallback((m: Mode) => {
+    setMode(m);
+    localStorage.setItem("cutlass-mode", m);
+  }, []);
+  const tracks = mode === "create" ? ["V1"] : TRACKS;
+
   const [pps, setPps] = useState(PPS_DEFAULT);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -308,9 +320,9 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selected, doSave, doOpen]);
 
-  // preview: topmost clip (V2 over V1) under the playhead
+  // preview: topmost visible clip (V2 over V1) under the playhead
   const underPlayhead = useMemo(() => {
-    for (const track of TRACKS) {
+    for (const track of tracks) {
       const clip = clips.find(
         (c) => c.track === track && playhead >= c.start && playhead < c.start + c.len
       );
@@ -321,7 +333,8 @@ export default function App() {
       return { media: m, srcT };
     }
     return null;
-  }, [clips, media, playhead]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clips, media, playhead, mode]);
 
   const proxySrc = useMemo(() => {
     if (!underPlayhead) return null;
@@ -480,12 +493,17 @@ export default function App() {
       const res = await importMedia(path);
       setMedia((m) => ({ ...m, [res.media.id]: res.media }));
       setProject(res.project);
+      if (mode === "create") {
+        // Create mode: the transcript IS the interface — start it now
+        doTranscribe(res.media.id);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(null);
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
 
   // ── scrubbing (ruler + lanes background) ────────────────────────────
   const scrubTo = useCallback(
@@ -566,9 +584,9 @@ export default function App() {
 
       if (drag.kind === "move") {
         const y = e.clientY - rect.top;
-        const lane = Math.min(TRACKS.length - 1, Math.max(0, Math.floor(y / TRACK_H)));
+        const lane = Math.min(tracks.length - 1, Math.max(0, Math.floor(y / TRACK_H)));
         const start = Math.max(0, t - drag.grabOffsetS);
-        setDrag({ ...drag, track: TRACKS[lane], start });
+        setDrag({ ...drag, track: tracks[lane], start });
         setPlayhead(start);
         return;
       }
@@ -589,7 +607,8 @@ export default function App() {
         setPlayhead(orig.start + len);
       }
     },
-    [drag, project, media, pps]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [drag, project, media, pps, mode]
   );
 
   const onClipPointerUp = useCallback(async () => {
@@ -619,26 +638,41 @@ export default function App() {
       <header className="topbar">
         <span className="logo">⚔️ Cutlass</span>
         <span className="project-name">{project.name}</span>
-        <button
-          className="ghost-btn"
-          title="Ctrl+Z"
-          onClick={() => undoEdit().then(setProject).catch((e) => setError(String(e)))}
-        >
-          ↩
-        </button>
-        <button
-          className="ghost-btn slim"
-          title="Ctrl+Y"
-          onClick={() => redoEdit().then(setProject).catch((e) => setError(String(e)))}
-        >
-          ↪
-        </button>
-        {room ? (
-          <span className="badge live">🔗 {room}</span>
-        ) : (
-          <button className="ghost-btn slim" onClick={doCollab} disabled={!inTauri}>
-            Collab
-          </button>
+        <div className="mode-toggle">
+          {(["create", "studio"] as Mode[]).map((m) => (
+            <button
+              key={m}
+              className={mode === m ? "on" : ""}
+              onClick={() => switchMode(m)}
+            >
+              {m === "create" ? "Create" : "Studio"}
+            </button>
+          ))}
+        </div>
+        {mode === "studio" && (
+          <>
+            <button
+              className="ghost-btn"
+              title="Ctrl+Z"
+              onClick={() => undoEdit().then(setProject).catch((e) => setError(String(e)))}
+            >
+              ↩
+            </button>
+            <button
+              className="ghost-btn slim"
+              title="Ctrl+Y"
+              onClick={() => redoEdit().then(setProject).catch((e) => setError(String(e)))}
+            >
+              ↪
+            </button>
+            {room ? (
+              <span className="badge live">🔗 {room}</span>
+            ) : (
+              <button className="ghost-btn slim" onClick={doCollab} disabled={!inTauri}>
+                Collab
+              </button>
+            )}
+          </>
         )}
         <button className="ghost-btn" onClick={doOpen} title="Ctrl+O">
           Open
@@ -661,20 +695,24 @@ export default function App() {
         >
           {playing ? "❚❚" : "▶"}
         </button>
-        <button
-          className="ghost-btn slim"
-          title="Zoom out (Ctrl+wheel)"
-          onClick={() => setPps((z) => Math.max(PPS_MIN, z * 0.8))}
-        >
-          −
-        </button>
-        <button
-          className="ghost-btn slim"
-          title="Zoom in (Ctrl+wheel)"
-          onClick={() => setPps((z) => Math.min(PPS_MAX, z * 1.25))}
-        >
-          +
-        </button>
+        {mode === "studio" && (
+          <>
+            <button
+              className="ghost-btn slim"
+              title="Zoom out (Ctrl+wheel)"
+              onClick={() => setPps((z) => Math.max(PPS_MIN, z * 0.8))}
+            >
+              −
+            </button>
+            <button
+              className="ghost-btn slim"
+              title="Zoom in (Ctrl+wheel)"
+              onClick={() => setPps((z) => Math.min(PPS_MAX, z * 1.25))}
+            >
+              +
+            </button>
+          </>
+        )}
         <button className="import-btn" onClick={doImport} disabled={busy !== null}>
           {busy ? "Importing…" : "Import media"}
         </button>
@@ -682,6 +720,9 @@ export default function App() {
       </header>
 
       {busy && <div className="notice">{busy}</div>}
+      {transcribing && mode === "create" && (
+        <div className="notice">Transcribing on-device — words will appear shortly…</div>
+      )}
       {error && (
         <div className="notice error" onClick={() => setError(null)}>
           {error} (click to dismiss)
@@ -689,6 +730,7 @@ export default function App() {
       )}
 
       <main className="workspace">
+        {mode === "studio" && (
         <aside className="bin">
           <h2>Media</h2>
           {mediaList.length === 0 && (
@@ -721,6 +763,7 @@ export default function App() {
             </div>
           ))}
         </aside>
+        )}
 
         <section className="preview">
           {previewSrc ? (
@@ -807,7 +850,7 @@ export default function App() {
               ref={lanesRef}
               onPointerDown={() => setSelected(null)}
             >
-              {TRACKS.map((track) => (
+              {tracks.map((track) => (
                 <div className="lane" key={track} style={{ height: TRACK_H }}>
                   <span className="lane-label">{track}</span>
                   {clips
