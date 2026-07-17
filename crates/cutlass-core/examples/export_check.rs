@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use cutlass_core::export::{export, has_audio, ExportSettings, Segment};
+use cutlass_core::export::{export, has_audio, ExportSettings, Overlay, Segment};
 use cutlass_core::media::probe_duration_s;
 
 fn main() -> anyhow::Result<()> {
@@ -13,10 +13,12 @@ fn main() -> anyhow::Result<()> {
     cutlass_core::media::ensure_ffmpeg()?;
 
     let segments = vec![
-        Segment::Clip { path: a, src_in: 1.0, len: 2.0 },
+        Segment::Clip { path: a.clone(), src_in: 1.0, len: 2.0 },
         Segment::Gap { len: 1.5 },
         Segment::Clip { path: b, src_in: 0.5, len: 2.5 },
     ];
+    // V2 overlay spanning the gap — must not change output duration
+    let overlays = vec![Overlay { path: a, src_in: 4.0, len: 2.0, start: 2.5 }];
     let expected = 2.0 + 1.5 + 2.5;
     let out = std::env::temp_dir().join("cutlass_export_check.mp4");
 
@@ -24,6 +26,7 @@ fn main() -> anyhow::Result<()> {
     let mut last = -1.0f32;
     let encoder = export(
         &segments,
+        &overlays,
         &out,
         &ExportSettings { width: 1280, height: 720, fps: 30 },
         &mut |p| {

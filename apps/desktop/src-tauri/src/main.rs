@@ -413,30 +413,32 @@ fn export_project(
     state: State<AppState>,
 ) -> Result<String, String> {
     use tauri::Emitter;
-    let clips: Vec<(f64, f64, f64, String)> = {
+    let (clips, overlays) = {
         let mut project = state.project.lock().unwrap();
         let paths: HashMap<String, String> = project
             .media_entries()
             .into_iter()
             .map(|(id, _, p, _)| (id, p))
             .collect();
-        let snap = project.snapshot();
-        snap["clips"]
-            .as_array()
-            .map(|cs| {
-                cs.iter()
-                    .filter(|c| c["track"] == "V1")
-                    .filter_map(|c| {
-                        Some((
-                            c["start"].as_f64()?,
-                            c["len"].as_f64()?,
-                            c["src_in"].as_f64()?,
-                            paths.get(c["media"].as_str()?)?.clone(),
-                        ))
-                    })
-                    .collect()
+        let all = project.clips_state();
+        let clips: Vec<(f64, f64, f64, String)> = all
+            .iter()
+            .filter(|c| c.track == "V1")
+            .filter_map(|c| Some((c.start, c.len, c.src_in, paths.get(&c.media)?.clone())))
+            .collect();
+        let overlays: Vec<cutlass_core::export::Overlay> = all
+            .iter()
+            .filter(|c| c.track == "V2")
+            .filter_map(|c| {
+                Some(cutlass_core::export::Overlay {
+                    path: paths.get(&c.media)?.clone(),
+                    src_in: c.src_in,
+                    len: c.len,
+                    start: c.start,
+                })
             })
-            .unwrap_or_default()
+            .collect();
+        (clips, overlays)
     };
     if clips.is_empty() {
         return Err("nothing on V1 to export".into());
@@ -444,6 +446,7 @@ fn export_project(
     let segments = cutlass_core::export::segments_for_track(clips);
     cutlass_core::export::export(
         &segments,
+        &overlays,
         Path::new(&path),
         &Default::default(),
         &mut |p| {
