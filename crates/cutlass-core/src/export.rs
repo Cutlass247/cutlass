@@ -24,6 +24,16 @@ impl Segment {
     }
 }
 
+/// A V2 clip composited over the program at its timeline position.
+/// (Video only — matching in-app playback, where V1 carries the audio.)
+#[derive(Debug, Clone)]
+pub struct Overlay {
+    pub path: String,
+    pub src_in: f64,
+    pub len: f64,
+    pub start: f64,
+}
+
 pub struct ExportSettings {
     pub width: u32,
     pub height: u32,
@@ -56,10 +66,11 @@ pub fn has_audio(path: &str) -> bool {
     false
 }
 
-/// Render `segments` (in order) to `out`. Returns the encoder used.
-/// `progress` gets values in 0..=1.
+/// Render `segments` (the V1 program, in order) with `overlays` (V2)
+/// composited on top. Returns the encoder used. `progress` gets 0..=1.
 pub fn export(
     segments: &[Segment],
+    overlays: &[Overlay],
     out: &Path,
     settings: &ExportSettings,
     progress: &mut dyn FnMut(f32),
@@ -69,7 +80,7 @@ pub fn export(
 
     for encoder in ["h264_qsv", "libx264"] {
         progress(0.0);
-        match run_export(segments, out, settings, encoder, total, progress) {
+        match run_export(segments, overlays, out, settings, encoder, total, progress) {
             Ok(()) => return Ok(encoder.to_string()),
             Err(e) if encoder == "h264_qsv" => {
                 eprintln!("qsv encode failed ({e:#}); falling back to libx264");
@@ -82,6 +93,7 @@ pub fn export(
 
 fn run_export(
     segments: &[Segment],
+    overlays: &[Overlay],
     out: &Path,
     s: &ExportSettings,
     encoder: &str,
@@ -133,9 +145,34 @@ fn run_export(
         concat_inputs.push_str(&format!("[v{k}][a{k}]"));
     }
     filters.push_str(&format!(
-        "{concat_inputs}concat=n={}:v=1:a=1[outv][outa]",
+        "{concat_inputs}concat=n={}:v=1:a=1[catv][outa];",
         segments.len()
     ));
+
+    // V2 overlays: shift each clip's pts to its timeline position and
+    // switch it in over the program for its duration
+    let mut base = "catv".to_string();
+    for (j, ov) in overlays.iter().enumerate() {
+        cmd.args(["-ss", &format!("{:.3}", ov.src_in), "-t", &format!("{:.3}", ov.len)]);
+        cmd.input(ov.path.as_str());
+        let vi = input_idx;
+        input_idx += 1;
+        let (t0, t1) = (ov.start, ov.start + ov.len);
+        filters.push_str(&format!(
+            "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
+             pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p,\
+             setpts=PTS-STARTPTS+{t0:.3}/TB[ov{j}];\
+             [{base}][ov{j}]overlay=eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];"
+        ));
+        base = format!("ovd{j}");
+    }
+    // strip the trailing ';' and name the final video [outv]
+    filters.pop();
+    if base != "catv" {
+        filters.push_str(&format!(";[{base}]null[outv]"));
+    } else {
+        filters.push_str(";[catv]null[outv]");
+    }
 
     let quality: &[&str] = if encoder == "h264_qsv" {
         &["-global_quality", "23"]

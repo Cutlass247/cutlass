@@ -33,7 +33,10 @@ const FILLERS = new Set(["um", "uh", "uhh", "umm", "erm", "er", "ah", "hmm", "mm
 const cleanWord = (t: string) => t.toLowerCase().replace(/[^a-z']/g, "");
 const SILENCE_GAP_S = 0.8;
 
-const PPS = 48; // timeline pixels per second
+// timeline pixels per second (zoomable)
+const PPS_DEFAULT = 48;
+const PPS_MIN = 12;
+const PPS_MAX = 160;
 
 // pointer capture keeps drags alive outside the element, but its failure
 // (synthetic events, released pointers) must never kill the interaction
@@ -71,6 +74,7 @@ export default function App() {
   const [project, setProject] = useState<ProjectSnapshot>({ name: "Untitled", clips: [] });
   const [media, setMedia] = useState<Record<string, MediaItem>>({});
   const [playhead, setPlayhead] = useState(0);
+  const [pps, setPps] = useState(PPS_DEFAULT);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -444,11 +448,30 @@ export default function App() {
   }, []);
 
   // ── scrubbing (ruler + lanes background) ────────────────────────────
-  const scrubTo = useCallback((clientX: number) => {
-    const lanes = lanesRef.current;
-    if (!lanes) return;
-    const x = clientX - lanes.getBoundingClientRect().left;
-    setPlayhead(Math.max(0, x / PPS));
+  const scrubTo = useCallback(
+    (clientX: number) => {
+      const lanes = lanesRef.current;
+      if (!lanes) return;
+      const x = clientX - lanes.getBoundingClientRect().left;
+      setPlayhead(Math.max(0, x / pps));
+    },
+    [pps]
+  );
+
+  // ctrl+wheel zoom (non-passive listener so preventDefault works)
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      setPps((z) =>
+        Math.min(PPS_MAX, Math.max(PPS_MIN, z * (e.deltaY < 0 ? 1.25 : 0.8)))
+      );
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
   const onRulerPointerDown = useCallback(
@@ -474,11 +497,11 @@ export default function App() {
       setPlaying(false);
       const lanes = lanesRef.current!;
       const x = e.clientX - lanes.getBoundingClientRect().left;
-      const localPx = x - clip.start * PPS;
+      const localPx = x - clip.start * pps;
       const orig = { start: clip.start, len: clip.len, srcIn: clip.src_in };
       if (localPx <= TRIM_ZONE_PX) {
         setDrag({ kind: "trim-l", clipId: clip.id, ...orig, orig });
-      } else if (localPx >= clip.len * PPS - TRIM_ZONE_PX) {
+      } else if (localPx >= clip.len * pps - TRIM_ZONE_PX) {
         setDrag({ kind: "trim-r", clipId: clip.id, ...orig, orig });
       } else {
         setDrag({
@@ -486,11 +509,11 @@ export default function App() {
           clipId: clip.id,
           track: clip.track,
           start: clip.start,
-          grabOffsetS: x / PPS - clip.start,
+          grabOffsetS: x / pps - clip.start,
         });
       }
     },
-    []
+    [pps]
   );
 
   const onClipPointerMove = useCallback(
@@ -499,7 +522,7 @@ export default function App() {
       const lanes = lanesRef.current!;
       const rect = lanes.getBoundingClientRect();
       const x = e.clientX - rect.left;
-      const t = x / PPS;
+      const t = x / pps;
 
       if (drag.kind === "move") {
         const y = e.clientY - rect.top;
@@ -526,7 +549,7 @@ export default function App() {
         setPlayhead(orig.start + len);
       }
     },
-    [drag, project, media]
+    [drag, project, media, pps]
   );
 
   const onClipPointerUp = useCallback(async () => {
@@ -597,6 +620,20 @@ export default function App() {
           title="Space"
         >
           {playing ? "❚❚" : "▶"}
+        </button>
+        <button
+          className="ghost-btn slim"
+          title="Zoom out (Ctrl+wheel)"
+          onClick={() => setPps((z) => Math.max(PPS_MIN, z * 0.8))}
+        >
+          −
+        </button>
+        <button
+          className="ghost-btn slim"
+          title="Zoom in (Ctrl+wheel)"
+          onClick={() => setPps((z) => Math.min(PPS_MAX, z * 1.25))}
+        >
+          +
         </button>
         <button className="import-btn" onClick={doImport} disabled={busy !== null}>
           {busy ? "Importing…" : "Import media"}
@@ -711,15 +748,15 @@ export default function App() {
       </main>
 
       <section className="timeline">
-        <div className="timeline-scroll">
-          <div className="timeline-inner" style={{ width: timelineEndS * PPS }}>
+        <div className="timeline-scroll" ref={scrollRef}>
+          <div className="timeline-inner" style={{ width: timelineEndS * pps }}>
             <div
               className="ruler"
               onPointerDown={onRulerPointerDown}
               onPointerMove={onRulerPointerMove}
             >
               {ticks.map((s) => (
-                <div className="tick" key={s} style={{ left: s * PPS }}>
+                <div className="tick" key={s} style={{ left: s * pps }}>
                   {s % 5 === 0 && <span>{formatTC(s)}</span>}
                 </div>
               ))}
@@ -740,6 +777,7 @@ export default function App() {
                         key={clip.id}
                         clip={clip}
                         media={media[clip.media]}
+                        pps={pps}
                         dragging={drag?.clipId === clip.id}
                         selected={selected === clip.id}
                         onPointerDown={onClipPointerDown}
@@ -749,7 +787,7 @@ export default function App() {
                     ))}
                 </div>
               ))}
-              <div className="playhead" style={{ left: playhead * PPS }} />
+              <div className="playhead" style={{ left: playhead * pps }} />
             </div>
           </div>
         </div>
@@ -761,6 +799,7 @@ export default function App() {
 function ClipView({
   clip,
   media,
+  pps,
   dragging,
   selected,
   onPointerDown,
@@ -769,13 +808,14 @@ function ClipView({
 }: {
   clip: Clip;
   media?: MediaItem;
+  pps: number;
   dragging: boolean;
   selected: boolean;
   onPointerDown: (e: React.PointerEvent, clip: Clip) => void;
   onPointerMove: (e: React.PointerEvent) => void;
   onPointerUp: () => void;
 }) {
-  const w = clip.len * PPS;
+  const w = clip.len * pps;
   const filmstrip = useMemo(() => {
     if (!media) return [];
     const cellW = 56;
@@ -790,7 +830,7 @@ function ClipView({
   return (
     <div
       className={`clip${dragging ? " dragging" : ""}${selected ? " selected" : ""}`}
-      style={{ left: clip.start * PPS, width: w }}
+      style={{ left: clip.start * pps, width: w }}
       onPointerDown={(e) => onPointerDown(e, clip)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
