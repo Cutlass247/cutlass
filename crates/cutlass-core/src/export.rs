@@ -145,13 +145,14 @@ fn run_export(
         concat_inputs.push_str(&format!("[v{k}][a{k}]"));
     }
     filters.push_str(&format!(
-        "{concat_inputs}concat=n={}:v=1:a=1[catv][outa];",
+        "{concat_inputs}concat=n={}:v=1:a=1[catv][cata];",
         segments.len()
     ));
 
-    // V2 overlays: shift each clip's pts to its timeline position and
-    // switch it in over the program for its duration
+    // V2 overlays: video switches in over the program at its timeline
+    // position; overlay audio is delayed to that position and mixed in
     let mut base = "catv".to_string();
+    let mut overlay_audio: Vec<String> = Vec::new();
     for (j, ov) in overlays.iter().enumerate() {
         cmd.args(["-ss", &format!("{:.3}", ov.src_in), "-t", &format!("{:.3}", ov.len)]);
         cmd.input(ov.path.as_str());
@@ -165,14 +166,24 @@ fn run_export(
              [{base}][ov{j}]overlay=eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];"
         ));
         base = format!("ovd{j}");
+        if has_audio(&ov.path) {
+            let ms = (ov.start * 1000.0).round() as i64;
+            filters.push_str(&format!(
+                "[{vi}:a]aresample=48000,adelay={ms}|{ms}[oa{j}];"
+            ));
+            overlay_audio.push(format!("[oa{j}]"));
+        }
     }
-    // strip the trailing ';' and name the final video [outv]
-    filters.pop();
-    if base != "catv" {
-        filters.push_str(&format!(";[{base}]null[outv]"));
+    if overlay_audio.is_empty() {
+        filters.push_str("[cata]anull[outa];");
     } else {
-        filters.push_str(";[catv]null[outv]");
+        filters.push_str(&format!(
+            "[cata]{}amix=inputs={}:duration=first:normalize=0[outa];",
+            overlay_audio.join(""),
+            overlay_audio.len() + 1
+        ));
     }
+    filters.push_str(&format!("[{base}]null[outv]"));
 
     let quality: &[&str] = if encoder == "h264_qsv" {
         &["-global_quality", "23"]

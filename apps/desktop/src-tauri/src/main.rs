@@ -337,33 +337,40 @@ fn razor_out(
 /// error) when audio can't start — the UI then runs its silent local
 /// clock, so playback still works on machines with no output device.
 #[tauri::command]
-fn play(from_t: f64, state: State<AppState>) -> bool {
+fn play(from_t: f64, muted: Option<Vec<String>>, state: State<AppState>) -> bool {
     if let Some(h) = state.playback.lock().unwrap().take() {
         h.stop();
     }
-    let clips: Vec<cutlass_engine::player::AudioClip> = {
+    let muted = muted.unwrap_or_default();
+    let tracks: Vec<Vec<cutlass_engine::player::AudioClip>> = {
         let project = state.project.lock().unwrap();
         let media = state.media.lock().unwrap();
         let snap = project.snapshot();
-        snap["clips"]
-            .as_array()
-            .map(|cs| {
-                cs.iter()
-                    .filter(|c| c["track"] == "V1")
-                    .filter_map(|c| {
-                        let m = media.get(c["media"].as_str()?)?;
-                        Some(cutlass_engine::player::AudioClip {
-                            path: m.path.clone(),
-                            start: c["start"].as_f64()?,
-                            len: c["len"].as_f64()?,
-                            src_in: c["src_in"].as_f64()?,
-                        })
+        ["V1", "V2"]
+            .iter()
+            .filter(|t| !muted.iter().any(|m| m == *t))
+            .map(|track| {
+                snap["clips"]
+                    .as_array()
+                    .map(|cs| {
+                        cs.iter()
+                            .filter(|c| c["track"] == *track)
+                            .filter_map(|c| {
+                                let m = media.get(c["media"].as_str()?)?;
+                                Some(cutlass_engine::player::AudioClip {
+                                    path: m.path.clone(),
+                                    start: c["start"].as_f64()?,
+                                    len: c["len"].as_f64()?,
+                                    src_in: c["src_in"].as_f64()?,
+                                })
+                            })
+                            .collect()
                     })
-                    .collect()
+                    .unwrap_or_default()
             })
-            .unwrap_or_default()
+            .collect()
     };
-    match cutlass_engine::player::start(clips, from_t) {
+    match cutlass_engine::player::start(tracks, from_t) {
         Ok(handle) => {
             *state.playback.lock().unwrap() = Some(handle);
             true

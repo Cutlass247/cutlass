@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
         AudioClip { path: path.clone(), start: 1.5, len: 1.0, src_in: 5.0 },
     ];
 
-    let handle = start(clips, 0.2)?;
+    let handle = start(vec![clips], 0.2)?;
     let wall = Instant::now();
     let c0 = handle.clock();
     std::thread::sleep(Duration::from_millis(1200));
