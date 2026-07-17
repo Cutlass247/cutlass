@@ -15,9 +15,18 @@ use cutlass_core::project::{Clip, Project};
 use serde_json::json;
 use tauri::State;
 
+/// Undo entries are (before, after) clip states; restoring either side
+/// applies forward CRDT changes, so history behaves under collab.
+#[derive(Default)]
+struct History {
+    undo: Vec<(Vec<Clip>, Vec<Clip>)>,
+    redo: Vec<(Vec<Clip>, Vec<Clip>)>,
+}
+
 #[derive(Default)]
 struct AppState {
     project: Mutex<Project>,
+    history: Mutex<History>,
     media: Mutex<HashMap<String, MediaInfo>>,
     /// open decode engines, keyed by source path
     engines: Mutex<HashMap<String, cutlass_engine::MediaEngine>>,
@@ -32,6 +41,29 @@ fn notify_sync(state: &State<AppState>) {
     if let Some(tx) = state.sync_tx.lock().unwrap().as_ref() {
         let _ = tx.send(());
     }
+}
+
+/// Run a mutation with undo capture + sync notification.
+fn with_undo(
+    state: &State<AppState>,
+    f: impl FnOnce(&mut Project) -> Result<(), String>,
+) -> Result<serde_json::Value, String> {
+    let mut project = state.project.lock().unwrap();
+    let before = project.clips_state();
+    f(&mut project)?;
+    let after = project.clips_state();
+    let snap = project.snapshot();
+    drop(project);
+    if before != after {
+        let mut h = state.history.lock().unwrap();
+        h.undo.push((before, after));
+        if h.undo.len() > 100 {
+            h.undo.remove(0);
+        }
+        h.redo.clear();
+    }
+    notify_sync(state);
+    Ok(snap)
 }
 
 fn err_str(e: impl std::fmt::Display) -> String {
@@ -67,26 +99,23 @@ fn import_media(path: String, state: State<AppState>) -> Result<serde_json::Valu
     let info = media::import(Path::new(&path)).map_err(err_str)?;
     let media_value = media_json(&info)?;
 
-    let mut project = state.project.lock().unwrap();
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let clip = Clip {
-        id: format!("c{nanos:x}"),
-        name: info.name.clone(),
-        media: info.id.clone(),
-        track: "V1".into(),
-        start: project.track_end("V1"),
-        len: info.duration_s,
-        src_in: 0.0,
-    };
-    project
-        .set_media(&info.id, &info.name, &info.path, info.duration_s)
-        .map_err(err_str)?;
-    project.add_clip(&clip).map_err(err_str)?;
+    let snap = with_undo(&state, |project| {
+        let clip = Clip {
+            id: format!("c{nanos:x}"),
+            name: info.name.clone(),
+            media: info.id.clone(),
+            track: "V1".into(),
+            start: project.track_end("V1"),
+            len: info.duration_s,
+            src_in: 0.0,
+        };
+        project
+            .set_media(&info.id, &info.name, &info.path, info.duration_s)
+            .map_err(err_str)?;
+        project.add_clip(&clip).map_err(err_str)
+    })?;
     state.media.lock().unwrap().insert(info.id.clone(), info);
-
-    let snap = project.snapshot();
-    drop(project);
-    notify_sync(&state);
     Ok(json!({ "media": media_value, "project": snap }))
 }
 
@@ -102,12 +131,7 @@ fn move_clip(
     start: f64,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    let mut project = state.project.lock().unwrap();
-    project.move_clip(&id, &track, start).map_err(err_str)?;
-    let snap = project.snapshot();
-    drop(project);
-    notify_sync(&state);
-    Ok(snap)
+    with_undo(&state, |p| p.move_clip(&id, &track, start).map_err(err_str))
 }
 
 #[tauri::command]
@@ -118,12 +142,7 @@ fn trim_clip(
     src_in: f64,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    let mut project = state.project.lock().unwrap();
-    project.trim_clip(&id, start, len, src_in).map_err(err_str)?;
-    let snap = project.snapshot();
-    drop(project);
-    notify_sync(&state);
-    Ok(snap)
+    with_undo(&state, |p| p.trim_clip(&id, start, len, src_in).map_err(err_str))
 }
 
 #[tauri::command]
@@ -132,16 +151,59 @@ fn remove_clip(
     ripple: bool,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| {
+        if ripple {
+            p.remove_clip_ripple(&id).map_err(err_str)
+        } else {
+            p.remove_clip(&id).map_err(err_str)
+        }
+    })
+}
+
+#[tauri::command]
+fn undo(state: State<AppState>) -> Result<serde_json::Value, String> {
+    let entry = state.history.lock().unwrap().undo.pop();
+    let Some((before, after)) = entry else {
+        return Ok(state.project.lock().unwrap().snapshot());
+    };
     let mut project = state.project.lock().unwrap();
-    if ripple {
-        project.remove_clip_ripple(&id).map_err(err_str)?;
-    } else {
-        project.remove_clip(&id).map_err(err_str)?;
-    }
+    project.restore_clips(&before).map_err(err_str)?;
     let snap = project.snapshot();
     drop(project);
+    state.history.lock().unwrap().redo.push((before, after));
     notify_sync(&state);
     Ok(snap)
+}
+
+#[tauri::command]
+fn redo(state: State<AppState>) -> Result<serde_json::Value, String> {
+    let entry = state.history.lock().unwrap().redo.pop();
+    let Some((before, after)) = entry else {
+        return Ok(state.project.lock().unwrap().snapshot());
+    };
+    let mut project = state.project.lock().unwrap();
+    project.restore_clips(&after).map_err(err_str)?;
+    let snap = project.snapshot();
+    drop(project);
+    state.history.lock().unwrap().undo.push((before, after));
+    notify_sync(&state);
+    Ok(snap)
+}
+
+/// One logical edit that razors many source ranges (silence / filler
+/// removal) — a single undo entry.
+#[tauri::command]
+fn cut_ranges(
+    media_id: String,
+    ranges: Vec<(f64, f64)>,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    with_undo(&state, |p| {
+        p.razor_out_ranges(&media_id, &ranges, &format!("c{nanos:x}"))
+            .map(|_| ())
+            .map_err(err_str)
+    })
 }
 
 #[tauri::command]
@@ -179,6 +241,7 @@ fn open_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
 
     let snap = project.snapshot();
     *state.project.lock().unwrap() = project;
+    *state.history.lock().unwrap() = History::default(); // fresh doc, fresh history
     notify_sync(&state);
     Ok(json!({ "project": snap, "media": media_out }))
 }
@@ -245,15 +308,11 @@ fn razor_out(
     src_to: f64,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    let mut project = state.project.lock().unwrap();
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    project
-        .razor_out(&id, src_from, src_to, &format!("c{nanos:x}"))
-        .map_err(err_str)?;
-    let snap = project.snapshot();
-    drop(project);
-    notify_sync(&state);
-    Ok(snap)
+    with_undo(&state, |p| {
+        p.razor_out(&id, src_from, src_to, &format!("c{nanos:x}"))
+            .map_err(err_str)
+    })
 }
 
 /// Start audio for the V1 track from `from_t`. Returns false (not an
@@ -510,7 +569,10 @@ fn main() {
             open_project,
             hydrate_media,
             join_session,
-            export_project
+            export_project,
+            undo,
+            redo,
+            cut_ranges
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");

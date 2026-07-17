@@ -11,6 +11,7 @@ import {
   importMedia,
   inTauri,
   joinSession,
+  cutRanges,
   moveClip,
   onExportProgress,
   onProjectChanged,
@@ -20,11 +21,17 @@ import {
   pickVideo,
   playAudio,
   razorOut,
+  redoEdit,
   removeClip,
   transcribeMedia,
   trimClip,
+  undoEdit,
   Word,
 } from "./ipc";
+
+const FILLERS = new Set(["um", "uh", "uhh", "umm", "erm", "er", "ah", "hmm", "mm", "mhm"]);
+const cleanWord = (t: string) => t.toLowerCase().replace(/[^a-z']/g, "");
+const SILENCE_GAP_S = 0.8;
 
 const PPS = 48; // timeline pixels per second
 
@@ -228,7 +235,15 @@ export default function App() {
   // ── keyboard: space, delete, ctrl+s / ctrl+o ────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key.toLowerCase() === "s") {
+      if (e.ctrlKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        (e.shiftKey ? redoEdit() : undoEdit())
+          .then(setProject)
+          .catch((err) => setError(String(err)));
+      } else if (e.ctrlKey && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redoEdit().then(setProject).catch((err) => setError(String(err)));
+      } else if (e.ctrlKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
         doSave();
       } else if (e.ctrlKey && e.key.toLowerCase() === "o") {
@@ -366,6 +381,42 @@ export default function App() {
       setError(String(e));
     }
   }, [wordSel, transcripts, project]);
+
+  // suggested cuts: filler words + long silences, from word timestamps —
+  // only ranges still present on the timeline
+  const smartCuts = useMemo(() => {
+    if (!transcriptMedia) return null;
+    const words = transcripts[transcriptMedia];
+    if (!words || words.length === 0) return null;
+    const alive = (r: [number, number]) =>
+      srcToTimeline(transcriptMedia, (r[0] + r[1]) / 2) !== null;
+    const fillers: [number, number][] = words
+      .filter((w) => FILLERS.has(cleanWord(w.text)))
+      .map((w) => [w.start, w.end] as [number, number])
+      .filter(alive);
+    const silences: [number, number][] = [];
+    for (let i = 1; i < words.length; i++) {
+      const gap = words[i].start - words[i - 1].end;
+      if (gap >= SILENCE_GAP_S) {
+        const r: [number, number] = [words[i - 1].end + 0.12, words[i].start - 0.12];
+        if (alive(r)) silences.push(r);
+      }
+    }
+    return { fillers, silences };
+  }, [transcriptMedia, transcripts, srcToTimeline]);
+
+  const doCutRanges = useCallback(
+    async (ranges: [number, number][]) => {
+      if (!transcriptMedia || ranges.length === 0) return;
+      try {
+        setProject(await cutRanges(transcriptMedia, ranges));
+        setWordSel(null);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [transcriptMedia]
+  );
 
   // live caption: the word under the playhead
   const caption = useMemo(() => {
@@ -505,10 +556,24 @@ export default function App() {
       <header className="topbar">
         <span className="logo">⚔️ Cutlass</span>
         <span className="project-name">{project.name}</span>
+        <button
+          className="ghost-btn"
+          title="Ctrl+Z"
+          onClick={() => undoEdit().then(setProject).catch((e) => setError(String(e)))}
+        >
+          ↩
+        </button>
+        <button
+          className="ghost-btn slim"
+          title="Ctrl+Y"
+          onClick={() => redoEdit().then(setProject).catch((e) => setError(String(e)))}
+        >
+          ↪
+        </button>
         {room ? (
           <span className="badge live">🔗 {room}</span>
         ) : (
-          <button className="ghost-btn" onClick={doCollab} disabled={!inTauri}>
+          <button className="ghost-btn slim" onClick={doCollab} disabled={!inTauri}>
             Collab
           </button>
         )}
@@ -605,10 +670,11 @@ export default function App() {
                   i >= Math.min(wordSel.a, wordSel.b) &&
                   i <= Math.max(wordSel.a, wordSel.b);
                 const cut = srcToTimeline(transcriptMedia, (w.start + w.end) / 2) === null;
+                const filler = FILLERS.has(cleanWord(w.text));
                 return (
                   <span
                     key={i}
-                    className={`word${sel ? " sel" : ""}${cut ? " cut" : ""}`}
+                    className={`word${sel ? " sel" : ""}${cut ? " cut" : ""}${filler ? " filler" : ""}`}
                     onClick={(e) =>
                       onWordClick(transcriptMedia, i, transcripts[transcriptMedia], e.shiftKey)
                     }
@@ -623,6 +689,22 @@ export default function App() {
                 ✂ Cut {Math.abs(wordSel.b - wordSel.a) + 1} word
                 {wordSel.a === wordSel.b ? "" : "s"} from video
               </button>
+            )}
+            {smartCuts && (smartCuts.fillers.length > 0 || smartCuts.silences.length > 0) && (
+              <div className="smart-cuts">
+                {smartCuts.fillers.length > 0 && (
+                  <button className="smart-btn" onClick={() => doCutRanges(smartCuts.fillers)}>
+                    ✂ {smartCuts.fillers.length} filler word
+                    {smartCuts.fillers.length === 1 ? "" : "s"}
+                  </button>
+                )}
+                {smartCuts.silences.length > 0 && (
+                  <button className="smart-btn" onClick={() => doCutRanges(smartCuts.silences)}>
+                    ✂ {smartCuts.silences.length} silence
+                    {smartCuts.silences.length === 1 ? "" : "s"} (≥{SILENCE_GAP_S}s)
+                  </button>
+                )}
+              </div>
             )}
           </aside>
         )}

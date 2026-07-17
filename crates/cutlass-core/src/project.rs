@@ -11,7 +11,7 @@ use automerge::{transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Clip {
     pub id: String,
     pub name: String,
@@ -321,6 +321,84 @@ impl Project {
         })
     }
 
+    /// All clips, in derived render order.
+    pub fn clips_state(&self) -> Vec<Clip> {
+        let clips_obj = self.clips_obj();
+        let mut clips: Vec<Clip> = self
+            .doc
+            .keys(&clips_obj)
+            .filter_map(|id| self.read_clip(&clips_obj, &id))
+            .collect();
+        clips.sort_by(|a, b| {
+            a.track
+                .cmp(&b.track)
+                .then(a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal))
+        });
+        clips
+    }
+
+    /// Drive the clips map to exactly `target`, as new CRDT changes.
+    /// This is the undo/redo primitive: restoring an earlier state via
+    /// forward operations stays correct under collab (a byte rollback
+    /// would resurrect remote edits on the next sync).
+    pub fn restore_clips(&mut self, target: &[Clip]) -> anyhow::Result<()> {
+        let current = self.clips_state();
+        for t in target {
+            match current.iter().find(|c| c.id == t.id) {
+                None => self.add_clip(t)?,
+                Some(c) if c != t => {
+                    let clips = self.clips_obj();
+                    let (_, obj) = self
+                        .doc
+                        .get(&clips, &t.id)?
+                        .ok_or_else(|| anyhow::anyhow!("clip vanished: {}", t.id))?;
+                    self.doc.put(&obj, "name", t.name.as_str())?;
+                    self.doc.put(&obj, "media", t.media.as_str())?;
+                    self.doc.put(&obj, "track", t.track.as_str())?;
+                    self.doc.put(&obj, "start", t.start)?;
+                    self.doc.put(&obj, "len", t.len)?;
+                    self.doc.put(&obj, "src_in", t.src_in)?;
+                }
+                Some(_) => {}
+            }
+        }
+        for c in &current {
+            if !target.iter().any(|t| t.id == c.id) {
+                self.remove_clip(&c.id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Razor multiple source ranges out of one media's V1 clips in a
+    /// single logical edit (silence/filler removal). Ranges are applied
+    /// high-to-low so earlier ranges stay inside clips with stable ids.
+    /// Returns how many cuts landed.
+    pub fn razor_out_ranges(
+        &mut self,
+        media_id: &str,
+        ranges: &[(f64, f64)],
+        id_seed: &str,
+    ) -> anyhow::Result<u32> {
+        let mut ranges: Vec<(f64, f64)> = ranges.to_vec();
+        ranges.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut cut = 0;
+        for (i, (from, to)) in ranges.iter().enumerate() {
+            let mid = (from + to) / 2.0;
+            let target = self.clips_state().into_iter().find(|c| {
+                c.track == "V1"
+                    && c.media == media_id
+                    && mid >= c.src_in
+                    && mid < c.src_in + c.len
+            });
+            if let Some(clip) = target {
+                self.razor_out(&clip.id, *from, *to, &format!("{id_seed}-{i}"))?;
+                cut += 1;
+            }
+        }
+        Ok(cut)
+    }
+
     // ── sync (Automerge sync protocol; used by the collab session) ─────
     pub fn generate_sync_message(
         &mut self,
@@ -465,6 +543,44 @@ mod tests {
         assert_eq!(get("b"), Some(0.0));
         assert_eq!(get("c"), Some(4.0));
         assert_eq!(get("x"), Some(6.0));
+    }
+
+    #[test]
+    fn restore_clips_round_trips_any_edit() {
+        let mut p = Project::new("T");
+        p.add_clip(&demo_clip("a", "V1", 0.0)).unwrap();
+        p.add_clip(&demo_clip("b", "V1", 4.0)).unwrap();
+        let before = p.clips_state();
+
+        p.move_clip("a", "V2", 9.0).unwrap();
+        p.remove_clip("b").unwrap();
+        p.add_clip(&demo_clip("c", "V1", 1.0)).unwrap();
+        let after = p.clips_state();
+
+        p.restore_clips(&before).unwrap(); // undo
+        assert_eq!(p.clips_state(), before);
+        p.restore_clips(&after).unwrap(); // redo
+        assert_eq!(p.clips_state(), after);
+    }
+
+    #[test]
+    fn razor_out_ranges_cuts_all_high_to_low() {
+        let mut p = Project::new("T");
+        let mut a = demo_clip("a", "V1", 0.0);
+        a.len = 10.0;
+        a.media = "m".into();
+        p.add_clip(&a).unwrap();
+        let n = p
+            .razor_out_ranges("m", &[(2.0, 3.0), (6.0, 7.0)], "cut")
+            .unwrap();
+        assert_eq!(n, 2);
+        let clips = p.clips_state();
+        assert_eq!(clips.len(), 3);
+        let total: f64 = clips.iter().map(|c| c.len).sum();
+        assert!((total - 8.0).abs() < 1e-6, "total {total}");
+        // contiguous: no gaps after ripple
+        assert_eq!(clips[0].start, 0.0);
+        assert!((clips[1].start - clips[0].len).abs() < 1e-6);
     }
 
     #[test]
