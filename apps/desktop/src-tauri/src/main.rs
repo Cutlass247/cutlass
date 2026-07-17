@@ -32,14 +32,22 @@ struct AppState {
     engines: Mutex<HashMap<String, cutlass_engine::MediaEngine>>,
     playback: Mutex<Option<cutlass_engine::player::PlaybackHandle>>,
     /// pings the collab task after a local edit, when a session is live
-    sync_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<()>>>,
+    sync_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<SyncCmd>>>,
+    room: Mutex<Option<String>>,
+}
+
+enum SyncCmd {
+    /// local doc changed — push sync messages
+    Ping,
+    /// ephemeral presence payload to relay (playhead, name, color)
+    Presence(String),
 }
 
 /// Every mutating command calls this so a live collab session pushes the
 /// change out. No session → no-op.
 fn notify_sync(state: &State<AppState>) {
     if let Some(tx) = state.sync_tx.lock().unwrap().as_ref() {
-        let _ = tx.send(());
+        let _ = tx.send(SyncCmd::Ping);
     }
 }
 
@@ -88,6 +96,7 @@ fn media_json(info: &MediaInfo) -> Result<serde_json::Value, String> {
         "duration_s": info.duration_s,
         "scrub_fps": info.scrub_fps,
         "thumbs": thumbs?,
+        "waveform": info.waveform,
     }))
 }
 
@@ -459,10 +468,26 @@ fn export_project(
 /// Join (or start) a collab room. The task speaks the Automerge sync
 /// protocol with the relay; remote changes land in the shared project
 /// and the UI hears about them via the `project-changed` event.
+/// Which collab room (if any) this instance is in — lets the UI catch up
+/// after a CUTLASS_ROOM auto-join.
+#[tauri::command]
+fn current_room(state: State<AppState>) -> Option<String> {
+    state.room.lock().unwrap().clone()
+}
+
+/// Forward an ephemeral presence payload to the room (no-op untethered).
+#[tauri::command]
+fn send_presence(payload: serde_json::Value, state: State<AppState>) {
+    if let Some(tx) = state.sync_tx.lock().unwrap().as_ref() {
+        let _ = tx.send(SyncCmd::Presence(payload.to_string()));
+    }
+}
+
 #[tauri::command]
 fn join_session(room: String, app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SyncCmd>();
     *state.sync_tx.lock().unwrap() = Some(tx);
+    *state.room.lock().unwrap() = Some(room.clone());
     let url = std::env::var("CUTLASS_SYNC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9720".into());
     tauri::async_runtime::spawn(sync_task(app, format!("{url}/{room}"), rx));
     Ok(())
@@ -471,7 +496,7 @@ fn join_session(room: String, app: tauri::AppHandle, state: State<AppState>) -> 
 async fn sync_task(
     app: tauri::AppHandle,
     url: String,
-    mut local_edits: tokio::sync::mpsc::UnboundedReceiver<()>,
+    mut local_edits: tokio::sync::mpsc::UnboundedReceiver<SyncCmd>,
 ) {
     use futures_util::{SinkExt, StreamExt};
     use tauri::{Emitter, Manager};
@@ -504,32 +529,49 @@ async fn sync_task(
     loop {
         tokio::select! {
             msg = stream.next() => {
-                let Some(Ok(WsMessage::Binary(bytes))) = msg else { break };
-                let snap = {
-                    let mut p = state.project.lock().unwrap();
-                    if p.receive_sync_message(&mut sync, &bytes).is_err() {
-                        continue;
+                match msg {
+                    Some(Ok(WsMessage::Binary(bytes))) => {
+                        let snap = {
+                            let mut p = state.project.lock().unwrap();
+                            if p.receive_sync_message(&mut sync, &bytes).is_err() {
+                                continue;
+                            }
+                            while let Some(m) = p.generate_sync_message(&mut sync) {
+                                out.push(m);
+                            }
+                            p.snapshot()
+                        };
+                        for m in out.drain(..) {
+                            let _ = sink.send(WsMessage::Binary(m.into())).await;
+                        }
+                        let _ = app.emit("project-changed", snap);
                     }
-                    while let Some(m) = p.generate_sync_message(&mut sync) {
-                        out.push(m);
+                    Some(Ok(WsMessage::Text(text))) => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text.as_str()) {
+                            let _ = app.emit("presence", v);
+                        }
                     }
-                    p.snapshot()
-                };
-                for m in out.drain(..) {
-                    let _ = sink.send(WsMessage::Binary(m.into())).await;
+                    Some(Ok(_)) => {}
+                    _ => break,
                 }
-                let _ = app.emit("project-changed", snap);
             }
-            ping = local_edits.recv() => {
-                if ping.is_none() { break }
-                {
-                    let mut p = state.project.lock().unwrap();
-                    while let Some(m) = p.generate_sync_message(&mut sync) {
-                        out.push(m);
+            cmd = local_edits.recv() => {
+                match cmd {
+                    None => break,
+                    Some(SyncCmd::Presence(json)) => {
+                        let _ = sink.send(WsMessage::Text(json.into())).await;
                     }
-                }
-                for m in out.drain(..) {
-                    let _ = sink.send(WsMessage::Binary(m.into())).await;
+                    Some(SyncCmd::Ping) => {
+                        {
+                            let mut p = state.project.lock().unwrap();
+                            while let Some(m) = p.generate_sync_message(&mut sync) {
+                                out.push(m);
+                            }
+                        }
+                        for m in out.drain(..) {
+                            let _ = sink.send(WsMessage::Binary(m.into())).await;
+                        }
+                    }
                 }
             }
         }
@@ -548,8 +590,9 @@ fn main() {
                 use tauri::Manager;
                 let handle = app.handle().clone();
                 let state = app.state::<AppState>();
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SyncCmd>();
                 *state.sync_tx.lock().unwrap() = Some(tx);
+                *state.room.lock().unwrap() = Some(room.clone());
                 let url = std::env::var("CUTLASS_SYNC_URL")
                     .unwrap_or_else(|_| "ws://127.0.0.1:9720".into());
                 tauri::async_runtime::spawn(sync_task(handle, format!("{url}/{room}"), rx));
@@ -572,6 +615,8 @@ fn main() {
             open_project,
             hydrate_media,
             join_session,
+            send_presence,
+            current_room,
             export_project,
             undo,
             redo,

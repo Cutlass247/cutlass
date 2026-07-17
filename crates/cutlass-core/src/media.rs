@@ -28,6 +28,40 @@ pub struct MediaInfo {
     pub scrub_fps: f64,
     /// scrub-proxy frames, in time order
     pub thumb_paths: Vec<PathBuf>,
+    /// normalized audio peaks across the whole file (empty = no audio)
+    pub waveform: Vec<f32>,
+}
+
+/// Peak waveform: ~1200 normalized buckets from 8 kHz mono PCM. Empty
+/// for files without audio.
+pub fn waveform(path: &Path) -> Vec<f32> {
+    let tmp = std::env::temp_dir().join(format!("cutlass-wf-{:016x}.pcm", path_hash(path)));
+    let ok = FfmpegCommand::new()
+        .input(path.to_string_lossy())
+        .args(["-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", "-y"])
+        .output(tmp.to_string_lossy())
+        .spawn()
+        .and_then(|mut c| c.wait())
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let bytes = if ok { std::fs::read(&tmp).unwrap_or_default() } else { Vec::new() };
+    let _ = std::fs::remove_file(&tmp);
+    let samples = bytes.len() / 2;
+    if samples < 800 {
+        return Vec::new();
+    }
+    let bucket = (samples / 1200).max(80);
+    let mut peaks = Vec::with_capacity(samples / bucket + 1);
+    let mut peak = 0i32;
+    for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+        peak = peak.max((i16::from_le_bytes([chunk[0], chunk[1]]) as i32).abs());
+        if (i + 1) % bucket == 0 {
+            peaks.push(peak as f32);
+            peak = 0;
+        }
+    }
+    let max = peaks.iter().fold(1.0f32, |m, p| m.max(*p));
+    peaks.iter().map(|p| p / max).collect()
 }
 
 pub fn ensure_ffmpeg() -> anyhow::Result<()> {
@@ -85,6 +119,7 @@ pub fn scrub_proxy(path: &Path, duration_s: f64) -> anyhow::Result<(Vec<PathBuf>
 pub fn import(path: &Path) -> anyhow::Result<MediaInfo> {
     let duration_s = probe_duration_s(path)?;
     let (thumb_paths, scrub_fps) = scrub_proxy(path, duration_s)?;
+    let waveform = waveform(path);
     Ok(MediaInfo {
         id: format!("m{:016x}", path_hash(path)),
         name: path
@@ -95,6 +130,7 @@ pub fn import(path: &Path) -> anyhow::Result<MediaInfo> {
         duration_s,
         scrub_fps,
         thumb_paths,
+        waveform,
     })
 }
 

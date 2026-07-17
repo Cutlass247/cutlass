@@ -12,11 +12,12 @@ fn main() -> anyhow::Result<()> {
     let t0 = std::time::Instant::now();
     let info = cutlass_core::media::import(Path::new(&path))?;
     println!(
-        "imported {} — {:.1}s, {} scrub frames @ {:.2} fps in {:.1}s",
+        "imported {} — {:.1}s, {} scrub frames @ {:.2} fps, {} waveform buckets in {:.1}s",
         info.name,
         info.duration_s,
         info.thumb_paths.len(),
         info.scrub_fps,
+        info.waveform.len(),
         t0.elapsed().as_secs_f64()
     );
 
