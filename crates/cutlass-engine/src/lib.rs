@@ -9,6 +9,9 @@
 //! build), LIBCLANG_PATH → LLVM bin. Runtime needs vendor/ffmpeg/bin on
 //! PATH (or the DLLs beside the exe).
 
+pub mod audio;
+pub mod player;
+
 use anyhow::{anyhow, Context as _};
 use ffmpeg_the_third as ffmpeg;
 use ffmpeg::ffi::AV_TIME_BASE;

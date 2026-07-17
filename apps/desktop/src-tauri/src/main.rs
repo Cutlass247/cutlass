@@ -21,6 +21,7 @@ struct AppState {
     media: Mutex<HashMap<String, MediaInfo>>,
     /// open decode engines, keyed by source path
     engines: Mutex<HashMap<String, cutlass_engine::MediaEngine>>,
+    playback: Mutex<Option<cutlass_engine::player::PlaybackHandle>>,
 }
 
 fn err_str(e: impl std::fmt::Display) -> String {
@@ -118,6 +119,64 @@ fn remove_clip(
     Ok(project.snapshot())
 }
 
+/// Start audio for the V1 track from `from_t`. Returns false (not an
+/// error) when audio can't start — the UI then runs its silent local
+/// clock, so playback still works on machines with no output device.
+#[tauri::command]
+fn play(from_t: f64, state: State<AppState>) -> bool {
+    if let Some(h) = state.playback.lock().unwrap().take() {
+        h.stop();
+    }
+    let clips: Vec<cutlass_engine::player::AudioClip> = {
+        let project = state.project.lock().unwrap();
+        let media = state.media.lock().unwrap();
+        let snap = project.snapshot();
+        snap["clips"]
+            .as_array()
+            .map(|cs| {
+                cs.iter()
+                    .filter(|c| c["track"] == "V1")
+                    .filter_map(|c| {
+                        let m = media.get(c["media"].as_str()?)?;
+                        Some(cutlass_engine::player::AudioClip {
+                            path: m.path.clone(),
+                            start: c["start"].as_f64()?,
+                            len: c["len"].as_f64()?,
+                            src_in: c["src_in"].as_f64()?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    match cutlass_engine::player::start(clips, from_t) {
+        Ok(handle) => {
+            *state.playback.lock().unwrap() = Some(handle);
+            true
+        }
+        Err(e) => {
+            eprintln!("audio unavailable, playing silent: {e:#}");
+            false
+        }
+    }
+}
+
+/// Stop audio; returns the timeline position where it stopped.
+#[tauri::command]
+fn pause(state: State<AppState>) -> Option<f64> {
+    state.playback.lock().unwrap().take().map(|h| h.stop())
+}
+
+#[tauri::command]
+fn playback_clock(state: State<AppState>) -> Option<serde_json::Value> {
+    state
+        .playback
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|h| json!({ "t": h.clock(), "ended": h.ended() }))
+}
+
 /// Full-quality frame at source time `t`, via the in-process engine.
 /// Used when the playhead settles: the preview snaps from the 480p scrub
 /// proxy to a real decoded frame. Frame-accurate, so on long-GOP sources
@@ -159,7 +218,10 @@ fn main() {
             move_clip,
             trim_clip,
             remove_clip,
-            exact_frame
+            exact_frame,
+            play,
+            pause,
+            playback_clock
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");

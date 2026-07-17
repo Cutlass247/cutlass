@@ -3,12 +3,15 @@ import {
   Clip,
   MediaItem,
   ProjectSnapshot,
+  audioClock,
   exactFrame,
   getProject,
   importMedia,
   inTauri,
   moveClip,
+  pauseAudio,
   pickVideo,
+  playAudio,
   removeClip,
   trimClip,
 } from "./ipc";
@@ -78,27 +81,60 @@ export default function App() {
   );
   const timelineEndS = Math.max(30, contentEndS + 5);
 
-  // ── playback: interval clock over the proxy frames ─────────────────
-  // interval + performance.now deltas rather than rAF: rAF stops dead in
-  // hidden/minimized windows. Audio will own this clock eventually.
+  // ── playback ────────────────────────────────────────────────────────
+  // The native audio player owns the transport clock when it's running:
+  // a local interval clock (not rAF — rAF freezes in hidden windows)
+  // animates the playhead smoothly, and re-syncs to the audio clock every
+  // 250 ms. Without audio (mock mode / no device) the local clock rules.
+  const playheadRef = useRef(0);
+  useEffect(() => {
+    playheadRef.current = playhead;
+  }, [playhead]);
+  const contentEndRef = useRef(0);
+  useEffect(() => {
+    contentEndRef.current = contentEndS;
+  }, [contentEndS]);
+
   useEffect(() => {
     if (!playing) return;
+    let cancelled = false;
+    let audioLive = false;
+    playAudio(playheadRef.current).then((ok) => {
+      if (!cancelled) audioLive = ok;
+    });
+
     let last = performance.now();
-    const timer = setInterval(() => {
+    const local = setInterval(() => {
       const now = performance.now();
       const dt = (now - last) / 1000;
       last = now;
       setPlayhead((t) => {
         const nt = t + dt;
-        if (nt >= contentEndS) {
+        if (!audioLive && nt >= contentEndRef.current) {
           setPlaying(false);
-          return contentEndS;
+          return contentEndRef.current;
         }
         return nt;
       });
     }, 33);
-    return () => clearInterval(timer);
-  }, [playing, contentEndS]);
+
+    const sync = setInterval(async () => {
+      if (!audioLive) return;
+      const c = await audioClock();
+      if (cancelled || !c) return;
+      setPlayhead(c.t);
+      if (c.ended) setPlaying(false);
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearInterval(local);
+      clearInterval(sync);
+      pauseAudio().then((t) => {
+        if (t != null) setPlayhead(t); // land exactly where the audio stopped
+      });
+    };
+  }, [playing]);
 
   // ── keyboard: space = play/pause, delete = lift, shift+delete = ripple
   useEffect(() => {
