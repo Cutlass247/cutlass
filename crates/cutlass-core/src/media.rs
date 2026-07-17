@@ -15,8 +15,9 @@ use std::path::{Path, PathBuf};
 use ffmpeg_sidecar::command::FfmpegCommand;
 
 /// Cap on scrub-proxy frames per clip; interval stretches with duration.
-const MAX_SCRUB_FRAMES: f64 = 240.0;
-const SCRUB_WIDTH: u32 = 480;
+/// Pub so the engine-based import path in the app matches this layout.
+pub const MAX_SCRUB_FRAMES: f64 = 240.0;
+pub const SCRUB_WIDTH: u32 = 480;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MediaInfo {
@@ -134,7 +135,7 @@ pub fn import(path: &Path) -> anyhow::Result<MediaInfo> {
     })
 }
 
-fn path_hash(path: &Path) -> u64 {
+pub fn path_hash(path: &Path) -> u64 {
     let mut h = DefaultHasher::new();
     path.hash(&mut h);
     if let Ok(meta) = std::fs::metadata(path) {
@@ -143,7 +144,7 @@ fn path_hash(path: &Path) -> u64 {
     h.finish()
 }
 
-fn cache_dir(path: &Path) -> anyhow::Result<PathBuf> {
+pub fn cache_dir(path: &Path) -> anyhow::Result<PathBuf> {
     let dir = std::env::temp_dir()
         .join("cutlass-cache")
         .join(format!("{:016x}", path_hash(path)));
@@ -151,7 +152,7 @@ fn cache_dir(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(dir)
 }
 
-fn read_frames(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+pub fn read_frames(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut frames: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())

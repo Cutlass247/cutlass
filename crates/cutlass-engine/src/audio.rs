@@ -9,6 +9,36 @@ use ffmpeg::software::resampling;
 use ffmpeg::util::channel_layout::ChannelLayout;
 use ffmpeg::util::format::sample::{Sample, Type as SampleType};
 
+/// Normalized peak waveform (~`buckets` values) decoded in-process at
+/// 8 kHz mono. Empty if the file has no (usable) audio.
+pub fn waveform_peaks(path: &str, buckets: usize) -> Vec<f32> {
+    let Ok(mut dec) = AudioDecoder::open_mono(path, 8_000) else {
+        return Vec::new();
+    };
+    let mut samples: Vec<f32> = Vec::new();
+    while let Ok(Some(chunk)) = dec.next_chunk() {
+        if chunk.is_empty() && samples.len() > 8_000 * 3600 {
+            break; // safety valve
+        }
+        samples.extend(chunk);
+    }
+    if samples.len() < 800 {
+        return Vec::new();
+    }
+    let bucket = (samples.len() / buckets.max(1)).max(80);
+    let mut peaks = Vec::with_capacity(samples.len() / bucket + 1);
+    let mut peak = 0.0f32;
+    for (i, s) in samples.iter().enumerate() {
+        peak = peak.max(s.abs());
+        if (i + 1) % bucket == 0 {
+            peaks.push(peak);
+            peak = 0.0;
+        }
+    }
+    let max = peaks.iter().fold(1e-6f32, |m, p| m.max(*p));
+    peaks.iter().map(|p| p / max).collect()
+}
+
 pub struct AudioDecoder {
     ictx: ffmpeg::format::context::Input,
     decoder: ffmpeg::decoder::Audio,

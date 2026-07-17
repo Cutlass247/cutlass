@@ -842,6 +842,7 @@ dependencies = [
 name = "cutlass-desktop"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "automerge",
  "base64 0.22.1",
  "cutlass-core",

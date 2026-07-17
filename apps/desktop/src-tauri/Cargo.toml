@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+anyhow = "1.0.103"
 automerge = "0.10.0"
 base64 = "0.22.1"
 cutlass-core = { path = "../../../crates/cutlass-core" }

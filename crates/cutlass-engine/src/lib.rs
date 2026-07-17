@@ -119,6 +119,46 @@ impl MediaEngine {
         Ok(n)
     }
 
+    fn seek_raw(&mut self, t: f64) -> anyhow::Result<()> {
+        let ts = (t.max(0.0) * AV_TIME_BASE as f64) as i64;
+        let ret = unsafe {
+            ffmpeg::ffi::av_seek_frame(
+                self.ictx.as_mut_ptr(),
+                -1,
+                ts,
+                ffmpeg::ffi::AVSEEK_FLAG_BACKWARD,
+            )
+        };
+        if ret < 0 {
+            return Err(anyhow!("av_seek_frame({t:.3}s) failed: {ret}"));
+        }
+        self.decoder.flush();
+        Ok(())
+    }
+
+    /// Sequentially decode the whole file, emitting one RGBA frame per
+    /// `every_s` seconds of source time (the scrub-proxy generator: one
+    /// fast pass, no per-sample seeking). Returns the emitted count.
+    pub fn sample_frames(
+        &mut self,
+        every_s: f64,
+        max_width: u32,
+        mut cb: impl FnMut(RgbaFrame) -> anyhow::Result<()>,
+    ) -> anyhow::Result<u32> {
+        anyhow::ensure!(every_s > 0.0, "every_s must be positive");
+        self.seek_raw(0.0)?;
+        let mut next_t = 0.0f64;
+        let mut emitted = 0u32;
+        while let Some(frame) = self.decode_next()? {
+            if self.frame_pts_s(&frame) + 1e-6 >= next_t {
+                cb(self.to_rgba(&frame, max_width)?)?;
+                emitted += 1;
+                next_t += every_s;
+            }
+        }
+        Ok(emitted)
+    }
+
     /// Frame-accurate random access: keyframe-seek before `t`, then decode
     /// forward until the first frame with pts >= t, scaled to RGBA at most
     /// `max_width` wide (0 = native). On long-GOP sources this costs up to
@@ -136,21 +176,9 @@ impl MediaEngine {
 
     fn seek_frame(&mut self, t: f64, max_width: u32, exact: bool) -> anyhow::Result<RgbaFrame> {
         let t = t.clamp(0.0, self.duration_s.max(0.0));
-        let ts = (t * AV_TIME_BASE as f64) as i64;
         // av_seek_frame directly: Input::seek's avformat_seek_file form
         // fails with EPERM on some demuxers/states
-        let ret = unsafe {
-            ffmpeg::ffi::av_seek_frame(
-                self.ictx.as_mut_ptr(),
-                -1,
-                ts,
-                ffmpeg::ffi::AVSEEK_FLAG_BACKWARD,
-            )
-        };
-        if ret < 0 {
-            return Err(anyhow!("av_seek_frame({t:.3}s) failed: {ret}"));
-        }
-        self.decoder.flush();
+        self.seek_raw(t)?;
 
         let mut last = None;
         while let Some(frame) = self.decode_next()? {
