@@ -112,6 +112,52 @@ export async function removeClip(id: string, ripple: boolean): Promise<ProjectSn
   return invoke<ProjectSnapshot>("remove_clip", { id, ripple });
 }
 
+// mock "disk" for save/open in the browser
+let mockSaved: { project: ProjectSnapshot } | null = null;
+
+export async function saveProject(): Promise<boolean> {
+  if (!inTauri) {
+    mockSaved = { project: structuredClone(mockState.project) };
+    return true;
+  }
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const path = await save({
+    filters: [{ name: "Cutlass project", extensions: ["cutlass"] }],
+    defaultPath: "untitled.cutlass",
+  });
+  if (!path) return false;
+  await invoke("save_project", { path });
+  return true;
+}
+
+export async function openProject(): Promise<{
+  project: ProjectSnapshot;
+  media: MediaItem[];
+} | null> {
+  if (!inTauri) {
+    if (!mockSaved) return null;
+    mockState.project = structuredClone(mockSaved.project);
+    return { project: structuredClone(mockSaved.project), media: [] };
+  }
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const path = await open({
+    multiple: false,
+    filters: [{ name: "Cutlass project", extensions: ["cutlass"] }],
+  });
+  if (typeof path !== "string") return null;
+  return invoke("open_project", { path });
+}
+
+/// Build thumbs for media that's in the project doc but not local yet.
+export async function hydrateMedia(mediaId: string): Promise<MediaItem | null> {
+  if (!inTauri) return null;
+  try {
+    return await invoke<MediaItem>("hydrate_media", { mediaId });
+  } catch {
+    return null; // source file missing on this machine
+  }
+}
+
 export interface Word {
   text: string;
   start: number; // source-media seconds

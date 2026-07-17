@@ -55,8 +55,20 @@ body {
   color: var(--muted);
 }
 
-.play-btn {
+.ghost-btn {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.ghost-btn:first-of-type {
   margin-left: auto;
+}
+
+.play-btn {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);

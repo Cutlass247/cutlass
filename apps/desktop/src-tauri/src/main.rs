@@ -68,6 +68,9 @@ fn import_media(path: String, state: State<AppState>) -> Result<serde_json::Valu
         len: info.duration_s,
         src_in: 0.0,
     };
+    project
+        .set_media(&info.id, &info.name, &info.path, info.duration_s)
+        .map_err(err_str)?;
     project.add_clip(&clip).map_err(err_str)?;
     state.media.lock().unwrap().insert(info.id.clone(), info);
 
@@ -117,6 +120,62 @@ fn remove_clip(
         project.remove_clip(&id).map_err(err_str)?;
     }
     Ok(project.snapshot())
+}
+
+#[tauri::command]
+fn save_project(path: String, state: State<AppState>) -> Result<(), String> {
+    let bytes = state.project.lock().unwrap().save();
+    std::fs::write(&path, bytes).map_err(err_str)
+}
+
+/// Load a .cutlass file and rebuild the media pool from the paths stored
+/// in the document (scrub proxies come from cache when available).
+#[tauri::command]
+fn open_project(path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let bytes = std::fs::read(&path).map_err(err_str)?;
+    let mut project = Project::load(&bytes).map_err(err_str)?;
+    let entries = project.media_entries();
+
+    let mut media_out = Vec::new();
+    let mut media_map = state.media.lock().unwrap();
+    media_map.clear();
+    for (id, name, src_path, _dur) in entries {
+        match media::import(Path::new(&src_path)) {
+            Ok(info) => {
+                // same path on the same machine hashes to the same id
+                if info.id == id {
+                    media_out.push(media_json(&info)?);
+                    media_map.insert(info.id.clone(), info);
+                } else {
+                    eprintln!("media id changed for {src_path} (moved file?)");
+                }
+            }
+            Err(e) => eprintln!("media offline: {name} ({src_path}): {e:#}"),
+        }
+    }
+    drop(media_map);
+
+    let snap = project.snapshot();
+    *state.project.lock().unwrap() = project;
+    Ok(json!({ "project": snap, "media": media_out }))
+}
+
+/// Build thumbs/proxy for a media id that exists in the doc but not in
+/// this instance's pool yet (opened project or collab peer).
+#[tauri::command]
+fn hydrate_media(media_id: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let entry = state
+        .project
+        .lock()
+        .unwrap()
+        .media_entries()
+        .into_iter()
+        .find(|(id, ..)| *id == media_id)
+        .ok_or_else(|| format!("media {media_id} not in project"))?;
+    let info = media::import(Path::new(&entry.2)).map_err(err_str)?;
+    let out = media_json(&info)?;
+    state.media.lock().unwrap().insert(media_id, info);
+    Ok(out)
 }
 
 /// Find the whisper model: CUTLASS_WHISPER_MODEL env var, or walk up
@@ -275,7 +334,10 @@ fn main() {
             pause,
             playback_clock,
             transcribe_media,
-            razor_out
+            razor_out,
+            save_project,
+            open_project,
+            hydrate_media
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");
