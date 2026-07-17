@@ -33,6 +33,16 @@ encoding must use hardware encoders (QSV/NVENC/AMF — present in LGPL
 builds), openh264, or ship a GPL-licensed build variant. Decision needed
 before the export milestone.
 
+## Test media (gitignored, regenerate with the GPL sidecar ffmpeg)
+
+```
+# 4K video-only clip + all-intra proxy (engine_check)
+ffmpeg -f lavfi -i testsrc2=size=3840x2160:rate=30 -t 20 -c:v libx264 -preset veryfast -pix_fmt yuv420p spikes/media-engine/test4k.mp4
+ffmpeg -i spikes/media-engine/test4k.mp4 -vf scale=960:540 -c:v libx264 -preset veryfast -g 1 -crf 20 spikes/media-engine/test4k_proxy.mp4
+# 720p A/V clip with 440 Hz sine (audio_check, player_check)
+ffmpeg -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 10 -c:v libx264 -preset veryfast -c:a aac -ac 2 -shortest spikes/media-engine/testav.mp4
+```
+
 ## Build requirements (Windows)
 
 - `FFMPEG_DIR` → repo `vendor/ffmpeg` (BtbN ffmpeg-n7.1 lgpl-shared)
