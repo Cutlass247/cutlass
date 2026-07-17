@@ -24,6 +24,24 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "resources": {
+      "../../../vendor/ffmpeg/bin/avcodec-61.dll": "./",
+      "../../../vendor/ffmpeg/bin/avdevice-61.dll": "./",
+      "../../../vendor/ffmpeg/bin/avfilter-10.dll": "./",
+      "../../../vendor/ffmpeg/bin/avformat-61.dll": "./",
+      "../../../vendor/ffmpeg/bin/avutil-59.dll": "./",
+      "../../../vendor/ffmpeg/bin/swresample-5.dll": "./",
+      "../../../vendor/ffmpeg/bin/swscale-8.dll": "./",
+      "../../../vendor/whisper/ggml-base.en.bin": "./whisper/",
+      "../../../vendor/ffmpeg/LICENSE.txt": "./licenses/FFMPEG-LICENSE.txt"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }

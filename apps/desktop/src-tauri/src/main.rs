@@ -273,11 +273,20 @@ fn hydrate_media(media_id: String, state: State<AppState>) -> Result<serde_json:
     Ok(out)
 }
 
-/// Find the whisper model: CUTLASS_WHISPER_MODEL env var, or walk up
-/// from the current dir looking for vendor/whisper/ggml-base.en.bin.
+/// Find the whisper model: CUTLASS_WHISPER_MODEL env var, the installed
+/// location (whisper/ beside the exe, where the bundler puts it), or —
+/// in dev — walking up from the current dir to vendor/whisper/.
 fn whisper_model_path() -> Result<std::path::PathBuf, String> {
     if let Ok(p) = std::env::var("CUTLASS_WHISPER_MODEL") {
         return Ok(p.into());
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let installed = dir.join("whisper").join("ggml-base.en.bin");
+            if installed.exists() {
+                return Ok(installed);
+            }
+        }
     }
     let mut dir = std::env::current_dir().map_err(err_str)?;
     loop {
