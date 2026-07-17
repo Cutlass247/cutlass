@@ -44,9 +44,15 @@ The two bets the company rests on, proven before anything else is built:
 
 - `crates/cutlass-core` — CRDT project model (Automerge) + scrub-proxy import
 - `crates/cutlass-engine` — in-process libav decode: 261 fps 4K decode,
-  6.2 ms frame-accurate proxy seeks ([FINDINGS](crates/cutlass-engine/FINDINGS.md))
-- `apps/desktop` — Tauri 2 editor shell: import, timeline, drag clips,
-  proxy scrubbing, full-quality paused frames from the engine
+  6.2 ms frame-accurate proxy seeks; audio playback (cpal, audio clock owns
+  transport); on-device whisper transcription
+  ([FINDINGS](crates/cutlass-engine/FINDINGS.md))
+- `crates/cutlass-sync-server` — collab relay: rooms + Automerge sync
+  protocol over websockets (`cargo run -p cutlass-sync-server`)
+- `apps/desktop` — Tauri 2 editor: import, timeline (move/trim/ripple),
+  proxy scrubbing + engine-quality paused frames, audio playback,
+  transcript editing (delete words → cut video) with live captions,
+  .cutlass save/open, live collab (Collab button or CUTLASS_ROOM env)
 
 Dev setup (Windows): Rust MSVC + LLVM (`LIBCLANG_PATH`) + BtbN FFmpeg
 lgpl-shared in `vendor/ffmpeg` (`FFMPEG_DIR`, `bin` on PATH). Run with

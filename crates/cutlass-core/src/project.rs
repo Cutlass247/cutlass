@@ -38,12 +38,21 @@ impl Default for Project {
 
 impl Project {
     pub fn new(name: &str) -> Self {
+        // Deterministic bootstrap: fixed actor + time 0 makes the initial
+        // change byte-identical across every Cutlass instance, so any two
+        // projects share ancestry and can merge in a collab session
+        // without root-map conflicts. Real edits use a random actor.
         let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "name", name).expect("init name");
+        doc.set_actor(automerge::ActorId::from(b"cutlass.bootstrap".as_slice()));
         doc.put_object(automerge::ROOT, "clips", ObjType::Map)
             .expect("init clips");
         doc.put_object(automerge::ROOT, "media", ObjType::Map)
             .expect("init media");
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default().with_time(0),
+        );
+        doc.set_actor(automerge::ActorId::random());
+        doc.put(automerge::ROOT, "name", name).expect("init name");
         Self { doc }
     }
 
@@ -470,6 +479,31 @@ mod tests {
             p2.media_entries(),
             vec![("m-a".into(), "a.mp4".into(), "C:/media/a.mp4".into(), 12.5)]
         );
+    }
+
+    #[test]
+    fn independently_created_projects_share_ancestry() {
+        // the product case: two fresh instances meet in a collab room
+        let mut a = Project::new("A");
+        let mut b = Project::new("B");
+        a.add_clip(&demo_clip("a1", "V1", 0.0)).unwrap();
+        let mut sa = automerge::sync::State::new();
+        let mut sb = automerge::sync::State::new();
+        for _ in 0..20 {
+            let ma = a.generate_sync_message(&mut sa);
+            if let Some(m) = &ma {
+                b.receive_sync_message(&mut sb, m).unwrap();
+            }
+            let mb = b.generate_sync_message(&mut sb);
+            if let Some(m) = &mb {
+                a.receive_sync_message(&mut sa, m).unwrap();
+            }
+            if ma.is_none() && mb.is_none() {
+                break;
+            }
+        }
+        assert_eq!(a.snapshot(), b.snapshot());
+        assert_eq!(b.snapshot()["clips"].as_array().unwrap().len(), 1);
     }
 
     #[test]

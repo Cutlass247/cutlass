@@ -9,7 +9,9 @@ import {
   hydrateMedia,
   importMedia,
   inTauri,
+  joinSession,
   moveClip,
+  onProjectChanged,
   openProject,
   saveProject,
   pauseAudio,
@@ -70,8 +72,26 @@ export default function App() {
   const [wordSel, setWordSel] = useState<{ media: string; a: number; b: number } | null>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
 
+  const [room, setRoom] = useState<string | null>(null);
+
   useEffect(() => {
     getProject().then(setProject).catch((e) => setError(String(e)));
+    // remote collab edits land here
+    const un = onProjectChanged((snap) => setProject(snap));
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  const doCollab = useCallback(async () => {
+    const name = window.prompt("Room name (share it with your collaborator):", "cutlass-demo");
+    if (!name) return;
+    try {
+      await joinSession(name.trim());
+      setRoom(name.trim());
+    } catch (e) {
+      setError(String(e));
+    }
   }, []);
 
   const clips = useMemo(() => {
@@ -465,6 +485,13 @@ export default function App() {
       <header className="topbar">
         <span className="logo">⚔️ Cutlass</span>
         <span className="project-name">{project.name}</span>
+        {room ? (
+          <span className="badge live">🔗 {room}</span>
+        ) : (
+          <button className="ghost-btn" onClick={doCollab} disabled={!inTauri}>
+            Collab
+          </button>
+        )}
         <button className="ghost-btn" onClick={doOpen} title="Ctrl+O">
           Open
         </button>

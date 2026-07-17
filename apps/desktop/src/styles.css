@@ -106,6 +106,15 @@ body {
   font-size: 11px;
 }
 
+.badge.live {
+  background: #1e7e34;
+  margin-left: auto;
+}
+
+.badge.live ~ .ghost-btn {
+  margin-left: 0;
+}
+
 .notice {
   padding: 6px 14px;
   background: #2a3040;
