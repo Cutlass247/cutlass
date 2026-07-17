@@ -112,6 +112,36 @@ export async function removeClip(id: string, ripple: boolean): Promise<ProjectSn
   return invoke<ProjectSnapshot>("remove_clip", { id, ripple });
 }
 
+/// Start timeline audio from `fromT`. False = no audio (browser mock or
+/// no output device) — the UI falls back to its silent local clock.
+export async function playAudio(fromT: number): Promise<boolean> {
+  if (!inTauri) return false;
+  try {
+    return await invoke<boolean>("play", { fromT });
+  } catch {
+    return false;
+  }
+}
+
+/// Stop audio; resolves to the timeline position where it stopped.
+export async function pauseAudio(): Promise<number | null> {
+  if (!inTauri) return null;
+  try {
+    return await invoke<number | null>("pause");
+  } catch {
+    return null;
+  }
+}
+
+export async function audioClock(): Promise<{ t: number; ended: boolean } | null> {
+  if (!inTauri) return null;
+  try {
+    return await invoke<{ t: number; ended: boolean } | null>("playback_clock");
+  } catch {
+    return null;
+  }
+}
+
 /// Full-quality frame from the native decode engine at source time `t`.
 /// Returns null in browser-mock mode (the proxy frame stays up).
 export async function exactFrame(path: string, t: number): Promise<string | null> {
