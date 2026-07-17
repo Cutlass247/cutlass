@@ -112,6 +112,22 @@ export async function removeClip(id: string, ripple: boolean): Promise<ProjectSn
   return invoke<ProjectSnapshot>("remove_clip", { id, ripple });
 }
 
+/// Join a collab room on the sync relay.
+export async function joinSession(room: string): Promise<void> {
+  if (!inTauri) throw new Error("collab requires the desktop app");
+  await invoke("join_session", { room });
+}
+
+/// Subscribe to project changes pushed by collab peers. Returns an
+/// unsubscribe function (no-op in the browser mock).
+export async function onProjectChanged(
+  cb: (snap: ProjectSnapshot) => void
+): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<ProjectSnapshot>("project-changed", (e) => cb(e.payload));
+}
+
 // mock "disk" for save/open in the browser
 let mockSaved: { project: ProjectSnapshot } | null = null;
 

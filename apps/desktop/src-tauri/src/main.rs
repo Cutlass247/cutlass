@@ -22,6 +22,16 @@ struct AppState {
     /// open decode engines, keyed by source path
     engines: Mutex<HashMap<String, cutlass_engine::MediaEngine>>,
     playback: Mutex<Option<cutlass_engine::player::PlaybackHandle>>,
+    /// pings the collab task after a local edit, when a session is live
+    sync_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<()>>>,
+}
+
+/// Every mutating command calls this so a live collab session pushes the
+/// change out. No session → no-op.
+fn notify_sync(state: &State<AppState>) {
+    if let Some(tx) = state.sync_tx.lock().unwrap().as_ref() {
+        let _ = tx.send(());
+    }
 }
 
 fn err_str(e: impl std::fmt::Display) -> String {
@@ -74,7 +84,10 @@ fn import_media(path: String, state: State<AppState>) -> Result<serde_json::Valu
     project.add_clip(&clip).map_err(err_str)?;
     state.media.lock().unwrap().insert(info.id.clone(), info);
 
-    Ok(json!({ "media": media_value, "project": project.snapshot() }))
+    let snap = project.snapshot();
+    drop(project);
+    notify_sync(&state);
+    Ok(json!({ "media": media_value, "project": snap }))
 }
 
 #[tauri::command]
@@ -91,7 +104,10 @@ fn move_clip(
 ) -> Result<serde_json::Value, String> {
     let mut project = state.project.lock().unwrap();
     project.move_clip(&id, &track, start).map_err(err_str)?;
-    Ok(project.snapshot())
+    let snap = project.snapshot();
+    drop(project);
+    notify_sync(&state);
+    Ok(snap)
 }
 
 #[tauri::command]
@@ -104,7 +120,10 @@ fn trim_clip(
 ) -> Result<serde_json::Value, String> {
     let mut project = state.project.lock().unwrap();
     project.trim_clip(&id, start, len, src_in).map_err(err_str)?;
-    Ok(project.snapshot())
+    let snap = project.snapshot();
+    drop(project);
+    notify_sync(&state);
+    Ok(snap)
 }
 
 #[tauri::command]
@@ -119,7 +138,10 @@ fn remove_clip(
     } else {
         project.remove_clip(&id).map_err(err_str)?;
     }
-    Ok(project.snapshot())
+    let snap = project.snapshot();
+    drop(project);
+    notify_sync(&state);
+    Ok(snap)
 }
 
 #[tauri::command]
@@ -157,6 +179,7 @@ fn open_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
 
     let snap = project.snapshot();
     *state.project.lock().unwrap() = project;
+    notify_sync(&state);
     Ok(json!({ "project": snap, "media": media_out }))
 }
 
@@ -227,7 +250,10 @@ fn razor_out(
     project
         .razor_out(&id, src_from, src_to, &format!("c{nanos:x}"))
         .map_err(err_str)?;
-    Ok(project.snapshot())
+    let snap = project.snapshot();
+    drop(project);
+    notify_sync(&state);
+    Ok(snap)
 }
 
 /// Start audio for the V1 track from `from_t`. Returns false (not an
@@ -319,10 +345,106 @@ fn exact_frame(path: String, t: f64, state: State<AppState>) -> Result<String, S
     ))
 }
 
+/// Join (or start) a collab room. The task speaks the Automerge sync
+/// protocol with the relay; remote changes land in the shared project
+/// and the UI hears about them via the `project-changed` event.
+#[tauri::command]
+fn join_session(room: String, app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    *state.sync_tx.lock().unwrap() = Some(tx);
+    let url = std::env::var("CUTLASS_SYNC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9720".into());
+    tauri::async_runtime::spawn(sync_task(app, format!("{url}/{room}"), rx));
+    Ok(())
+}
+
+async fn sync_task(
+    app: tauri::AppHandle,
+    url: String,
+    mut local_edits: tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
+    use futures_util::{SinkExt, StreamExt};
+    use tauri::{Emitter, Manager};
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let ws = match tokio_tungstenite::connect_async(&url).await {
+        Ok((ws, _)) => ws,
+        Err(e) => {
+            eprintln!("collab connect failed ({url}): {e}");
+            let _ = app.emit("collab-error", format!("connect failed: {e}"));
+            return;
+        }
+    };
+    let (mut sink, mut stream) = ws.split();
+    let mut sync = automerge::sync::State::new();
+    let state = app.state::<AppState>();
+    let mut out: Vec<Vec<u8>> = Vec::new();
+
+    // offer our current doc
+    {
+        let mut p = state.project.lock().unwrap();
+        while let Some(m) = p.generate_sync_message(&mut sync) {
+            out.push(m);
+        }
+    }
+    for m in out.drain(..) {
+        let _ = sink.send(WsMessage::Binary(m.into())).await;
+    }
+
+    loop {
+        tokio::select! {
+            msg = stream.next() => {
+                let Some(Ok(WsMessage::Binary(bytes))) = msg else { break };
+                let snap = {
+                    let mut p = state.project.lock().unwrap();
+                    if p.receive_sync_message(&mut sync, &bytes).is_err() {
+                        continue;
+                    }
+                    while let Some(m) = p.generate_sync_message(&mut sync) {
+                        out.push(m);
+                    }
+                    p.snapshot()
+                };
+                for m in out.drain(..) {
+                    let _ = sink.send(WsMessage::Binary(m.into())).await;
+                }
+                let _ = app.emit("project-changed", snap);
+            }
+            ping = local_edits.recv() => {
+                if ping.is_none() { break }
+                {
+                    let mut p = state.project.lock().unwrap();
+                    while let Some(m) = p.generate_sync_message(&mut sync) {
+                        out.push(m);
+                    }
+                }
+                for m in out.drain(..) {
+                    let _ = sink.send(WsMessage::Binary(m.into())).await;
+                }
+            }
+        }
+    }
+    eprintln!("collab session ended ({url})");
+    let _ = app.emit("collab-error", "session ended");
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .setup(|app| {
+            // CUTLASS_ROOM=<name> auto-joins a collab room at startup
+            if let Ok(room) = std::env::var("CUTLASS_ROOM") {
+                use tauri::Manager;
+                let handle = app.handle().clone();
+                let state = app.state::<AppState>();
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+                *state.sync_tx.lock().unwrap() = Some(tx);
+                let url = std::env::var("CUTLASS_SYNC_URL")
+                    .unwrap_or_else(|_| "ws://127.0.0.1:9720".into());
+                tauri::async_runtime::spawn(sync_task(handle, format!("{url}/{room}"), rx));
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             import_media,
             get_project,
@@ -337,7 +459,8 @@ fn main() {
             razor_out,
             save_project,
             open_project,
-            hydrate_media
+            hydrate_media,
+            join_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");
