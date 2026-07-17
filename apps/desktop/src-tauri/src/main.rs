@@ -345,6 +345,55 @@ fn exact_frame(path: String, t: f64, state: State<AppState>) -> Result<String, S
     ))
 }
 
+/// Render the V1 track to an MP4. Long-running; emits `export-progress`
+/// (0..=1). Returns the encoder used (h264_qsv or libx264).
+#[tauri::command]
+fn export_project(
+    path: String,
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> Result<String, String> {
+    use tauri::Emitter;
+    let clips: Vec<(f64, f64, f64, String)> = {
+        let mut project = state.project.lock().unwrap();
+        let paths: HashMap<String, String> = project
+            .media_entries()
+            .into_iter()
+            .map(|(id, _, p, _)| (id, p))
+            .collect();
+        let snap = project.snapshot();
+        snap["clips"]
+            .as_array()
+            .map(|cs| {
+                cs.iter()
+                    .filter(|c| c["track"] == "V1")
+                    .filter_map(|c| {
+                        Some((
+                            c["start"].as_f64()?,
+                            c["len"].as_f64()?,
+                            c["src_in"].as_f64()?,
+                            paths.get(c["media"].as_str()?)?.clone(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if clips.is_empty() {
+        return Err("nothing on V1 to export".into());
+    }
+    let segments = cutlass_core::export::segments_for_track(clips);
+    cutlass_core::export::export(
+        &segments,
+        Path::new(&path),
+        &Default::default(),
+        &mut |p| {
+            let _ = app.emit("export-progress", p);
+        },
+    )
+    .map_err(err_str)
+}
+
 /// Join (or start) a collab room. The task speaks the Automerge sync
 /// protocol with the relay; remote changes land in the shared project
 /// and the UI hears about them via the `project-changed` event.
@@ -460,7 +509,8 @@ fn main() {
             save_project,
             open_project,
             hydrate_media,
-            join_session
+            join_session,
+            export_project
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");
