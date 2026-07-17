@@ -12,8 +12,11 @@ import {
   pauseAudio,
   pickVideo,
   playAudio,
+  razorOut,
   removeClip,
+  transcribeMedia,
   trimClip,
+  Word,
 } from "./ipc";
 
 const PPS = 48; // timeline pixels per second
@@ -59,6 +62,9 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [transcripts, setTranscripts] = useState<Record<string, Word[]>>({});
+  const [transcribing, setTranscribing] = useState<string | null>(null);
+  const [wordSel, setWordSel] = useState<{ media: string; a: number; b: number } | null>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -198,6 +204,88 @@ export default function App() {
   }, [hqKey, drag, playing]);
 
   const previewSrc = hq && hq.key === hqKey ? hq.src : proxySrc;
+
+  // ── transcript ──────────────────────────────────────────────────────
+  const doTranscribe = useCallback(async (mediaId: string) => {
+    setTranscribing(mediaId);
+    try {
+      const words = await transcribeMedia(mediaId);
+      setTranscripts((t) => ({ ...t, [mediaId]: words }));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setTranscribing(null);
+    }
+  }, []);
+
+  const srcToTimeline = useCallback(
+    (mediaId: string, srcT: number): number | null => {
+      for (const c of project.clips) {
+        if (c.media !== mediaId || c.track !== "V1") continue;
+        if (srcT >= c.src_in - 1e-9 && srcT < c.src_in + c.len) {
+          return c.start + (srcT - c.src_in);
+        }
+      }
+      return null;
+    },
+    [project]
+  );
+
+  // transcript shown: selected clip's media, else clip under playhead,
+  // else the first transcribed media
+  const transcriptMedia = useMemo(() => {
+    const selClip = selected ? project.clips.find((c) => c.id === selected) : null;
+    if (selClip && transcripts[selClip.media]) return selClip.media;
+    if (underPlayhead && transcripts[underPlayhead.media.id]) return underPlayhead.media.id;
+    return Object.keys(transcripts)[0] ?? null;
+  }, [selected, project, transcripts, underPlayhead]);
+
+  const onWordClick = useCallback(
+    (mediaId: string, idx: number, words: Word[], shift: boolean) => {
+      setWordSel((sel) =>
+        shift && sel && sel.media === mediaId ? { ...sel, b: idx } : { media: mediaId, a: idx, b: idx }
+      );
+      const t = srcToTimeline(mediaId, (words[idx].start + words[idx].end) / 2);
+      if (t != null) setPlayhead(t);
+    },
+    [srcToTimeline]
+  );
+
+  const cutWords = useCallback(async () => {
+    if (!wordSel) return;
+    const words = transcripts[wordSel.media];
+    if (!words) return;
+    const [i0, i1] = [Math.min(wordSel.a, wordSel.b), Math.max(wordSel.a, wordSel.b)];
+    const from = words[i0].start;
+    const to = words[i1].end;
+    const mid = (from + to) / 2;
+    const clip = project.clips.find(
+      (c) =>
+        c.media === wordSel.media &&
+        c.track === "V1" &&
+        mid >= c.src_in &&
+        mid < c.src_in + c.len
+    );
+    if (!clip) {
+      setError("No clip on V1 covers those words");
+      return;
+    }
+    try {
+      setProject(await razorOut(clip.id, from, to));
+      setWordSel(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [wordSel, transcripts, project]);
+
+  // live caption: the word under the playhead
+  const caption = useMemo(() => {
+    if (!underPlayhead) return null;
+    const words = transcripts[underPlayhead.media.id];
+    if (!words) return null;
+    const srcT = underPlayhead.srcT;
+    return words.find((w) => srcT >= w.start && srcT < w.end)?.text ?? null;
+  }, [underPlayhead, transcripts]);
 
   const doImport = useCallback(async () => {
     setError(null);
@@ -367,6 +455,17 @@ export default function App() {
                 <div className="bin-meta">
                   {m.duration_s.toFixed(1)}s · {m.thumbs.length} proxy frames
                 </div>
+                {transcripts[m.id] ? (
+                  <div className="bin-meta">📝 {transcripts[m.id].length} words</div>
+                ) : (
+                  <button
+                    className="mini-btn"
+                    disabled={transcribing !== null}
+                    onClick={() => doTranscribe(m.id)}
+                  >
+                    {transcribing === m.id ? "Transcribing…" : "Transcribe"}
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -378,8 +477,46 @@ export default function App() {
           ) : (
             <div className="preview-empty">no clip under playhead</div>
           )}
+          {caption && <div className="caption">{caption}</div>}
           <div className="tc">{formatTC(playhead)}</div>
         </section>
+
+        {transcriptMedia && transcripts[transcriptMedia] && (
+          <aside className="transcript">
+            <h2>Transcript</h2>
+            <p className="hint">
+              Click a word to seek · Shift-click to select a range · Cut removes it from the
+              video
+            </p>
+            <div className="words">
+              {transcripts[transcriptMedia].map((w, i) => {
+                const sel =
+                  wordSel &&
+                  wordSel.media === transcriptMedia &&
+                  i >= Math.min(wordSel.a, wordSel.b) &&
+                  i <= Math.max(wordSel.a, wordSel.b);
+                const cut = srcToTimeline(transcriptMedia, (w.start + w.end) / 2) === null;
+                return (
+                  <span
+                    key={i}
+                    className={`word${sel ? " sel" : ""}${cut ? " cut" : ""}`}
+                    onClick={(e) =>
+                      onWordClick(transcriptMedia, i, transcripts[transcriptMedia], e.shiftKey)
+                    }
+                  >
+                    {w.text}
+                  </span>
+                );
+              })}
+            </div>
+            {wordSel && wordSel.media === transcriptMedia && (
+              <button className="cut-btn" onClick={cutWords}>
+                ✂ Cut {Math.abs(wordSel.b - wordSel.a) + 1} word
+                {wordSel.a === wordSel.b ? "" : "s"} from video
+              </button>
+            )}
+          </aside>
+        )}
       </main>
 
       <section className="timeline">

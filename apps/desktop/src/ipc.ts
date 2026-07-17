@@ -112,6 +112,28 @@ export async function removeClip(id: string, ripple: boolean): Promise<ProjectSn
   return invoke<ProjectSnapshot>("remove_clip", { id, ripple });
 }
 
+export interface Word {
+  text: string;
+  start: number; // source-media seconds
+  end: number;
+}
+
+/// On-device whisper transcription with word timestamps.
+export async function transcribeMedia(mediaId: string): Promise<Word[]> {
+  if (!inTauri) return mockTranscript(mediaId);
+  return invoke<Word[]>("transcribe_media", { mediaId });
+}
+
+/// Delete a source range from a clip — the "delete these words" edit.
+export async function razorOut(
+  id: string,
+  srcFrom: number,
+  srcTo: number
+): Promise<ProjectSnapshot> {
+  if (!inTauri) return mockRazor(id, srcFrom, srcTo);
+  return invoke<ProjectSnapshot>("razor_out", { id, srcFrom, srcTo });
+}
+
 /// Start timeline audio from `fromT`. False = no audio (browser mock or
 /// no output device) — the UI falls back to its silent local clock.
 export async function playAudio(fromT: number): Promise<boolean> {
@@ -177,6 +199,51 @@ function mockThumbs(durationS: number, fps: number, label: string): string[] {
     thumbs.push(canvas.toDataURL("image/jpeg", 0.7));
   }
   return thumbs;
+}
+
+function mockTranscript(mediaId: string): Promise<Word[]> {
+  const media = mockState.project.clips.find((c) => c.media === mediaId);
+  const dur = media ? media.len + media.src_in : 12;
+  const text =
+    "the quick brown fox jumps over the lazy dog cutlass makes video editing fast and simple".split(" ");
+  const per = dur / text.length;
+  return new Promise((r) =>
+    setTimeout(
+      () => r(text.map((t, i) => ({ text: t, start: i * per, end: (i + 0.9) * per }))),
+      600
+    )
+  );
+}
+
+async function mockRazor(id: string, srcFrom: number, srcTo: number): Promise<ProjectSnapshot> {
+  const clips = mockState.project.clips;
+  const c = clips.find((x) => x.id === id);
+  if (c) {
+    const srcEnd = c.src_in + c.len;
+    const from = Math.max(c.src_in, srcFrom);
+    const to = Math.min(srcEnd, srcTo);
+    const removed = to - from;
+    if (removed > 0) {
+      const leftLen = from - c.src_in;
+      const rightLen = srcEnd - to;
+      const origStart = c.start;
+      const origEnd = c.start + c.len;
+      if (rightLen > 1e-9) {
+        clips.push({ ...c, id: `${id}-r${Date.now()}`, start: origStart + leftLen, len: rightLen, src_in: to });
+      }
+      if (leftLen > 1e-9) {
+        c.len = leftLen;
+      } else {
+        clips.splice(clips.indexOf(c), 1);
+      }
+      for (const o of clips) {
+        if (o.id !== id && o.track === c.track && o.start > origEnd - 1e-9) {
+          o.start = Math.max(0, o.start - removed);
+        }
+      }
+    }
+  }
+  return structuredClone(mockState.project);
 }
 
 async function mockImport(path: string): Promise<ImportResult> {
