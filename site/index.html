@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cutlass — Cut sharper. Own everything.</title>
+<meta name="description" content="Cutlass is a video editor that transcribes your footage on-device and lets you cut video by deleting words. Real-time collaboration. No subscriptions required. Your content is yours — always." />
+<style>
+  :root {
+    --bg: #141414; --panel: #1d1d1d; --border: #2d2d2d;
+    --gold: #e8b339; --blue: #4a90ff; --ok: #3fb950;
+    --text: #eceef2; --muted: #9ba1ac;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: Inter, "Segoe UI", system-ui, sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 18px 0;
+  }
+  .logo { font-weight: 800; font-size: 20px; letter-spacing: 0.01em; }
+  .logo .blade { color: var(--gold); }
+  nav { margin-left: auto; display: flex; gap: 22px; font-size: 14px; }
+  nav a { color: var(--muted); text-decoration: none; transition: color 160ms; }
+  nav a:hover { color: var(--text); }
+
+  .hero { padding: 88px 0 64px; text-align: center; }
+  .hero h1 {
+    font-size: clamp(38px, 6vw, 64px); font-weight: 800; line-height: 1.1;
+    letter-spacing: -0.02em;
+  }
+  .hero h1 .gold { color: var(--gold); }
+  .hero p.sub {
+    margin: 22px auto 0; max-width: 640px; font-size: 19px; color: var(--muted);
+  }
+  .cta-row { margin-top: 36px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 13px 28px; border-radius: 9px;
+    font-weight: 700; font-size: 15px; text-decoration: none;
+    transition: filter 160ms, transform 160ms;
+  }
+  .btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+  .btn.gold { background: linear-gradient(180deg, #f0c458, var(--gold)); color: #201a08; }
+  .btn.ghost { border: 1px solid var(--border); color: var(--text); }
+  .pledge-line { margin-top: 18px; font-size: 13px; color: var(--muted); }
+  .pledge-line b { color: var(--ok); }
+
+  .demo {
+    margin: 30px auto 0; max-width: 720px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 14px; padding: 26px 30px;
+    text-align: left; box-shadow: 0 18px 60px rgba(0,0,0,0.5);
+  }
+  .demo .cap { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 12px; }
+  .words { font-size: 20px; line-height: 2; user-select: none; }
+  .w { padding: 2px 4px; border-radius: 5px; }
+  .w.cut { text-decoration: line-through; color: #5a5f68; background: rgba(248,81,73,0.12); }
+  .w.filler { color: var(--gold); text-decoration: underline dotted; }
+  .demo .note { margin-top: 12px; font-size: 13px; color: var(--muted); }
+
+  section { padding: 72px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: 30px; font-weight: 800; letter-spacing: -0.01em; margin-bottom: 10px; }
+  .lead { color: var(--muted); max-width: 640px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; margin-top: 36px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 24px; transition: border-color 160ms, transform 160ms;
+  }
+  .card:hover { border-color: #3d3d3d; transform: translateY(-2px); }
+  .card .ico { font-size: 26px; }
+  .card h3 { margin: 12px 0 6px; font-size: 17px; }
+  .card p { font-size: 14px; color: var(--muted); }
+  .card p b { color: var(--text); }
+
+  .pledge { background: linear-gradient(180deg, rgba(232,179,57,0.06), transparent); }
+  .pledge ul { margin-top: 24px; list-style: none; display: grid; gap: 14px; max-width: 640px; }
+  .pledge li { padding-left: 30px; position: relative; font-size: 16px; }
+  .pledge li::before { content: "✓"; position: absolute; left: 0; color: var(--ok); font-weight: 800; }
+  .pledge .fine { margin-top: 26px; font-size: 13px; color: var(--muted); }
+
+  .waitlist { text-align: center; }
+  .waitlist .btn { margin-top: 26px; }
+  footer { border-top: 1px solid var(--border); padding: 28px 0; font-size: 13px; color: var(--muted); display: flex; gap: 18px; flex-wrap: wrap; }
+  footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; width: 100%; }
+  footer span:first-child { margin-right: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="logo"><span class="blade">⚔️</span> Cutlass</span>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#pledge">The pledge</a>
+      <a href="#waitlist">Beta</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1>Cut sharper.<br /><span class="gold">Own everything.</span></h1>
+    <p class="sub">
+      Cutlass transcribes your footage on your machine and lets you edit video
+      by deleting words. Cut every “um” in one click. Collaborate live, like a
+      doc. Export in seconds on your GPU.
+    </p>
+    <div class="cta-row">
+      <a class="btn gold" href="#waitlist">Join the beta</a>
+      <a class="btn ghost" href="#how">See how it works</a>
+    </div>
+    <p class="pledge-line"><b>Free beta.</b> No watermark. No account required. Nothing uploaded.</p>
+
+    <div class="demo" id="how">
+      <div class="cap">Your transcript is your timeline</div>
+      <p class="words">
+        <span class="w">So</span>
+        <span class="w filler cut">um</span>
+        <span class="w">this</span>
+        <span class="w">is</span>
+        <span class="w">the</span>
+        <span class="w">launch</span>
+        <span class="w">video</span>
+        <span class="w cut">wait</span>
+        <span class="w cut">let</span>
+        <span class="w cut">me</span>
+        <span class="w cut">start</span>
+        <span class="w cut">over</span>
+        <span class="w filler cut">uh</span>
+        <span class="w">and</span>
+        <span class="w">it</span>
+        <span class="w">cuts</span>
+        <span class="w">itself.</span>
+      </p>
+      <p class="note">
+        Struck-through words are gone from the video — frame-accurate cuts,
+        rippled shut, undoable. Silences and filler words go in one click.
+      </p>
+    </div>
+  </div>
+
+  <section>
+    <h2>An editor that respects your machine — and you</h2>
+    <p class="lead">Built in Rust on a native decode engine. The heavy lifting happens on your hardware, not a rented cloud.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="ico">📝</div>
+        <h3>Edit video like text</h3>
+        <p>On-device transcription with word-accurate timestamps. Click a word to jump there. Delete words to cut the video. <b>Captions come free.</b></p>
+      </div>
+      <div class="card">
+        <div class="ico">🤝</div>
+        <h3>Multiplayer timelines</h3>
+        <p>Share a room and edit the same timeline together — live cursors, offline edits that merge cleanly. <b>Like a doc, but it's a video edit.</b></p>
+      </div>
+      <div class="card">
+        <div class="ico">⚡</div>
+        <h3>Fast on real hardware</h3>
+        <p>Native engine: 4K decode at 200+ fps, 6&nbsp;ms scrub seeks, hardware-accelerated export. <b>Smooth on laptops, not just workstations.</b></p>
+      </div>
+      <div class="card">
+        <div class="ico">✂️</div>
+        <h3>Smart cuts</h3>
+        <p>Every “um”, “uh”, and dead-air pause found automatically from the transcript. <b>Remove them all in two clicks</b> — one undo brings them back.</p>
+      </div>
+      <div class="card">
+        <div class="ico">🎛️</div>
+        <h3>Two editors in one</h3>
+        <p><b>Create</b> mode is import → words appear → delete → export. <b>Studio</b> mode is a full multi-track NLE. Same project — switch anytime.</p>
+      </div>
+      <div class="card">
+        <div class="ico">📦</div>
+        <h3>An open project format</h3>
+        <p>Your project file is a documented CRDT document with full history. <b>No lock-in.</b> Read it with open-source tools forever.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="pledge" id="pledge">
+    <h2>The ownership pledge</h2>
+    <p class="lead">Some editors' terms of service claim a license to everything you make with them — including private drafts. We think that's disqualifying.</p>
+    <ul>
+      <li><b>Your content is yours.</b> Cutlass claims no license, ever, to anything you create.</li>
+      <li><b>On-device by default.</b> Transcription and editing never upload your footage.</li>
+      <li><b>No watermarks.</b> Not on the free tier, not anywhere.</li>
+      <li><b>No subscription required.</b> A one-time purchase will always be an option.</li>
+    </ul>
+    <p class="fine">The whole pledge fits on one page — because terms you can read are terms you can trust.</p>
+  </section>
+
+  <section class="waitlist" id="waitlist">
+    <h2>Be first to the beta</h2>
+    <p class="lead" style="margin: 0 auto;">Windows first. macOS and Linux follow. If you're leaving another editor — we built this for you.</p>
+    <a class="btn gold" href="mailto:beta@cutlass.app?subject=Cutlass%20beta&body=Count%20me%20in.%20I%20edit%3A%20">Join the beta list</a>
+    <p class="pledge-line">No spam — one email when your build is ready.</p>
+  </section>
+</div>
+<footer>
+  <div class="wrap">
+    <span>⚔️ Cutlass — Cut sharper. Own everything.</span>
+    <span>© 2026 Cutlass</span>
+  </div>
+</footer>
+</body>
+</html>
