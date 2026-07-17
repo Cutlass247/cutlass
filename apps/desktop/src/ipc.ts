@@ -67,6 +67,7 @@ export async function moveClip(
   start: number
 ): Promise<ProjectSnapshot> {
   if (!inTauri) {
+    mockCheckpoint();
     const clip = mockState.project.clips.find((c) => c.id === id);
     if (clip) {
       clip.track = track;
@@ -84,6 +85,7 @@ export async function trimClip(
   srcIn: number
 ): Promise<ProjectSnapshot> {
   if (!inTauri) {
+    mockCheckpoint();
     const clip = mockState.project.clips.find((c) => c.id === id);
     if (clip) {
       clip.start = start;
@@ -97,6 +99,7 @@ export async function trimClip(
 
 export async function removeClip(id: string, ripple: boolean): Promise<ProjectSnapshot> {
   if (!inTauri) {
+    mockCheckpoint();
     const clips = mockState.project.clips;
     const removed = clips.find((c) => c.id === id);
     mockState.project.clips = clips.filter((c) => c.id !== id);
@@ -147,6 +150,50 @@ export async function onProjectChanged(
   if (!inTauri) return () => {};
   const { listen } = await import("@tauri-apps/api/event");
   return listen<ProjectSnapshot>("project-changed", (e) => cb(e.payload));
+}
+
+export async function undoEdit(): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    const prev = mockHist.undo.pop();
+    if (prev) {
+      mockHist.redo.push(structuredClone(mockState.project));
+      mockState.project = prev;
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("undo");
+}
+
+export async function redoEdit(): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    const next = mockHist.redo.pop();
+    if (next) {
+      mockHist.undo.push(structuredClone(mockState.project));
+      mockState.project = next;
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("redo");
+}
+
+/// Razor several source ranges out in one undoable edit.
+export async function cutRanges(
+  mediaId: string,
+  ranges: [number, number][]
+): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const sorted = [...ranges].sort((a, b) => b[0] - a[0]);
+    for (const [from, to] of sorted) {
+      const mid = (from + to) / 2;
+      const clip = mockState.project.clips.find(
+        (c) => c.track === "V1" && c.media === mediaId && mid >= c.src_in && mid < c.src_in + c.len
+      );
+      if (clip) applyMockRazor(clip.id, from, to);
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("cut_ranges", { mediaId, ranges });
 }
 
 // mock "disk" for save/open in the browser
@@ -261,6 +308,42 @@ const mockState: { project: ProjectSnapshot; nextClip: number } = {
   nextClip: 1,
 };
 
+const mockHist: { undo: ProjectSnapshot[]; redo: ProjectSnapshot[] } = { undo: [], redo: [] };
+
+function mockCheckpoint() {
+  mockHist.undo.push(structuredClone(mockState.project));
+  if (mockHist.undo.length > 100) mockHist.undo.shift();
+  mockHist.redo = [];
+}
+
+function applyMockRazor(id: string, srcFrom: number, srcTo: number) {
+  const clips = mockState.project.clips;
+  const c = clips.find((x) => x.id === id);
+  if (!c) return;
+  const srcEnd = c.src_in + c.len;
+  const from = Math.max(c.src_in, srcFrom);
+  const to = Math.min(srcEnd, srcTo);
+  const removed = to - from;
+  if (removed <= 0) return;
+  const leftLen = from - c.src_in;
+  const rightLen = srcEnd - to;
+  const origStart = c.start;
+  const origEnd = c.start + c.len;
+  if (rightLen > 1e-9) {
+    clips.push({ ...c, id: `${id}-r${Date.now()}${Math.random().toString(36).slice(2, 6)}`, start: origStart + leftLen, len: rightLen, src_in: to });
+  }
+  if (leftLen > 1e-9) {
+    c.len = leftLen;
+  } else {
+    clips.splice(clips.indexOf(c), 1);
+  }
+  for (const o of clips) {
+    if (o.id !== id && o.track === c.track && o.start > origEnd - 1e-9) {
+      o.start = Math.max(0, o.start - removed);
+    }
+  }
+}
+
 function mockThumbs(durationS: number, fps: number, label: string): string[] {
   const canvas = document.createElement("canvas");
   canvas.width = 480;
@@ -287,50 +370,33 @@ function mockThumbs(durationS: number, fps: number, label: string): string[] {
 function mockTranscript(mediaId: string): Promise<Word[]> {
   const media = mockState.project.clips.find((c) => c.media === mediaId);
   const dur = media ? media.len + media.src_in : 12;
+  // includes fillers and a long pause so smart cuts have work to do
   const text =
-    "the quick brown fox jumps over the lazy dog cutlass makes video editing fast and simple".split(" ");
-  const per = dur / text.length;
-  return new Promise((r) =>
-    setTimeout(
-      () => r(text.map((t, i) => ({ text: t, start: i * per, end: (i + 0.9) * per }))),
-      600
-    )
-  );
+    "so um the quick brown fox uh jumps over the lazy dog | cutlass makes um video editing fast and simple".split(" ");
+  const spoken = text.filter((t) => t !== "|");
+  const per = (dur - 1.6) / spoken.length;
+  const words: Word[] = [];
+  let t = 0;
+  for (const w of text) {
+    if (w === "|") {
+      t += 1.6; // dead air
+      continue;
+    }
+    words.push({ text: w, start: t, end: t + per * 0.9 });
+    t += per;
+  }
+  return new Promise((r) => setTimeout(() => r(words), 600));
 }
 
 async function mockRazor(id: string, srcFrom: number, srcTo: number): Promise<ProjectSnapshot> {
-  const clips = mockState.project.clips;
-  const c = clips.find((x) => x.id === id);
-  if (c) {
-    const srcEnd = c.src_in + c.len;
-    const from = Math.max(c.src_in, srcFrom);
-    const to = Math.min(srcEnd, srcTo);
-    const removed = to - from;
-    if (removed > 0) {
-      const leftLen = from - c.src_in;
-      const rightLen = srcEnd - to;
-      const origStart = c.start;
-      const origEnd = c.start + c.len;
-      if (rightLen > 1e-9) {
-        clips.push({ ...c, id: `${id}-r${Date.now()}`, start: origStart + leftLen, len: rightLen, src_in: to });
-      }
-      if (leftLen > 1e-9) {
-        c.len = leftLen;
-      } else {
-        clips.splice(clips.indexOf(c), 1);
-      }
-      for (const o of clips) {
-        if (o.id !== id && o.track === c.track && o.start > origEnd - 1e-9) {
-          o.start = Math.max(0, o.start - removed);
-        }
-      }
-    }
-  }
+  mockCheckpoint();
+  applyMockRazor(id, srcFrom, srcTo);
   return structuredClone(mockState.project);
 }
 
 async function mockImport(path: string): Promise<ImportResult> {
   await new Promise((r) => setTimeout(r, 400)); // fake work
+  mockCheckpoint();
   const n = mockState.nextClip++;
   const duration = 8 + n * 4;
   const fps = 5;

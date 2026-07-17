@@ -293,6 +293,36 @@ body {
   cursor: pointer;
 }
 
+.word.filler {
+  color: #e8a04c;
+  text-decoration: underline dotted;
+}
+
+.smart-cuts {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.smart-btn {
+  background: transparent;
+  color: #e8a04c;
+  border: 1px solid #e8a04c66;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.smart-btn:hover {
+  background: #e8a04c1a;
+}
+
+.ghost-btn.slim {
+  margin-left: 0;
+}
+
 .tc {
   position: absolute;
   bottom: 12px;
