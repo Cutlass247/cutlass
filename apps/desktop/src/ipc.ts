@@ -112,6 +112,27 @@ export async function removeClip(id: string, ripple: boolean): Promise<ProjectSn
   return invoke<ProjectSnapshot>("remove_clip", { id, ripple });
 }
 
+/// Render the V1 track to an MP4. Resolves to the encoder used, or null
+/// if the user cancelled the file picker.
+export async function exportProject(): Promise<string | null> {
+  if (!inTauri) throw new Error("export requires the desktop app");
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const path = await save({
+    filters: [{ name: "MP4 video", extensions: ["mp4"] }],
+    defaultPath: "export.mp4",
+  });
+  if (!path) return null;
+  return invoke<string>("export_project", { path });
+}
+
+export async function onExportProgress(
+  cb: (progress: number) => void
+): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<number>("export-progress", (e) => cb(e.payload));
+}
+
 /// Join a collab room on the sync relay.
 export async function joinSession(room: string): Promise<void> {
   if (!inTauri) throw new Error("collab requires the desktop app");

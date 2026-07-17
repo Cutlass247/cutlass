@@ -5,12 +5,14 @@ import {
   ProjectSnapshot,
   audioClock,
   exactFrame,
+  exportProject,
   getProject,
   hydrateMedia,
   importMedia,
   inTauri,
   joinSession,
   moveClip,
+  onExportProgress,
   onProjectChanged,
   openProject,
   saveProject,
@@ -74,13 +76,31 @@ export default function App() {
 
   const [room, setRoom] = useState<string | null>(null);
 
+  const [exporting, setExporting] = useState<number | null>(null);
+
   useEffect(() => {
     getProject().then(setProject).catch((e) => setError(String(e)));
     // remote collab edits land here
     const un = onProjectChanged((snap) => setProject(snap));
+    const unExport = onExportProgress((p) => setExporting(p));
     return () => {
       un.then((f) => f());
+      unExport.then((f) => f());
     };
+  }, []);
+
+  const doExport = useCallback(async () => {
+    setError(null);
+    setExporting(0);
+    try {
+      const encoder = await exportProject();
+      setExporting(null);
+      if (encoder) setBusy(`Exported ✓ (${encoder})`);
+      setTimeout(() => setBusy(null), 4000);
+    } catch (e) {
+      setExporting(null);
+      setError(String(e));
+    }
   }, []);
 
   const doCollab = useCallback(async () => {
@@ -497,6 +517,13 @@ export default function App() {
         </button>
         <button className="ghost-btn" onClick={doSave} title="Ctrl+S">
           Save
+        </button>
+        <button
+          className="ghost-btn"
+          onClick={doExport}
+          disabled={!inTauri || exporting !== null || clips.length === 0}
+        >
+          {exporting !== null ? `Exporting ${Math.round(exporting * 100)}%` : "Export"}
         </button>
         <button
           className="play-btn"
