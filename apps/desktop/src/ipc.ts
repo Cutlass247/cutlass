@@ -24,6 +24,7 @@ export interface MediaItem {
   duration_s: number;
   scrub_fps: number;
   thumbs: string[]; // data URLs, in time order
+  waveform: number[]; // normalized peaks, whole file (empty = no audio)
 }
 
 export interface ImportResult {
@@ -113,6 +114,29 @@ export async function removeClip(id: string, ripple: boolean): Promise<ProjectSn
     return structuredClone(mockState.project);
   }
   return invoke<ProjectSnapshot>("remove_clip", { id, ripple });
+}
+
+export async function currentRoom(): Promise<string | null> {
+  if (!inTauri) return null;
+  return invoke<string | null>("current_room");
+}
+
+export interface Presence {
+  id: string;
+  name: string;
+  color: string;
+  playhead: number;
+}
+
+export async function sendPresence(payload: Presence): Promise<void> {
+  if (!inTauri) return;
+  await invoke("send_presence", { payload });
+}
+
+export async function onPresence(cb: (p: Presence) => void): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<Presence>("presence", (e) => cb(e.payload));
 }
 
 /// Render the V1 track to an MP4. Resolves to the encoder used, or null
@@ -408,6 +432,10 @@ async function mockImport(path: string): Promise<ImportResult> {
     duration_s: duration,
     scrub_fps: fps,
     thumbs: mockThumbs(duration, fps, name),
+    waveform: Array.from({ length: 600 }, (_, i) => {
+      const speech = Math.abs(Math.sin(i / 9)) * (0.55 + 0.45 * Math.abs(Math.sin(i / 41)));
+      return Math.min(1, speech + Math.random() * 0.12);
+    }),
   };
   const end = mockState.project.clips
     .filter((c) => c.track === "V1")

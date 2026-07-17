@@ -11,11 +11,15 @@ import {
   importMedia,
   inTauri,
   joinSession,
+  currentRoom,
   cutRanges,
   moveClip,
   onExportProgress,
+  onPresence,
   onProjectChanged,
   openProject,
+  Presence,
+  sendPresence,
   saveProject,
   pauseAudio,
   pickVideo,
@@ -89,14 +93,41 @@ export default function App() {
 
   const [exporting, setExporting] = useState<number | null>(null);
 
+  // presence: who else is in the room, and where their playheads are
+  const me = useRef({
+    id: Math.random().toString(36).slice(2, 8),
+    name: "",
+    color: "",
+  });
+  if (!me.current.name) {
+    me.current.name = `editor-${me.current.id.slice(0, 4)}`;
+    me.current.color = `hsl(${((parseInt(me.current.id, 36) % 360) + 360) % 360}, 75%, 60%)`;
+  }
+  const [peers, setPeers] = useState<Record<string, Presence & { ts: number }>>({});
+
   useEffect(() => {
     getProject().then(setProject).catch((e) => setError(String(e)));
+    currentRoom().then((r) => r && setRoom(r)); // CUTLASS_ROOM auto-join
     // remote collab edits land here
     const un = onProjectChanged((snap) => setProject(snap));
     const unExport = onExportProgress((p) => setExporting(p));
+    const unPresence = onPresence((p) =>
+      setPeers((prev) => ({ ...prev, [p.id]: { ...p, ts: Date.now() } }))
+    );
+    const prune = setInterval(() => {
+      setPeers((prev) => {
+        const now = Date.now();
+        const next = Object.fromEntries(
+          Object.entries(prev).filter(([, p]) => now - p.ts < 6000)
+        );
+        return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+      });
+    }, 2000);
     return () => {
       un.then((f) => f());
       unExport.then((f) => f());
+      unPresence.then((f) => f());
+      clearInterval(prune);
     };
   }, []);
 
@@ -150,6 +181,15 @@ export default function App() {
   useEffect(() => {
     playheadRef.current = playhead;
   }, [playhead]);
+
+  // broadcast my playhead while in a room (throttled)
+  useEffect(() => {
+    if (!room) return;
+    const timer = setInterval(() => {
+      sendPresence({ ...me.current, playhead: playheadRef.current }).catch(() => {});
+    }, 300);
+    return () => clearInterval(timer);
+  }, [room]);
   const contentEndRef = useRef(0);
   useEffect(() => {
     contentEndRef.current = contentEndS;
@@ -787,6 +827,15 @@ export default function App() {
                     ))}
                 </div>
               ))}
+              {Object.values(peers).map((p) => (
+                <div
+                  className="peer-playhead"
+                  key={p.id}
+                  style={{ left: p.playhead * pps, background: p.color }}
+                >
+                  <span style={{ background: p.color }}>{p.name}</span>
+                </div>
+              ))}
               <div className="playhead" style={{ left: playhead * pps }} />
             </div>
           </div>
@@ -827,6 +876,24 @@ function ClipView({
     });
   }, [media, w, clip.src_in, clip.len]);
 
+  // audio peaks for this clip's source slice, as one filled SVG path
+  const wave = useMemo(() => {
+    const wf = media?.waveform;
+    if (!media || !wf || wf.length < 2) return null;
+    const dur = media.duration_s || 1;
+    const i0 = Math.max(0, Math.floor((clip.src_in / dur) * wf.length));
+    const i1 = Math.min(wf.length, Math.ceil(((clip.src_in + clip.len) / dur) * wf.length));
+    const slice = wf.slice(i0, i1);
+    const n = Math.min(220, slice.length);
+    if (n < 2) return null;
+    const pts: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const v = slice[Math.floor((i / n) * slice.length)] ?? 0;
+      pts.push(`${i},${30 - v * 28}`);
+    }
+    return { d: `M0,30 L${pts.join(" L")} L${n - 1},30 Z`, n };
+  }, [media, clip.src_in, clip.len]);
+
   return (
     <div
       className={`clip${dragging ? " dragging" : ""}${selected ? " selected" : ""}`}
@@ -840,6 +907,15 @@ function ClipView({
           <img key={i} src={src} alt="" draggable={false} />
         ))}
       </div>
+      {wave && (
+        <svg
+          className="clip-wave"
+          viewBox={`0 0 ${wave.n - 1} 30`}
+          preserveAspectRatio="none"
+        >
+          <path d={wave.d} />
+        </svg>
+      )}
       <span className="clip-name">{clip.name}</span>
       <div className="trim-handle trim-l" />
       <div className="trim-handle trim-r" />
