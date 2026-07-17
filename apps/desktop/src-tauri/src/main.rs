@@ -100,12 +100,62 @@ fn media_json(info: &MediaInfo) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Engine-native import: probe, sample proxy frames in one sequential
+/// decode pass, extract waveform peaks — all in-process, no ffmpeg CLI.
+fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
+    let path_str = path.to_string_lossy().to_string();
+    let mut eng = cutlass_engine::MediaEngine::open(&path_str)?;
+    let duration_s = eng.duration_s();
+    anyhow::ensure!(duration_s > 0.05, "no usable duration");
+    let scrub_fps =
+        (cutlass_core::media::MAX_SCRUB_FRAMES / duration_s.max(0.1)).min(10.0);
+    let dir = cutlass_core::media::cache_dir(path)?;
+    let mut thumb_paths = cutlass_core::media::read_frames(&dir)?;
+    if thumb_paths.is_empty() {
+        let mut i = 0u32;
+        eng.sample_frames(1.0 / scrub_fps, cutlass_core::media::SCRUB_WIDTH, |f| {
+            i += 1;
+            let rgb: Vec<u8> = f.data.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            let mut out = std::fs::File::create(dir.join(format!("f{i:05}.jpg")))?;
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80).encode(
+                &rgb,
+                f.width,
+                f.height,
+                image::ExtendedColorType::Rgb8,
+            )?;
+            Ok(())
+        })?;
+        thumb_paths = cutlass_core::media::read_frames(&dir)?;
+        anyhow::ensure!(!thumb_paths.is_empty(), "no frames sampled");
+    }
+    Ok(MediaInfo {
+        id: format!("m{:016x}", cutlass_core::media::path_hash(path)),
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "clip".into()),
+        path: path_str.clone(),
+        duration_s,
+        scrub_fps,
+        thumb_paths,
+        waveform: cutlass_engine::audio::waveform_peaks(&path_str, 1200),
+    })
+}
+
+/// Engine first; ffmpeg-CLI fallback for containers libav chokes on.
+fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
+    import_with_engine(path).or_else(|e| {
+        eprintln!("engine import failed ({e:#}); falling back to ffmpeg CLI");
+        media::ensure_ffmpeg()?;
+        media::import(path)
+    })
+}
+
 /// Import a video: probe, build scrub proxy, append a clip to V1.
 /// Runs on a worker thread (sync tauri command), so the UI stays live.
 #[tauri::command]
 fn import_media(path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
-    media::ensure_ffmpeg().map_err(err_str)?;
-    let info = media::import(Path::new(&path)).map_err(err_str)?;
+    let info = import_any(Path::new(&path)).map_err(err_str)?;
     let media_value = media_json(&info)?;
 
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -233,7 +283,7 @@ fn open_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
     let mut media_map = state.media.lock().unwrap();
     media_map.clear();
     for (id, name, src_path, _dur) in entries {
-        match media::import(Path::new(&src_path)) {
+        match import_any(Path::new(&src_path)) {
             Ok(info) => {
                 // same path on the same machine hashes to the same id
                 if info.id == id {
@@ -267,7 +317,7 @@ fn hydrate_media(media_id: String, state: State<AppState>) -> Result<serde_json:
         .into_iter()
         .find(|(id, ..)| *id == media_id)
         .ok_or_else(|| format!("media {media_id} not in project"))?;
-    let info = media::import(Path::new(&entry.2)).map_err(err_str)?;
+    let info = import_any(Path::new(&entry.2)).map_err(err_str)?;
     let out = media_json(&info)?;
     state.media.lock().unwrap().insert(media_id, info);
     Ok(out)
