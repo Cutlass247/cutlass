@@ -2,6 +2,49 @@
 // editor logic lives here.
 import { ReactNode, useEffect, useRef, useState } from "react";
 
+/// The Cutlass mark: a play button sliced by the blade.
+export function Logo({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 256 256" aria-label="Cutlass">
+      <defs>
+        <linearGradient id="lgTri" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#ffffff" />
+          <stop offset="1" stopColor="#c3c8d1" />
+        </linearGradient>
+        <linearGradient id="lgBlade" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0" stopColor="#c8941f" />
+          <stop offset="0.5" stopColor="#f6d06c" />
+          <stop offset="1" stopColor="#c8941f" />
+        </linearGradient>
+      </defs>
+      <polygon
+        points="93,173 93,189 189,133 153.6,112.4"
+        fill="url(#lgTri)"
+        stroke="url(#lgTri)"
+        strokeWidth="7"
+        strokeLinejoin="round"
+        opacity="0.9"
+      />
+      <polygon
+        points="83,67 83,163 143.6,102.4"
+        fill="url(#lgTri)"
+        stroke="url(#lgTri)"
+        strokeWidth="7"
+        strokeLinejoin="round"
+      />
+      <line
+        x1="58"
+        y1="198"
+        x2="198"
+        y2="58"
+        stroke="url(#lgBlade)"
+        strokeWidth="12"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 export function IconButton({
   label,
   hint,

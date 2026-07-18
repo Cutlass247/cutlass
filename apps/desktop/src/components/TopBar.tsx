@@ -1,4 +1,4 @@
-import { Kbd, MenuBarMenu, Segmented } from "./ui";
+import { Kbd, Logo, MenuBarMenu, Segmented } from "./ui";
 
 export type Mode = "create" | "studio";
 
@@ -25,7 +25,7 @@ export function TopBar(p: {
   return (
     <header className="topbar">
       <span className="logo" title="Cutlass">
-        ⚔️
+        <Logo size={22} />
       </span>
       <nav className="menubar">
         <MenuBarMenu

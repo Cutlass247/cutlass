@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Cutlass mark: a play button sliced by the blade.
+       Badge version (app icon / avatar). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#242428"/>
+      <stop offset="1" stop-color="#151517"/>
+    </linearGradient>
+    <linearGradient id="tri" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#c3c8d1"/>
+    </linearGradient>
+    <linearGradient id="blade" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#c8941f"/>
+      <stop offset="0.5" stop-color="#f6d06c"/>
+      <stop offset="1" stop-color="#c8941f"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="url(#bg)" stroke="#37383f" stroke-width="2"/>
+  <!-- lower half of the play mark, pushed along the cut -->
+  <polygon points="93,173 93,189 189,133 153.6,112.4" fill="url(#tri)" stroke="url(#tri)"
+           stroke-width="7" stroke-linejoin="round" opacity="0.9"/>
+  <!-- upper half, pushed the other way -->
+  <polygon points="83,67 83,163 143.6,102.4" fill="url(#tri)" stroke="url(#tri)"
+           stroke-width="7" stroke-linejoin="round"/>
+  <!-- the blade -->
+  <line x1="64" y1="192" x2="192" y2="64" stroke="url(#blade)" stroke-width="10" stroke-linecap="round"/>
+</svg>
