@@ -28,8 +28,20 @@ fn main() -> anyhow::Result<()> {
         rot: 8.0,
         ..Default::default()
     };
+    // clip 1 → (1s cross-dissolve) → clip 2, then a gap, then clip 3.
+    // The dissolve shortens clip 1's tail by 1s (2.0 → 1.0) so the total
+    // stays 1.0 + 1.0 + 2.0 + 1.5 + 2.5 = 8.0.
     let segments = vec![
-        Segment::Clip { path: a.clone(), src_in: 1.0, len: 2.0, fx: colored },
+        Segment::Clip { path: a.clone(), src_in: 1.0, len: 1.0, fx: colored },
+        Segment::Transition {
+            a_path: a.clone(),
+            a_src: 2.0,
+            b_path: a.clone(),
+            b_src: 0.0,
+            dur: 1.0,
+            dip: false,
+        },
+        Segment::Clip { path: a.clone(), src_in: 0.0, len: 2.0, fx: ClipFx::default() },
         Segment::Gap { len: 1.5 },
         Segment::Clip { path: b, src_in: 0.5, len: 2.5, fx: transformed },
     ];
@@ -41,7 +53,7 @@ fn main() -> anyhow::Result<()> {
         start: 2.5,
         fx: ClipFx { contrast: 1.2, ..Default::default() },
     }];
-    let expected = 2.0 + 1.5 + 2.5;
+    let expected = 1.0 + 1.0 + 2.0 + 1.5 + 2.5;
     let out = std::env::temp_dir().join("cutlass_export_check.mp4");
 
     let t0 = std::time::Instant::now();

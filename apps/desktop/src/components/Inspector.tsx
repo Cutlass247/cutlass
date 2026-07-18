@@ -90,6 +90,54 @@ function FxSlider({
   );
 }
 
+/// Transition INTO the selected clip from its left neighbor.
+function TransitionControl(p: { clip: Clip; onSet: (dur: number, dip: boolean) => void }) {
+  const dur = fxValue(p.clip, "trans_dur");
+  const dip = fxValue(p.clip, "trans_dip") > 0.5;
+  const kind = dur < 0.05 ? "none" : dip ? "dip" : "dissolve";
+  const [len, setLen] = useState(dur > 0.05 ? dur : 1);
+  useEffect(() => {
+    if (dur > 0.05) setLen(dur);
+  }, [dur]);
+
+  const apply = (k: string, l: number) => {
+    if (k === "none") p.onSet(0, false);
+    else p.onSet(l, k === "dip");
+  };
+
+  return (
+    <>
+      <div className="fx-heading">Transition</div>
+      <div className="fx-panel">
+        <Segmented
+          options={[
+            { value: "none", label: "None" },
+            { value: "dissolve", label: "Dissolve" },
+            { value: "dip", label: "Dip" },
+          ]}
+          value={kind}
+          onChange={(k) => apply(k, len)}
+        />
+        <div className={`fx-row${kind === "none" ? "" : " active"}`}>
+          <span className="fx-label">Duration</span>
+          <input
+            type="range"
+            min={0.2}
+            max={2}
+            step={0.1}
+            value={len}
+            disabled={kind === "none"}
+            onChange={(e) => setLen(Number(e.target.value))}
+            onPointerUp={() => kind !== "none" && apply(kind, len)}
+            onKeyUp={() => kind !== "none" && apply(kind, len)}
+          />
+          <span className="fx-val">{len.toFixed(1)}s</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function EffectControls(p: {
   clip: Clip;
   onPreview: (key: string, v: number) => void;
@@ -150,6 +198,8 @@ export function Inspector(p: {
   onTrim: (id: string, start: number, len: number, srcIn: number) => void;
   onFxPreview: (key: string, v: number) => void;
   onFxCommit: (key: string, v: number) => void;
+  hasLeftNeighbor: boolean;
+  onSetTransition: (dur: number, dip: boolean) => void;
   // transcript
   words: Word[] | null;
   transcriptMediaName: string | null;
@@ -233,6 +283,9 @@ export function Inspector(p: {
                     {clipMedia.waveform.length > 0 ? "yes" : "none"}
                   </div>
                 </div>
+              )}
+              {p.hasLeftNeighbor && (
+                <TransitionControl clip={p.clip} onSet={p.onSetTransition} />
               )}
               <div className="fx-heading">Effect Controls</div>
               <EffectControls clip={p.clip} onPreview={p.onFxPreview} onCommit={p.onFxCommit} />

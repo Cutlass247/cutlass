@@ -248,6 +248,14 @@ function ClipView({
       <span className="clip-name" style={{ background: `hsl(${hue} 55% 30% / 0.9)` }}>
         {clip.name}
       </span>
+      {(clip.fx?.trans_dur ?? 0) > 0.05 && (
+        <div
+          className="trans-badge"
+          title={`${clip.fx?.trans_dip ? "Dip to black" : "Cross dissolve"} ${(clip.fx?.trans_dur ?? 0).toFixed(1)}s`}
+        >
+          ⧓
+        </div>
+      )}
       <div className="trim-handle trim-l" />
       <div className="trim-handle trim-r" />
     </div>

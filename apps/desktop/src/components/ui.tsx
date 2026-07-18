@@ -236,8 +236,10 @@ export function fxStyle(
   const inClip = playhead - clip.start;
   const fi = v("fade_in", 0);
   const fo = v("fade_out", 0);
+  const tr = v("trans_dur", 0); // incoming transition reads as a fade-in
   let opacity = 1;
-  if (fi > 0 && inClip < fi) opacity = Math.max(0, inClip / fi);
+  const rampIn = Math.max(fi, tr);
+  if (rampIn > 0 && inClip < rampIn) opacity = Math.max(0, inClip / rampIn);
   if (fo > 0 && inClip > clip.len - fo)
     opacity = Math.min(opacity, Math.max(0, (clip.len - inClip) / fo));
 

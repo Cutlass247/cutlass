@@ -70,14 +70,38 @@ impl ClipFx {
 pub enum Segment {
     Clip { path: String, src_in: f64, len: f64, fx: ClipFx },
     Gap { len: f64 },
+    /// A `dur`-second dissolve (or dip-to-black) from A's tail into B's
+    /// head. Both windows are fitted then combined with xfade/acrossfade.
+    Transition {
+        a_path: String,
+        a_src: f64,
+        b_path: String,
+        b_src: f64,
+        dur: f64,
+        dip: bool,
+    },
 }
 
 impl Segment {
     fn len(&self) -> f64 {
         match self {
             Segment::Clip { len, .. } | Segment::Gap { len } => *len,
+            Segment::Transition { dur, .. } => *dur,
         }
     }
+}
+
+/// One V1 clip as seen by the export segment builder, including any
+/// transition INTO it from the previous adjacent clip.
+#[derive(Debug, Clone)]
+pub struct ExportClip {
+    pub start: f64,
+    pub len: f64,
+    pub src_in: f64,
+    pub path: String,
+    pub fx: ClipFx,
+    pub trans_dur: f64, // 0 = hard cut
+    pub trans_dip: bool,
 }
 
 /// A V2 clip composited over the program at its timeline position.
@@ -262,6 +286,53 @@ fn run_export(
                 filters.push_str(&format!("[{input_idx}:a]acopy[a{k}];"));
                 input_idx += 1;
             }
+            Segment::Transition { a_path, a_src, b_path, b_src, dur, dip } => {
+                let fit = |vi: u32, tag: &str| {
+                    format!(
+                        "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
+                         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},setpts=PTS-STARTPTS,\
+                         format=yuv420p[{tag}{k}];"
+                    )
+                };
+                // A tail window (input `ai`) and B head window (input `bi`);
+                // each input carries both :v and :a.
+                cmd.args(["-ss", &format!("{a_src:.3}"), "-t", &format!("{dur:.3}")]);
+                cmd.input(a_path.as_str());
+                let ai = input_idx;
+                input_idx += 1;
+                cmd.args(["-ss", &format!("{b_src:.3}"), "-t", &format!("{dur:.3}")]);
+                cmd.input(b_path.as_str());
+                let bi = input_idx;
+                input_idx += 1;
+
+                filters.push_str(&fit(ai, "xa"));
+                filters.push_str(&fit(bi, "xb"));
+                let kind = if *dip { "fadeblack" } else { "fade" };
+                filters.push_str(&format!(
+                    "[xa{k}][xb{k}]xfade=transition={kind}:duration={dur:.3}:offset=0[v{k}];"
+                ));
+
+                // audio: crossfade both windows' audio, silence where absent
+                let a_audio = if has_audio(a_path) {
+                    filters.push_str(&format!("[{ai}:a]aresample=48000[xaa{k}];"));
+                    format!("[xaa{k}]")
+                } else {
+                    cmd.args(["-f", "lavfi", "-t", &format!("{dur:.3}")]);
+                    cmd.input("anullsrc=r=48000:cl=stereo");
+                    input_idx += 1;
+                    format!("[{}:a]", input_idx - 1)
+                };
+                let b_audio = if has_audio(b_path) {
+                    filters.push_str(&format!("[{bi}:a]aresample=48000[xba{k}];"));
+                    format!("[xba{k}]")
+                } else {
+                    cmd.args(["-f", "lavfi", "-t", &format!("{dur:.3}")]);
+                    cmd.input("anullsrc=r=48000:cl=stereo");
+                    input_idx += 1;
+                    format!("[{}:a]", input_idx - 1)
+                };
+                filters.push_str(&format!("{a_audio}{b_audio}acrossfade=d={dur:.3}[a{k}];"));
+            }
         }
         concat_inputs.push_str(&format!("[v{k}][a{k}]"));
     }
@@ -371,19 +442,102 @@ fn parse_time_s(t: &str) -> Option<f64> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clip(start: f64, len: f64, src_in: f64, trans_dur: f64) -> ExportClip {
+        ExportClip {
+            start,
+            len,
+            src_in,
+            path: "x.mp4".into(),
+            fx: ClipFx::default(),
+            trans_dur,
+            trans_dip: false,
+        }
+    }
+
+    #[test]
+    fn transition_shortens_prev_and_preserves_duration() {
+        // A [0,4], B [4,4] with a 1s dissolve into B
+        let segs = build_segments(vec![clip(0.0, 4.0, 2.0, 0.0), clip(4.0, 4.0, 3.0, 1.0)]);
+        assert_eq!(segs.len(), 3);
+        match &segs[0] {
+            Segment::Clip { len, .. } => assert!((len - 3.0).abs() < 1e-9, "A body should be 3s"),
+            _ => panic!("seg0 not clip"),
+        }
+        match &segs[1] {
+            Segment::Transition { dur, a_src, b_src, .. } => {
+                assert!((dur - 1.0).abs() < 1e-9);
+                assert!((a_src - 5.0).abs() < 1e-9, "A tail window at src 2+4-1=5");
+                assert!((b_src - 2.0).abs() < 1e-9, "B head window at src 3-1=2");
+            }
+            _ => panic!("seg1 not transition"),
+        }
+        let total: f64 = segs.iter().map(|s| s.len()).sum();
+        assert!((total - 8.0).abs() < 1e-9, "total preserved at 8s, got {total}");
+    }
+
+    #[test]
+    fn transition_needs_adjacency() {
+        // gap between clips → no transition even if requested
+        let segs = build_segments(vec![clip(0.0, 4.0, 0.0, 0.0), clip(6.0, 4.0, 3.0, 1.0)]);
+        assert!(segs.iter().all(|s| !matches!(s, Segment::Transition { .. })));
+        assert!(segs.iter().any(|s| matches!(s, Segment::Gap { .. })));
+    }
+}
+
 /// Build the segment list for a track from (start, len, src_in, path)
 /// tuples: sorts, inserts gaps, ignores overlaps (later start wins the
 /// overlap region is v2 territory — v1 assumes non-overlapping V1).
-pub fn segments_for_track(mut clips: Vec<(f64, f64, f64, String, ClipFx)>) -> Vec<Segment> {
-    clips.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let mut segs = Vec::new();
+/// Build the V1 segment list from ordered clips, inserting gaps and
+/// transitions. A transition into a clip shortens the previous clip's
+/// tail by `dur` and inserts a Transition segment there, so the total
+/// timeline duration is preserved (handle-based; see Segment::Transition).
+pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
+    clips.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    let mut segs: Vec<Segment> = Vec::new();
     let mut t = 0.0f64;
-    for (start, len, src_in, path, fx) in clips {
-        if start > t + 1e-3 {
-            segs.push(Segment::Gap { len: start - t });
+    let mut prev: Option<ExportClip> = None;
+    for c in clips {
+        if c.start > t + 1e-3 {
+            segs.push(Segment::Gap { len: c.start - t });
+            prev = None; // a gap breaks adjacency
         }
-        segs.push(Segment::Clip { path, src_in, len, fx });
-        t = start + len;
+        let adj = prev
+            .as_ref()
+            .map(|p| (p.start + p.len - c.start).abs() < 1e-3)
+            .unwrap_or(false);
+        let can_trans = c.trans_dur > 0.05
+            && adj
+            && matches!(segs.last(), Some(Segment::Clip { .. }));
+        if can_trans {
+            let p = prev.as_ref().unwrap();
+            let d = c.trans_dur.min(p.len - 0.05).min(c.len);
+            if d > 0.05 {
+                // shorten the previous clip body by d
+                if let Some(Segment::Clip { len, .. }) = segs.last_mut() {
+                    *len -= d;
+                }
+                segs.push(Segment::Transition {
+                    a_path: p.path.clone(),
+                    a_src: p.src_in + p.len - d,
+                    b_path: c.path.clone(),
+                    b_src: (c.src_in - d).max(0.0),
+                    dur: d,
+                    dip: c.trans_dip,
+                });
+            }
+        }
+        segs.push(Segment::Clip {
+            path: c.path.clone(),
+            src_in: c.src_in,
+            len: c.len,
+            fx: c.fx.clone(),
+        });
+        t = c.start + c.len;
+        prev = Some(c);
     }
     segs
 }

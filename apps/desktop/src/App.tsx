@@ -29,6 +29,7 @@ import {
   saveProject,
   sendPresence,
   setEffect,
+  setTransition,
   transcribeMedia,
   trimClip,
   undoEdit,
@@ -300,6 +301,26 @@ export default function App() {
     (key: string, v: number) => {
       if (!selected) return;
       setEffect(selected, key, v).then(applyEdit).catch((e) => setError(String(e)));
+    },
+    [selected, applyEdit]
+  );
+
+  // a clip can take a transition if another clip on its track ends where
+  // it begins (adjacency)
+  const selectedHasLeftNeighbor = useMemo(() => {
+    if (!selectedClip) return false;
+    return project.clips.some(
+      (c) =>
+        c.id !== selectedClip.id &&
+        c.track === selectedClip.track &&
+        Math.abs(c.start + c.len - selectedClip.start) < 1e-3
+    );
+  }, [selectedClip, project]);
+
+  const onSetTransition = useCallback(
+    (dur: number, dip: boolean) => {
+      if (!selected) return;
+      setTransition(selected, dur, dip).then(applyEdit).catch((e) => setError(String(e)));
     },
     [selected, applyEdit]
   );
@@ -780,6 +801,8 @@ export default function App() {
             }
             onFxPreview={onFxPreview}
             onFxCommit={onFxCommit}
+            hasLeftNeighbor={selectedHasLeftNeighbor}
+            onSetTransition={onSetTransition}
             words={words}
             transcriptMediaName={transcriptMedia ? media[transcriptMedia]?.name ?? null : null}
             wordSel={wordSel && wordSel.media === transcriptMedia ? wordSel : null}
