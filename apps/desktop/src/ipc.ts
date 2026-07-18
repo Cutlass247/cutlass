@@ -155,6 +155,23 @@ export async function setEffect(
   return invoke<ProjectSnapshot>("set_effect", { id, key, value });
 }
 
+/// Set (dur=0 clears) a transition into a clip from its left neighbor.
+export async function setTransition(
+  id: string,
+  dur: number,
+  dip: boolean
+): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip) {
+      clip.fx = { ...(clip.fx ?? {}), trans_dur: dur, trans_dip: dip ? 1 : 0 };
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("set_transition", { id, dur, dip });
+}
+
 export async function currentRoom(): Promise<string | null> {
   if (!inTauri) return null;
   return invoke<string | null>("current_room");

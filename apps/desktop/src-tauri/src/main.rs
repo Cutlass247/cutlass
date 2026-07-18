@@ -277,6 +277,22 @@ fn set_effect(
     with_undo(&state, |p| p.set_effect(&id, &key, value).map_err(err_str))
 }
 
+/// Set (or clear, dur=0) a transition INTO a clip from its left neighbor.
+/// Both params in one undoable edit.
+#[tauri::command]
+fn set_transition(
+    id: String,
+    dur: f64,
+    dip: bool,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| {
+        p.set_effect(&id, "trans_dur", dur).map_err(err_str)?;
+        p.set_effect(&id, "trans_dip", if dip { 1.0 } else { 0.0 })
+            .map_err(err_str)
+    })
+}
+
 #[tauri::command]
 fn save_project(path: String, state: State<AppState>) -> Result<(), String> {
     let bytes = state.project.lock().unwrap().save();
@@ -511,18 +527,20 @@ fn export_project(
             .map(|(id, _, p, _)| (id, p))
             .collect();
         let all = project.clips_state();
-        use cutlass_core::export::ClipFx;
-        let clips: Vec<(f64, f64, f64, String, ClipFx)> = all
+        use cutlass_core::export::{ClipFx, ExportClip};
+        let clips: Vec<ExportClip> = all
             .iter()
             .filter(|c| c.track == "V1")
             .filter_map(|c| {
-                Some((
-                    c.start,
-                    c.len,
-                    c.src_in,
-                    paths.get(&c.media)?.clone(),
-                    ClipFx::from_map(&c.fx),
-                ))
+                Some(ExportClip {
+                    start: c.start,
+                    len: c.len,
+                    src_in: c.src_in,
+                    path: paths.get(&c.media)?.clone(),
+                    fx: ClipFx::from_map(&c.fx),
+                    trans_dur: c.fx.get("trans_dur").copied().unwrap_or(0.0),
+                    trans_dip: c.fx.get("trans_dip").copied().unwrap_or(0.0) > 0.5,
+                })
             })
             .collect();
         let overlays: Vec<cutlass_core::export::Overlay> = all
@@ -543,7 +561,7 @@ fn export_project(
     if clips.is_empty() {
         return Err("nothing on V1 to export".into());
     }
-    let segments = cutlass_core::export::segments_for_track(clips);
+    let segments = cutlass_core::export::build_segments(clips);
     let settings = cutlass_core::export::ExportSettings {
         width: width.unwrap_or(1920),
         height: height.unwrap_or(1080),
@@ -711,7 +729,8 @@ fn main() {
             undo,
             redo,
             cut_ranges,
-            set_effect
+            set_effect,
+            set_transition
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");
