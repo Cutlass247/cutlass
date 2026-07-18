@@ -10,9 +10,9 @@ use cutlass_engine::player::{start, AudioClip};
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("usage: player_check <video>");
     let clips = vec![
-        AudioClip { path: path.clone(), start: 0.0, len: 1.0, src_in: 0.0 },
+        AudioClip { path: path.clone(), start: 0.0, len: 1.0, src_in: 0.0, volume: 1.0 },
         // 0.5 s gap → silence
-        AudioClip { path: path.clone(), start: 1.5, len: 1.0, src_in: 5.0 },
+        AudioClip { path: path.clone(), start: 1.5, len: 1.0, src_in: 5.0, volume: 1.0 },
     ];
 
     let handle = start(vec![clips], 0.2)?;

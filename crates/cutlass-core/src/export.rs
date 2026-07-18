@@ -5,14 +5,70 @@
 //! running GPL encoders in a separate process keeps the app's LGPL
 //! linkage clean. Encoder: h264_qsv (Intel hw) first, libx264 fallback.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 
+/// Per-clip Effect Controls resolved to identity-defaulted numbers. The
+/// same vocabulary the preview (CSS) and playback (gain) speak.
+#[derive(Debug, Clone)]
+pub struct ClipFx {
+    pub brightness: f64, // 0, range -1..1
+    pub contrast: f64,   // 1
+    pub saturation: f64, // 1
+    pub scale: f64,      // 1
+    pub rot: f64,        // degrees
+    pub pos_x: f64,      // fraction of width
+    pub pos_y: f64,      // fraction of height
+    pub fade_in: f64,    // seconds
+    pub fade_out: f64,   // seconds
+    pub volume: f64,     // 1
+}
+
+impl Default for ClipFx {
+    fn default() -> Self {
+        Self {
+            brightness: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            scale: 1.0,
+            rot: 0.0,
+            pos_x: 0.0,
+            pos_y: 0.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            volume: 1.0,
+        }
+    }
+}
+
+impl ClipFx {
+    pub fn from_map(m: &BTreeMap<String, f64>) -> Self {
+        let d = Self::default();
+        let g = |k: &str, def: f64| m.get(k).copied().unwrap_or(def);
+        Self {
+            brightness: g("brightness", d.brightness),
+            contrast: g("contrast", d.contrast),
+            saturation: g("saturation", d.saturation),
+            scale: g("scale", d.scale),
+            rot: g("rot", d.rot),
+            pos_x: g("pos_x", d.pos_x),
+            pos_y: g("pos_y", d.pos_y),
+            fade_in: g("fade_in", d.fade_in),
+            fade_out: g("fade_out", d.fade_out),
+            volume: g("volume", d.volume),
+        }
+    }
+    fn has_transform(&self) -> bool {
+        self.scale != 1.0 || self.rot != 0.0 || self.pos_x != 0.0 || self.pos_y != 0.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Segment {
-    Clip { path: String, src_in: f64, len: f64 },
+    Clip { path: String, src_in: f64, len: f64, fx: ClipFx },
     Gap { len: f64 },
 }
 
@@ -32,6 +88,77 @@ pub struct Overlay {
     pub src_in: f64,
     pub len: f64,
     pub start: f64,
+    pub fx: ClipFx,
+}
+
+/// Build a clip's fitted-frame video chain `[{vi}:v] → [v{k}]`:
+/// letterbox to frame, color-correct, optional transform, optional fades.
+fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &ClipFx) -> String {
+    let mut s = format!(
+        "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
+         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},setpts=PTS-STARTPTS,\
+         format=yuv420p,eq=brightness={b}:contrast={c}:saturation={sat}[cf{k}];",
+        b = fx.brightness,
+        c = fx.contrast,
+        sat = fx.saturation
+    );
+    let mut cur = format!("cf{k}");
+    if fx.has_transform() {
+        let (px, py) = (fx.pos_x * w as f64, fx.pos_y * h as f64);
+        s.push_str(&format!("[{cur}]scale=iw*{sc}:ih*{sc}[sc{k}];", sc = fx.scale));
+        s.push_str(&format!(
+            "color=c=black:s={w}x{h}:r={fps}:d={len:.3},format=yuv420p[bg{k}];"
+        ));
+        s.push_str(&format!(
+            "[bg{k}][sc{k}]overlay=x=(W-w)/2+({px:.1}):y=(H-h)/2+({py:.1}):eof_action=pass[tf{k}];"
+        ));
+        cur = format!("tf{k}");
+        if fx.rot != 0.0 {
+            let rad = fx.rot * std::f64::consts::PI / 180.0;
+            s.push_str(&format!("[{cur}]rotate={rad:.5}:fillcolor=black[rt{k}];"));
+            cur = format!("rt{k}");
+        }
+    }
+    if fx.fade_in > 0.0 || fx.fade_out > 0.0 {
+        s.push_str(&format!("[{cur}]"));
+        if fx.fade_in > 0.0 {
+            s.push_str(&format!("fade=t=in:st=0:d={:.3}", fx.fade_in));
+            if fx.fade_out > 0.0 {
+                s.push(',');
+            }
+        }
+        if fx.fade_out > 0.0 {
+            s.push_str(&format!(
+                "fade=t=out:st={:.3}:d={:.3}",
+                (len - fx.fade_out).max(0.0),
+                fx.fade_out
+            ));
+        }
+        s.push_str(&format!("[v{k}];"));
+    } else {
+        s.push_str(&format!("[{cur}]null[v{k}];"));
+    }
+    s
+}
+
+/// Build a clip's audio chain `[{vi}:a] → [a{k}]`: resample, gain, fades.
+fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
+    let mut c = format!("[{vi}:a]aresample=48000,asetpts=PTS-STARTPTS");
+    if fx.volume != 1.0 {
+        c.push_str(&format!(",volume={:.4}", fx.volume));
+    }
+    if fx.fade_in > 0.0 {
+        c.push_str(&format!(",afade=t=in:st=0:d={:.3}", fx.fade_in));
+    }
+    if fx.fade_out > 0.0 {
+        c.push_str(&format!(
+            ",afade=t=out:st={:.3}:d={:.3}",
+            (len - fx.fade_out).max(0.0),
+            fx.fade_out
+        ));
+    }
+    c.push_str(&format!("[a{k}];"));
+    c
 }
 
 pub struct ExportSettings {
@@ -108,22 +235,16 @@ fn run_export(
 
     for (k, seg) in segments.iter().enumerate() {
         match seg {
-            Segment::Clip { path, src_in, len } => {
+            Segment::Clip { path, src_in, len, fx } => {
                 // input-level seek: ffmpeg decodes from the prior keyframe
                 // and discards up to the exact point — frame-accurate
                 cmd.args(["-ss", &format!("{src_in:.3}"), "-t", &format!("{len:.3}")]);
                 cmd.input(path.as_str());
                 let vi = input_idx;
                 input_idx += 1;
-                filters.push_str(&format!(
-                    "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
-                     pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},setpts=PTS-STARTPTS,\
-                     format=yuv420p[v{k}];"
-                ));
+                filters.push_str(&clip_video_chain(vi, k, *len, w, h, fps, fx));
                 if has_audio(path) {
-                    filters.push_str(&format!(
-                        "[{vi}:a]aresample=48000,asetpts=PTS-STARTPTS[a{k}];"
-                    ));
+                    filters.push_str(&clip_audio_chain(vi, k, *len, fx));
                 } else {
                     cmd.args(["-f", "lavfi", "-t", &format!("{len:.3}")]);
                     cmd.input("anullsrc=r=48000:cl=stereo");
@@ -162,14 +283,23 @@ fn run_export(
         filters.push_str(&format!(
             "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
              pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p,\
+             eq=brightness={b}:contrast={c}:saturation={sat},\
              setpts=PTS-STARTPTS+{t0:.3}/TB[ov{j}];\
-             [{base}][ov{j}]overlay=eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];"
+             [{base}][ov{j}]overlay=eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
+            b = ov.fx.brightness,
+            c = ov.fx.contrast,
+            sat = ov.fx.saturation
         ));
         base = format!("ovd{j}");
         if has_audio(&ov.path) {
             let ms = (ov.start * 1000.0).round() as i64;
+            let vol = if ov.fx.volume != 1.0 {
+                format!(",volume={:.4}", ov.fx.volume)
+            } else {
+                String::new()
+            };
             filters.push_str(&format!(
-                "[{vi}:a]aresample=48000,adelay={ms}|{ms}[oa{j}];"
+                "[{vi}:a]aresample=48000{vol},adelay={ms}|{ms}[oa{j}];"
             ));
             overlay_audio.push(format!("[oa{j}]"));
         }
@@ -244,15 +374,15 @@ fn parse_time_s(t: &str) -> Option<f64> {
 /// Build the segment list for a track from (start, len, src_in, path)
 /// tuples: sorts, inserts gaps, ignores overlaps (later start wins the
 /// overlap region is v2 territory — v1 assumes non-overlapping V1).
-pub fn segments_for_track(mut clips: Vec<(f64, f64, f64, String)>) -> Vec<Segment> {
+pub fn segments_for_track(mut clips: Vec<(f64, f64, f64, String, ClipFx)>) -> Vec<Segment> {
     clips.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut segs = Vec::new();
     let mut t = 0.0f64;
-    for (start, len, src_in, path) in clips {
+    for (start, len, src_in, path, fx) in clips {
         if start > t + 1e-3 {
             segs.push(Segment::Gap { len: start - t });
         }
-        segs.push(Segment::Clip { path, src_in, len });
+        segs.push(Segment::Clip { path, src_in, len, fx });
         t = start + len;
     }
     segs

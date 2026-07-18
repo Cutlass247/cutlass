@@ -168,6 +168,7 @@ fn import_media(path: String, state: State<AppState>) -> Result<serde_json::Valu
             start: project.track_end("V1"),
             len: info.duration_s,
             src_in: 0.0,
+            fx: Default::default(),
         };
         project
             .set_media(&info.id, &info.name, &info.path, info.duration_s)
@@ -263,6 +264,17 @@ fn cut_ranges(
             .map(|_| ())
             .map_err(err_str)
     })
+}
+
+/// Set one Effect Controls parameter on a clip (undoable).
+#[tauri::command]
+fn set_effect(
+    id: String,
+    key: String,
+    value: f64,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| p.set_effect(&id, &key, value).map_err(err_str))
 }
 
 #[tauri::command]
@@ -412,6 +424,7 @@ fn play(from_t: f64, muted: Option<Vec<String>>, state: State<AppState>) -> bool
                                     start: c["start"].as_f64()?,
                                     len: c["len"].as_f64()?,
                                     src_in: c["src_in"].as_f64()?,
+                                    volume: c["fx"]["volume"].as_f64().unwrap_or(1.0),
                                 })
                             })
                             .collect()
@@ -498,10 +511,19 @@ fn export_project(
             .map(|(id, _, p, _)| (id, p))
             .collect();
         let all = project.clips_state();
-        let clips: Vec<(f64, f64, f64, String)> = all
+        use cutlass_core::export::ClipFx;
+        let clips: Vec<(f64, f64, f64, String, ClipFx)> = all
             .iter()
             .filter(|c| c.track == "V1")
-            .filter_map(|c| Some((c.start, c.len, c.src_in, paths.get(&c.media)?.clone())))
+            .filter_map(|c| {
+                Some((
+                    c.start,
+                    c.len,
+                    c.src_in,
+                    paths.get(&c.media)?.clone(),
+                    ClipFx::from_map(&c.fx),
+                ))
+            })
             .collect();
         let overlays: Vec<cutlass_core::export::Overlay> = all
             .iter()
@@ -512,6 +534,7 @@ fn export_project(
                     src_in: c.src_in,
                     len: c.len,
                     start: c.start,
+                    fx: ClipFx::from_map(&c.fx),
                 })
             })
             .collect();
@@ -687,7 +710,8 @@ fn main() {
             export_project,
             undo,
             redo,
-            cut_ranges
+            cut_ranges,
+            set_effect
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");

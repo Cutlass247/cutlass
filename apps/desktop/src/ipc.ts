@@ -2,6 +2,9 @@
 // serves a self-contained mock so the UI can be developed and verified
 // without the native shell.
 
+/// Effect Controls params (sparse; absent = identity default).
+export type Fx = Record<string, number>;
+
 export interface Clip {
   id: string;
   name: string;
@@ -10,6 +13,25 @@ export interface Clip {
   start: number;
   len: number;
   src_in: number;
+  fx?: Fx;
+}
+
+/// Identity-defaulted effect values for a clip.
+export const FX_DEFAULTS: Record<string, number> = {
+  brightness: 0,
+  contrast: 1,
+  saturation: 1,
+  scale: 1,
+  rot: 0,
+  pos_x: 0,
+  pos_y: 0,
+  fade_in: 0,
+  fade_out: 0,
+  volume: 1,
+};
+
+export function fxValue(clip: Clip, key: string): number {
+  return clip.fx?.[key] ?? FX_DEFAULTS[key] ?? 0;
 }
 
 export interface ProjectSnapshot {
@@ -114,6 +136,23 @@ export async function removeClip(id: string, ripple: boolean): Promise<ProjectSn
     return structuredClone(mockState.project);
   }
   return invoke<ProjectSnapshot>("remove_clip", { id, ripple });
+}
+
+/// Set one Effect Controls parameter on a clip (undoable).
+export async function setEffect(
+  id: string,
+  key: string,
+  value: number
+): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip) {
+      clip.fx = { ...(clip.fx ?? {}), [key]: value };
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("set_effect", { id, key, value });
 }
 
 export async function currentRoom(): Promise<string | null> {

@@ -669,6 +669,74 @@ button {
   font-size: 11px;
 }
 
+.monitor-frame img {
+  transition: filter var(--speed), transform var(--speed), opacity var(--speed);
+}
+
+.fx-heading {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 2px;
+}
+
+.fx-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fx-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.fx-group-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.fx-row {
+  display: grid;
+  grid-template-columns: 74px 1fr 42px;
+  align-items: center;
+  gap: 8px;
+}
+
+.fx-label {
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fx-row.active .fx-label {
+  color: var(--text);
+}
+
+.fx-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.fx-val {
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  color: var(--text);
+  text-align: right;
+}
+
+.fx-row.active .fx-val {
+  color: var(--accent);
+}
+
 .transcript-hint {
   font-size: 11px;
   color: var(--muted);
