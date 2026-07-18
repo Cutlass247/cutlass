@@ -14,8 +14,8 @@ fn rms(s: &[f32]) -> f32 {
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("usage: mix_check <video>");
     let rate = 48_000u32;
-    let t1 = vec![AudioClip { path: path.clone(), start: 0.0, len: 1.0, src_in: 0.0 }];
-    let t2 = vec![AudioClip { path, start: 1.0, len: 1.0, src_in: 5.0 }];
+    let t1 = vec![AudioClip { path: path.clone(), start: 0.0, len: 1.0, src_in: 0.0, volume: 1.0 }];
+    let t2 = vec![AudioClip { path, start: 1.0, len: 1.0, src_in: 5.0, volume: 1.0 }];
     let mut mix = MixReader {
         tracks: vec![TrackReader::new(t1, rate, 0.0), TrackReader::new(t2, rate, 0.0)],
     };

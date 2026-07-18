@@ -10,6 +10,7 @@ export const RESOLUTIONS: Resolution[] = [
 
 export function Monitor(p: {
   src: string | null;
+  imgStyle?: React.CSSProperties;
   caption: string | null;
   playhead: number;
   playing: boolean;
@@ -27,7 +28,7 @@ export function Monitor(p: {
     <section className="monitor">
       <div className="monitor-frame" ref={frameRef}>
         {p.src ? (
-          <img src={p.src} alt="program monitor" draggable={false} />
+          <img src={p.src} alt="program monitor" draggable={false} style={p.imgStyle} />
         ) : (
           <div className="monitor-empty">No clip under the playhead</div>
         )}

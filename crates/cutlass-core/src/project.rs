@@ -7,6 +7,8 @@
 //!   merge as a unit.
 //! - Conflicts are UI events, not errors (surfaced later via sync layer).
 
+use std::collections::BTreeMap;
+
 use automerge::{transaction::Transactable, AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,6 +26,25 @@ pub struct Clip {
     pub len: f64,
     /// source in-point, seconds
     pub src_in: f64,
+    /// Effect Controls: sparse map of param → value (absent = default).
+    /// BTreeMap keeps snapshot/equality deterministic. Keys: brightness,
+    /// contrast, saturation, scale, rot, pos_x, pos_y, fade_in, fade_out,
+    /// volume.
+    #[serde(default)]
+    pub fx: BTreeMap<String, f64>,
+}
+
+/// Effect params parsed from a clip's `fx` map to identity-defaulted
+/// values. Shared vocabulary between preview, export, and playback.
+pub fn fx_from_json(clip: &serde_json::Value) -> BTreeMap<String, f64> {
+    clip.get("fx")
+        .and_then(|f| f.as_object())
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub struct Project {
@@ -135,6 +156,35 @@ impl Project {
         self.doc.put(&obj, "start", clip.start)?;
         self.doc.put(&obj, "len", clip.len)?;
         self.doc.put(&obj, "src_in", clip.src_in)?;
+        if !clip.fx.is_empty() {
+            self.write_fx(&obj, &clip.fx)?;
+        }
+        Ok(())
+    }
+
+    /// (Re)write a clip's fx sub-map to exactly `fx`.
+    fn write_fx(&mut self, clip_obj: &ObjId, fx: &BTreeMap<String, f64>) -> anyhow::Result<()> {
+        let fxobj = self.doc.put_object(clip_obj, "fx", ObjType::Map)?;
+        for (k, v) in fx {
+            self.doc.put(&fxobj, k.as_str(), *v)?;
+        }
+        Ok(())
+    }
+
+    /// Set one Effect Controls parameter on a clip. Creates the fx map on
+    /// first use; each param is its own key so concurrent effect edits
+    /// merge cleanly.
+    pub fn set_effect(&mut self, id: &str, key: &str, value: f64) -> anyhow::Result<()> {
+        let clips = self.clips_obj();
+        let (_, obj) = self
+            .doc
+            .get(&clips, id)?
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?;
+        let fxobj = match self.doc.get(&obj, "fx")? {
+            Some((Value::Object(ObjType::Map), fxid)) => fxid,
+            _ => self.doc.put_object(&obj, "fx", ObjType::Map)?,
+        };
+        self.doc.put(&fxobj, key, value)?;
         Ok(())
     }
 
@@ -217,6 +267,7 @@ impl Project {
                 start: start + left_len,
                 len: right_len,
                 src_in: to,
+                fx: fx_from_json(&clip), // split inherits the clip's effects
             })?;
         }
         if left_len > 1e-9 {
@@ -310,6 +361,16 @@ impl Project {
                 _ => None,
             }
         };
+        let mut fx = BTreeMap::new();
+        if let Ok(Some((Value::Object(ObjType::Map), fxid))) = self.doc.get(&obj, "fx") {
+            for k in self.doc.keys(&fxid) {
+                if let Ok(Some((Value::Scalar(s), _))) = self.doc.get(&fxid, &k) {
+                    if let Some(v) = s.as_ref().to_f64() {
+                        fx.insert(k, v);
+                    }
+                }
+            }
+        }
         Some(Clip {
             id: id.to_string(),
             name: get_str("name")?,
@@ -318,6 +379,7 @@ impl Project {
             start: get_f64("start")?,
             len: get_f64("len")?,
             src_in: get_f64("src_in")?,
+            fx,
         })
     }
 
@@ -358,6 +420,9 @@ impl Project {
                     self.doc.put(&obj, "start", t.start)?;
                     self.doc.put(&obj, "len", t.len)?;
                     self.doc.put(&obj, "src_in", t.src_in)?;
+                    if c.fx != t.fx {
+                        self.write_fx(&obj, &t.fx)?;
+                    }
                 }
                 Some(_) => {}
             }
@@ -447,6 +512,7 @@ mod tests {
             start,
             len: 4.0,
             src_in: 0.0,
+            fx: BTreeMap::new(),
         }
     }
 
@@ -543,6 +609,26 @@ mod tests {
         assert_eq!(get("b"), Some(0.0));
         assert_eq!(get("c"), Some(4.0));
         assert_eq!(get("x"), Some(6.0));
+    }
+
+    #[test]
+    fn effects_persist_and_undo() {
+        let mut p = Project::new("Fx");
+        p.add_clip(&demo_clip("a", "V1", 0.0)).unwrap();
+        let before = p.clips_state();
+
+        p.set_effect("a", "brightness", 0.3).unwrap();
+        p.set_effect("a", "volume", 0.5).unwrap();
+        let snap = p.snapshot();
+        assert_eq!(snap["clips"][0]["fx"]["brightness"], 0.3);
+        assert_eq!(snap["clips"][0]["fx"]["volume"], 0.5);
+
+        let after = p.clips_state();
+        assert_ne!(before, after); // fx changed identity → undoable
+        p.restore_clips(&before).unwrap(); // undo strips effects
+        assert!(p.clips_state()[0].fx.is_empty());
+        p.restore_clips(&after).unwrap(); // redo restores them
+        assert_eq!(p.clips_state()[0].fx.get("brightness"), Some(&0.3));
     }
 
     #[test]

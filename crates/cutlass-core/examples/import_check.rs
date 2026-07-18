@@ -30,6 +30,7 @@ fn main() -> anyhow::Result<()> {
         start: 0.0,
         len: info.duration_s,
         src_in: 0.0,
+        fx: Default::default(),
     })?;
     let snap = project.snapshot();
     assert_eq!(snap["clips"][0]["media"], serde_json::json!(info.id));

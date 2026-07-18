@@ -1,8 +1,119 @@
 import { useEffect, useState } from "react";
-import { Clip, MediaItem, Word } from "../ipc";
+import { Clip, FX_DEFAULTS, fxValue, MediaItem, Word } from "../ipc";
 import { formatTC, mediaHue, Segmented } from "./ui";
 
 type Tab = "inspector" | "transcript";
+
+interface FxParam {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  fmt?: (v: number) => string;
+}
+
+const FX_GROUPS: { title: string; params: FxParam[] }[] = [
+  {
+    title: "Color",
+    params: [
+      { key: "brightness", label: "Brightness", min: -1, max: 1, step: 0.02 },
+      { key: "contrast", label: "Contrast", min: 0, max: 2, step: 0.02 },
+      { key: "saturation", label: "Saturation", min: 0, max: 2, step: 0.02 },
+    ],
+  },
+  {
+    title: "Transform",
+    params: [
+      { key: "scale", label: "Scale", min: 0.1, max: 3, step: 0.02 },
+      { key: "pos_x", label: "Position X", min: -0.5, max: 0.5, step: 0.01 },
+      { key: "pos_y", label: "Position Y", min: -0.5, max: 0.5, step: 0.01 },
+      { key: "rot", label: "Rotation", min: -180, max: 180, step: 1, fmt: (v) => `${v}°` },
+    ],
+  },
+  {
+    title: "Fade & audio",
+    params: [
+      { key: "fade_in", label: "Fade in", min: 0, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}s` },
+      { key: "fade_out", label: "Fade out", min: 0, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}s` },
+      { key: "volume", label: "Volume", min: 0, max: 2, step: 0.02 },
+    ],
+  },
+];
+
+/// Slider row: live preview on drag, single committed edit on release,
+/// double-click label to reset to the identity default.
+function FxSlider({
+  param,
+  value,
+  onPreview,
+  onCommit,
+}: {
+  param: FxParam;
+  value: number;
+  onPreview: (key: string, v: number) => void;
+  onCommit: (key: string, v: number) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const isDefault = Math.abs(draft - (FX_DEFAULTS[param.key] ?? 0)) < 1e-9;
+  const fmt = param.fmt ?? ((v: number) => v.toFixed(2));
+  return (
+    <div className={`fx-row${isDefault ? "" : " active"}`}>
+      <span
+        className="fx-label"
+        title="Double-click to reset"
+        onDoubleClick={() => {
+          const d = FX_DEFAULTS[param.key] ?? 0;
+          setDraft(d);
+          onCommit(param.key, d);
+        }}
+      >
+        {param.label}
+      </span>
+      <input
+        type="range"
+        min={param.min}
+        max={param.max}
+        step={param.step}
+        value={draft}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          setDraft(v);
+          onPreview(param.key, v);
+        }}
+        onPointerUp={() => onCommit(param.key, draft)}
+        onKeyUp={() => onCommit(param.key, draft)}
+      />
+      <span className="fx-val">{fmt(draft)}</span>
+    </div>
+  );
+}
+
+function EffectControls(p: {
+  clip: Clip;
+  onPreview: (key: string, v: number) => void;
+  onCommit: (key: string, v: number) => void;
+}) {
+  return (
+    <div className="fx-panel">
+      {FX_GROUPS.map((g) => (
+        <div className="fx-group" key={g.title}>
+          <div className="fx-group-title">{g.title}</div>
+          {g.params.map((param) => (
+            <FxSlider
+              key={param.key}
+              param={param}
+              value={fxValue(p.clip, param.key)}
+              onPreview={p.onPreview}
+              onCommit={p.onCommit}
+            />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /// Numeric field that commits on Enter/blur — the Inspector edit unit.
 function NumField(p: {
@@ -37,6 +148,8 @@ export function Inspector(p: {
   media: Record<string, MediaItem>;
   onMove: (id: string, track: string, start: number) => void;
   onTrim: (id: string, start: number, len: number, srcIn: number) => void;
+  onFxPreview: (key: string, v: number) => void;
+  onFxCommit: (key: string, v: number) => void;
   // transcript
   words: Word[] | null;
   transcriptMediaName: string | null;
@@ -121,6 +234,8 @@ export function Inspector(p: {
                   </div>
                 </div>
               )}
+              <div className="fx-heading">Effect Controls</div>
+              <EffectControls clip={p.clip} onPreview={p.onFxPreview} onCommit={p.onFxCommit} />
             </>
           )}
         </div>

@@ -28,6 +28,7 @@ import {
   removeClip,
   saveProject,
   sendPresence,
+  setEffect,
   transcribeMedia,
   trimClip,
   undoEdit,
@@ -37,7 +38,7 @@ import { MediaPanel } from "./components/MediaPanel";
 import { Monitor, RESOLUTIONS, Resolution } from "./components/Monitor";
 import { Inspector } from "./components/Inspector";
 import { PPS_MAX, PPS_MIN, TRACK_H, Timeline, TrackCtl } from "./components/Timeline";
-import { Resizer } from "./components/ui";
+import { fxStyle, Resizer } from "./components/ui";
 
 const TRACKS = ["V2", "V1"]; // rendered top→bottom; V2 wins for preview
 const TRIM_ZONE_PX = 10;
@@ -244,7 +245,7 @@ export default function App() {
       if (!clip) continue;
       const m = media[clip.media];
       if (!m || m.thumbs.length === 0) continue;
-      return { media: m, srcT: playhead - clip.start + clip.src_in };
+      return { media: m, srcT: playhead - clip.start + clip.src_in, clip };
     }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -276,6 +277,32 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hqKey, drag, playing]);
   const previewSrc = hq && hq.key === hqKey ? hq.src : proxySrc;
+
+  // ── effects: live preview draft for the selected clip ───────────────
+  const [fxDraft, setFxDraft] = useState<Record<string, number>>({});
+  useEffect(() => setFxDraft({}), [selected]); // reset when selection changes
+
+  const previewStyle = useMemo(() => {
+    const clip = underPlayhead?.clip;
+    if (!clip) return {};
+    const draftApplies = clip.id === selected && Object.keys(fxDraft).length > 0;
+    const effClip = draftApplies
+      ? { ...clip, fx: { ...(clip.fx ?? {}), ...fxDraft } }
+      : clip;
+    return fxStyle(effClip, playhead);
+  }, [underPlayhead, selected, fxDraft, playhead]);
+
+  const onFxPreview = useCallback(
+    (key: string, v: number) => setFxDraft((d) => ({ ...d, [key]: v })),
+    []
+  );
+  const onFxCommit = useCallback(
+    (key: string, v: number) => {
+      if (!selected) return;
+      setEffect(selected, key, v).then(applyEdit).catch((e) => setError(String(e)));
+    },
+    [selected, applyEdit]
+  );
 
   // ── import / transcribe ─────────────────────────────────────────────
   const doTranscribe = useCallback(async (mediaId: string) => {
@@ -727,6 +754,7 @@ export default function App() {
 
         <Monitor
           src={previewSrc}
+          imgStyle={previewStyle}
           caption={caption}
           playhead={playhead}
           playing={playing}
@@ -750,6 +778,8 @@ export default function App() {
             onTrim={(id, start, len, srcIn) =>
               trimClip(id, start, len, srcIn).then(applyEdit).catch((e) => setError(String(e)))
             }
+            onFxPreview={onFxPreview}
+            onFxCommit={onFxCommit}
             words={words}
             transcriptMediaName={transcriptMedia ? media[transcriptMedia]?.name ?? null : null}
             wordSel={wordSel && wordSel.media === transcriptMedia ? wordSel : null}

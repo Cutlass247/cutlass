@@ -29,6 +29,13 @@ pub struct AudioClip {
     pub start: f64,
     pub len: f64,
     pub src_in: f64,
+    /// per-clip gain (Effect Controls); defaults to unity when absent.
+    #[serde(default = "unity_gain")]
+    pub volume: f64,
+}
+
+fn unity_gain() -> f64 {
+    1.0
 }
 
 struct Shared {
@@ -146,8 +153,9 @@ impl TrackReader {
                     }
                     let avail = (a.buf.len() / 2).min(want);
                     if avail > 0 {
+                        let gain = clip.volume as f32;
                         for _ in 0..avail * 2 {
-                            out.push(a.buf.pop_front().unwrap_or(0.0));
+                            out.push(a.buf.pop_front().unwrap_or(0.0) * gain);
                         }
                         self.t += avail as f64 / self.rate as f64;
                     } else if a.exhausted {

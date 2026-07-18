@@ -216,6 +216,38 @@ export function mediaHue(mediaId: string): number {
   return h % 360;
 }
 
+/// Approximate a clip's Effect Controls as CSS for the live preview.
+/// Export is the pixel-accurate path (ffmpeg); this just has to feel
+/// right while scrubbing. `playhead` is absolute timeline seconds.
+export function fxStyle(
+  clip: { start: number; len: number; fx?: Record<string, number> } | null,
+  playhead: number
+): React.CSSProperties {
+  if (!clip) return {};
+  const v = (k: string, d: number) => clip.fx?.[k] ?? d;
+  const scale = v("scale", 1);
+  const rot = v("rot", 0);
+  const px = v("pos_x", 0) * 100;
+  const py = v("pos_y", 0) * 100;
+  const brightness = 1 + v("brightness", 0); // additive → multiplicative approx
+  const contrast = v("contrast", 1);
+  const saturation = v("saturation", 1);
+
+  const inClip = playhead - clip.start;
+  const fi = v("fade_in", 0);
+  const fo = v("fade_out", 0);
+  let opacity = 1;
+  if (fi > 0 && inClip < fi) opacity = Math.max(0, inClip / fi);
+  if (fo > 0 && inClip > clip.len - fo)
+    opacity = Math.min(opacity, Math.max(0, (clip.len - inClip) / fo));
+
+  return {
+    transform: `translate(${px}%, ${py}%) scale(${scale}) rotate(${rot}deg)`,
+    filter: `brightness(${brightness}) contrast(${contrast}) saturate(${saturation})`,
+    opacity,
+  };
+}
+
 export function formatTC(t: number, fps = 30): string {
   const m = Math.floor(t / 60);
   const s = Math.floor(t % 60);
