@@ -169,6 +169,7 @@ fn import_media(path: String, state: State<AppState>) -> Result<serde_json::Valu
             len: info.duration_s,
             src_in: 0.0,
             fx: Default::default(),
+            kf: Default::default(),
         };
         project
             .set_media(&info.id, &info.name, &info.path, info.duration_s)
@@ -275,6 +276,28 @@ fn set_effect(
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
     with_undo(&state, |p| p.set_effect(&id, &key, value).map_err(err_str))
+}
+
+/// Add/update a keyframe for a param at clip-relative time `t` (undoable).
+#[tauri::command]
+fn set_keyframe(
+    id: String,
+    param: String,
+    t: f64,
+    value: f64,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| p.set_keyframe(&id, &param, t, value).map_err(err_str))
+}
+
+/// Remove all keyframes for a param (revert to its constant value).
+#[tauri::command]
+fn clear_keyframes(
+    id: String,
+    param: String,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| p.clear_keyframes(&id, &param).map_err(err_str))
 }
 
 /// Set (or clear, dur=0) a transition INTO a clip from its left neighbor.
@@ -540,6 +563,11 @@ fn export_project(
                     fx: ClipFx::from_map(&c.fx),
                     trans_dur: c.fx.get("trans_dur").copied().unwrap_or(0.0),
                     trans_dip: c.fx.get("trans_dip").copied().unwrap_or(0.0) > 0.5,
+                    kf: c
+                        .kf
+                        .keys()
+                        .map(|p| (p.clone(), cutlass_core::project::kf_points(&c.kf, p)))
+                        .collect(),
                 })
             })
             .collect();
@@ -730,7 +758,9 @@ fn main() {
             redo,
             cut_ranges,
             set_effect,
-            set_transition
+            set_transition,
+            set_keyframe,
+            clear_keyframes
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");

@@ -14,6 +14,41 @@ export interface Clip {
   len: number;
   src_in: number;
   fx?: Fx;
+  /// param → (time-string → value); present params animate.
+  kf?: Record<string, Record<string, number>>;
+}
+
+/// Sorted (time, value) points for a param's keyframes.
+export function kfPoints(clip: Clip, param: string): [number, number][] {
+  const m = clip.kf?.[param];
+  if (!m) return [];
+  return Object.entries(m)
+    .map(([t, v]) => [parseFloat(t), v] as [number, number])
+    .sort((a, b) => a[0] - b[0]);
+}
+
+/// Linear interpolation, clamped to the ends (mirrors core::interp).
+export function interp(pts: [number, number][], t: number): number | null {
+  if (pts.length === 0) return null;
+  if (pts.length === 1) return pts[0][1];
+  if (t <= pts[0][0]) return pts[0][1];
+  if (t >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [t0, v0] = pts[i];
+    const [t1, v1] = pts[i + 1];
+    if (t >= t0 && t <= t1) {
+      const f = t1 - t0 < 1e-9 ? 0 : (t - t0) / (t1 - t0);
+      return v0 + (v1 - v0) * f;
+    }
+  }
+  return pts[pts.length - 1][1];
+}
+
+/// Effective value of a param at clip-relative time (keyframes win).
+export function fxValueAt(clip: Clip, param: string, clipTime: number): number {
+  const pts = kfPoints(clip, param);
+  const v = interp(pts, clipTime);
+  return v ?? fxValue(clip, param);
 }
 
 /// Identity-defaulted effect values for a clip.
@@ -153,6 +188,41 @@ export async function setEffect(
     return structuredClone(mockState.project);
   }
   return invoke<ProjectSnapshot>("set_effect", { id, key, value });
+}
+
+/// Add/update a keyframe for a param at clip-relative time (undoable).
+export async function setKeyframe(
+  id: string,
+  param: string,
+  t: number,
+  value: number
+): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip) {
+      const kf = { ...(clip.kf ?? {}) };
+      kf[param] = { ...(kf[param] ?? {}), [t.toFixed(3)]: value };
+      clip.kf = kf;
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("set_keyframe", { id, param, t, value });
+}
+
+/// Remove all keyframes for a param.
+export async function clearKeyframes(id: string, param: string): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip && clip.kf) {
+      const kf = { ...clip.kf };
+      delete kf[param];
+      clip.kf = kf;
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("clear_keyframes", { id, param });
 }
 
 /// Set (dur=0 clears) a transition into a clip from its left neighbor.

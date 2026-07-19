@@ -705,9 +705,46 @@ button {
 
 .fx-row {
   display: grid;
-  grid-template-columns: 74px 1fr 42px;
+  grid-template-columns: 68px 1fr 38px auto auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+
+.fx-kf-hint {
+  float: right;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.kf-btn {
+  background: transparent;
+  border: none;
+  color: #4b5160;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 3px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.kf-btn:hover {
+  color: var(--text);
+  background: var(--panel-3);
+}
+
+.kf-btn.on {
+  color: var(--accent);
+}
+
+.kf-btn.clear:hover {
+  color: var(--danger);
+}
+
+.fx-row.kf .fx-val {
+  color: var(--accent);
 }
 
 .fx-label {
