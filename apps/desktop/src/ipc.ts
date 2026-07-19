@@ -65,6 +65,7 @@ export const FX_DEFAULTS: Record<string, number> = {
   fade_in: 0,
   fade_out: 0,
   volume: 1,
+  speed: 1,
 };
 
 export function fxValue(clip: Clip, key: string): number {

@@ -25,6 +25,7 @@ pub struct ClipFx {
     pub fade_in: f64,    // seconds
     pub fade_out: f64,   // seconds
     pub volume: f64,     // 1
+    pub speed: f64,      // 1 (2 = 2× faster, 0.5 = slow-mo)
 }
 
 impl Default for ClipFx {
@@ -40,8 +41,25 @@ impl Default for ClipFx {
             fade_in: 0.0,
             fade_out: 0.0,
             volume: 1.0,
+            speed: 1.0,
         }
     }
+}
+
+/// atempo only accepts 0.5..=2.0 per instance; chain to reach any factor.
+fn atempo_chain(speed: f64) -> String {
+    let mut s = speed.clamp(0.1, 8.0);
+    let mut parts = Vec::new();
+    while s > 2.0 {
+        parts.push("atempo=2.0".to_string());
+        s /= 2.0;
+    }
+    while s < 0.5 {
+        parts.push("atempo=0.5".to_string());
+        s *= 2.0;
+    }
+    parts.push(format!("atempo={s:.4}"));
+    parts.join(",")
 }
 
 impl ClipFx {
@@ -54,6 +72,7 @@ impl ClipFx {
             "rot" => self.rot = v,
             "pos_x" => self.pos_x = v,
             "pos_y" => self.pos_y = v,
+            "speed" => self.speed = v,
             "fade_in" => self.fade_in = v,
             "fade_out" => self.fade_out = v,
             "volume" => self.volume = v,
@@ -87,6 +106,10 @@ impl ClipFx {
             fade_in: g("fade_in", d.fade_in),
             fade_out: g("fade_out", d.fade_out),
             volume: g("volume", d.volume),
+            speed: {
+                let s = g("speed", d.speed);
+                if s > 0.05 { s } else { 1.0 }
+            },
         }
     }
     fn has_transform(&self) -> bool {
@@ -195,9 +218,15 @@ fn title_font() -> String {
 /// Build a clip's fitted-frame video chain `[{vi}:v] → [v{k}]`:
 /// letterbox to frame, color-correct, optional transform, optional fades.
 fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &ClipFx) -> String {
+    // retime: source span was len*speed; /speed compresses it to len
+    let setpts = if (fx.speed - 1.0).abs() < 1e-9 {
+        "setpts=PTS-STARTPTS".to_string()
+    } else {
+        format!("setpts=(PTS-STARTPTS)/{:.5}", fx.speed)
+    };
     let mut s = format!(
         "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
-         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},setpts=PTS-STARTPTS,\
+         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},{setpts},\
          format=yuv420p,eq=brightness={b}:contrast={c}:saturation={sat}[cf{k}];",
         b = fx.brightness,
         c = fx.contrast,
@@ -245,6 +274,11 @@ fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &
 /// Build a clip's audio chain `[{vi}:a] → [a{k}]`: resample, gain, fades.
 fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
     let mut c = format!("[{vi}:a]aresample=48000,asetpts=PTS-STARTPTS");
+    if (fx.speed - 1.0).abs() >= 1e-9 {
+        // atempo is pitch-corrected; input span len*speed → len
+        c.push(',');
+        c.push_str(&atempo_chain(fx.speed));
+    }
     if fx.volume != 1.0 {
         c.push_str(&format!(",volume={:.4}", fx.volume));
     }
@@ -340,8 +374,11 @@ fn run_export(
         match seg {
             Segment::Clip { path, src_in, len, fx } => {
                 // input-level seek: ffmpeg decodes from the prior keyframe
-                // and discards up to the exact point — frame-accurate
-                cmd.args(["-ss", &format!("{src_in:.3}"), "-t", &format!("{len:.3}")]);
+                // and discards up to the exact point — frame-accurate.
+                // With speed, consume `len*speed` of source (retimed to
+                // `len` on the timeline by setpts/atempo in the chains).
+                let src_dur = len * fx.speed;
+                cmd.args(["-ss", &format!("{src_in:.3}"), "-t", &format!("{src_dur:.3}")]);
                 cmd.input(path.as_str());
                 let vi = input_idx;
                 input_idx += 1;
@@ -615,6 +652,13 @@ mod tests {
     }
 
     #[test]
+    fn atempo_chains_beyond_2x() {
+        assert_eq!(atempo_chain(1.5), "atempo=1.5000");
+        assert_eq!(atempo_chain(4.0), "atempo=2.0,atempo=2.0000");
+        assert_eq!(atempo_chain(0.25), "atempo=0.5,atempo=0.5000");
+    }
+
+    #[test]
     fn transition_needs_adjacency() {
         // gap between clips → no transition even if requested
         let segs = build_segments(vec![clip(0.0, 4.0, 0.0, 0.0), clip(6.0, 4.0, 3.0, 1.0)]);
@@ -686,7 +730,7 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
                 let fx = c.fx.sampled_at(&c.kf, rel + sub_len / 2.0);
                 segs.push(Segment::Clip {
                     path: c.path.clone(),
-                    src_in: c.src_in + rel,
+                    src_in: c.src_in + rel * c.fx.speed, // source advances at speed
                     len: sub_len,
                     fx,
                 });
