@@ -45,6 +45,34 @@ impl Default for ClipFx {
 }
 
 impl ClipFx {
+    fn set_param(&mut self, key: &str, v: f64) {
+        match key {
+            "brightness" => self.brightness = v,
+            "contrast" => self.contrast = v,
+            "saturation" => self.saturation = v,
+            "scale" => self.scale = v,
+            "rot" => self.rot = v,
+            "pos_x" => self.pos_x = v,
+            "pos_y" => self.pos_y = v,
+            "fade_in" => self.fade_in = v,
+            "fade_out" => self.fade_out = v,
+            "volume" => self.volume = v,
+            _ => {}
+        }
+    }
+
+    /// This fx with each keyframed param overridden by its interpolated
+    /// value at clip-relative time `t`.
+    pub fn sampled_at(&self, kf: &BTreeMap<String, Vec<(f64, f64)>>, t: f64) -> Self {
+        let mut out = self.clone();
+        for (param, points) in kf {
+            if let Some(v) = crate::project::interp(points, t) {
+                out.set_param(param, v);
+            }
+        }
+        out
+    }
+
     pub fn from_map(m: &BTreeMap<String, f64>) -> Self {
         let d = Self::default();
         let g = |k: &str, def: f64| m.get(k).copied().unwrap_or(def);
@@ -102,7 +130,14 @@ pub struct ExportClip {
     pub fx: ClipFx,
     pub trans_dur: f64, // 0 = hard cut
     pub trans_dip: bool,
+    /// param → sorted (clip-relative time, value); empty = no animation.
+    pub kf: BTreeMap<String, Vec<(f64, f64)>>,
 }
+
+/// Keyframed clips render as piecewise-constant sub-segments. Cap keeps
+/// the filtergraph bounded; step grows for long clips.
+const KF_STEP_S: f64 = 0.2;
+const KF_MAX_SEGS: usize = 80;
 
 /// A V2 clip composited over the program at its timeline position.
 /// (Video only — matching in-app playback, where V1 carries the audio.)
@@ -455,7 +490,29 @@ mod tests {
             fx: ClipFx::default(),
             trans_dur,
             trans_dip: false,
+            kf: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn keyframed_clip_samples_into_subsegments() {
+        let mut c = clip(0.0, 4.0, 0.0, 0.0);
+        c.kf.insert("scale".into(), vec![(0.0, 1.0), (4.0, 2.0)]);
+        let segs = build_segments(vec![c]);
+        // 4s / 0.2 = 20 sub-segments
+        assert_eq!(segs.len(), 20);
+        let total: f64 = segs.iter().map(|s| s.len()).sum();
+        assert!((total - 4.0).abs() < 1e-6, "duration preserved, got {total}");
+        // scale should rise across the sub-segments (animated)
+        let first = match &segs[0] {
+            Segment::Clip { fx, .. } => fx.scale,
+            _ => panic!(),
+        };
+        let last = match segs.last().unwrap() {
+            Segment::Clip { fx, .. } => fx.scale,
+            _ => panic!(),
+        };
+        assert!(last > first + 0.5, "scale animated {first} -> {last}");
     }
 
     #[test]
@@ -500,6 +557,7 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
     let mut segs: Vec<Segment> = Vec::new();
     let mut t = 0.0f64;
     let mut prev: Option<ExportClip> = None;
+    let mut prev_keyframed = false;
     for c in clips {
         if c.start > t + 1e-3 {
             segs.push(Segment::Gap { len: c.start - t });
@@ -509,8 +567,11 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
             .as_ref()
             .map(|p| (p.start + p.len - c.start).abs() < 1e-3)
             .unwrap_or(false);
+        // a transition shortens the previous clip's tail; skip if that
+        // clip was keyframe-expanded (its tail is many small segments)
         let can_trans = c.trans_dur > 0.05
             && adj
+            && !prev_keyframed
             && matches!(segs.last(), Some(Segment::Clip { .. }));
         if can_trans {
             let p = prev.as_ref().unwrap();
@@ -530,12 +591,30 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
                 });
             }
         }
-        segs.push(Segment::Clip {
-            path: c.path.clone(),
-            src_in: c.src_in,
-            len: c.len,
-            fx: c.fx.clone(),
-        });
+        if c.kf.is_empty() {
+            segs.push(Segment::Clip {
+                path: c.path.clone(),
+                src_in: c.src_in,
+                len: c.len,
+                fx: c.fx.clone(),
+            });
+        } else {
+            // sample the animation into piecewise-constant sub-segments
+            let n = ((c.len / KF_STEP_S).ceil() as usize).clamp(1, KF_MAX_SEGS);
+            let step = c.len / n as f64;
+            for i in 0..n {
+                let rel = i as f64 * step;
+                let sub_len = if i == n - 1 { c.len - rel } else { step };
+                let fx = c.fx.sampled_at(&c.kf, rel + sub_len / 2.0);
+                segs.push(Segment::Clip {
+                    path: c.path.clone(),
+                    src_in: c.src_in + rel,
+                    len: sub_len,
+                    fx,
+                });
+            }
+        }
+        prev_keyframed = !c.kf.is_empty();
         t = c.start + c.len;
         prev = Some(c);
     }

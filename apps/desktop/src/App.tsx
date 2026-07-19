@@ -6,6 +6,7 @@ import {
   ProjectSnapshot,
   Word,
   audioClock,
+  clearKeyframes,
   currentRoom,
   cutRanges,
   exactFrame,
@@ -29,6 +30,7 @@ import {
   saveProject,
   sendPresence,
   setEffect,
+  setKeyframe,
   setTransition,
   transcribeMedia,
   trimClip,
@@ -300,7 +302,12 @@ export default function App() {
   const onFxCommit = useCallback(
     (key: string, v: number) => {
       if (!selected) return;
-      setEffect(selected, key, v).then(applyEdit).catch((e) => setError(String(e)));
+      setEffect(selected, key, v)
+        .then((snap) => {
+          applyEdit(snap);
+          setFxDraft({}); // drop the drag draft so real/keyframed values show
+        })
+        .catch((e) => setError(String(e)));
     },
     [selected, applyEdit]
   );
@@ -321,6 +328,32 @@ export default function App() {
     (dur: number, dip: boolean) => {
       if (!selected) return;
       setTransition(selected, dur, dip).then(applyEdit).catch((e) => setError(String(e)));
+    },
+    [selected, applyEdit]
+  );
+
+  // clip-relative playhead time, for keyframe placement
+  const clipTime = useMemo(() => {
+    if (!selectedClip) return 0;
+    return Math.min(selectedClip.len, Math.max(0, playhead - selectedClip.start));
+  }, [selectedClip, playhead]);
+
+  const onSetKeyframe = useCallback(
+    (key: string, t: number, v: number) => {
+      if (!selected) return;
+      setKeyframe(selected, key, t, v)
+        .then((snap) => {
+          applyEdit(snap);
+          setFxDraft({}); // keyframed value comes from the doc now
+        })
+        .catch((e) => setError(String(e)));
+    },
+    [selected, applyEdit]
+  );
+  const onClearKeyframes = useCallback(
+    (key: string) => {
+      if (!selected) return;
+      clearKeyframes(selected, key).then(applyEdit).catch((e) => setError(String(e)));
     },
     [selected, applyEdit]
   );
@@ -801,6 +834,9 @@ export default function App() {
             }
             onFxPreview={onFxPreview}
             onFxCommit={onFxCommit}
+            clipTime={clipTime}
+            onSetKeyframe={onSetKeyframe}
+            onClearKeyframes={onClearKeyframes}
             hasLeftNeighbor={selectedHasLeftNeighbor}
             onSetTransition={onSetTransition}
             words={words}

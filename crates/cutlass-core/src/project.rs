@@ -32,6 +32,52 @@ pub struct Clip {
     /// volume.
     #[serde(default)]
     pub fx: BTreeMap<String, f64>,
+    /// Keyframes: param → (clip-relative time string → value). A param
+    /// with keyframes animates (linear interp); its fx constant is the
+    /// fallback when it has none. Time as a formatted string so each
+    /// keyframe is its own CRDT key and concurrent edits merge.
+    #[serde(default)]
+    pub kf: BTreeMap<String, BTreeMap<String, f64>>,
+}
+
+/// Interpolate a keyframed param at clip-relative time `t`. `points` are
+/// (time, value); linear between, clamped to the ends. Empty → None.
+pub fn interp(points: &[(f64, f64)], t: f64) -> Option<f64> {
+    match points {
+        [] => None,
+        [(_, v)] => Some(*v),
+        _ => {
+            if t <= points[0].0 {
+                return Some(points[0].1);
+            }
+            if t >= points[points.len() - 1].0 {
+                return Some(points[points.len() - 1].1);
+            }
+            for w in points.windows(2) {
+                let (t0, v0) = w[0];
+                let (t1, v1) = w[1];
+                if t >= t0 && t <= t1 {
+                    let f = if (t1 - t0).abs() < 1e-9 { 0.0 } else { (t - t0) / (t1 - t0) };
+                    return Some(v0 + (v1 - v0) * f);
+                }
+            }
+            Some(points[points.len() - 1].1)
+        }
+    }
+}
+
+/// Sorted (time, value) points for one param's keyframes.
+pub fn kf_points(kf: &BTreeMap<String, BTreeMap<String, f64>>, param: &str) -> Vec<(f64, f64)> {
+    let mut pts: Vec<(f64, f64)> = kf
+        .get(param)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| k.parse::<f64>().ok().map(|t| (t, *v)))
+                .collect()
+        })
+        .unwrap_or_default();
+    pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    pts
 }
 
 /// Effect params parsed from a clip's `fx` map to identity-defaulted
@@ -159,6 +205,56 @@ impl Project {
         if !clip.fx.is_empty() {
             self.write_fx(&obj, &clip.fx)?;
         }
+        if !clip.kf.is_empty() {
+            self.write_kf(&obj, &clip.kf)?;
+        }
+        Ok(())
+    }
+
+    fn write_kf(
+        &mut self,
+        clip_obj: &ObjId,
+        kf: &BTreeMap<String, BTreeMap<String, f64>>,
+    ) -> anyhow::Result<()> {
+        let kfobj = self.doc.put_object(clip_obj, "kf", ObjType::Map)?;
+        for (param, points) in kf {
+            let pobj = self.doc.put_object(&kfobj, param.as_str(), ObjType::Map)?;
+            for (t, v) in points {
+                self.doc.put(&pobj, t.as_str(), *v)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn clip_kf_obj(&mut self, id: &str) -> anyhow::Result<ObjId> {
+        let clips = self.clips_obj();
+        let (_, obj) = self
+            .doc
+            .get(&clips, id)?
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?;
+        Ok(match self.doc.get(&obj, "kf")? {
+            Some((Value::Object(ObjType::Map), kfid)) => kfid,
+            _ => self.doc.put_object(&obj, "kf", ObjType::Map)?,
+        })
+    }
+
+    /// Add or update a keyframe for `param` at clip-relative time `t`.
+    pub fn set_keyframe(&mut self, id: &str, param: &str, t: f64, v: f64) -> anyhow::Result<()> {
+        let kf = self.clip_kf_obj(id)?;
+        let pobj = match self.doc.get(&kf, param)? {
+            Some((Value::Object(ObjType::Map), pid)) => pid,
+            _ => self.doc.put_object(&kf, param, ObjType::Map)?,
+        };
+        self.doc.put(&pobj, format!("{t:.3}").as_str(), v)?;
+        Ok(())
+    }
+
+    /// Remove all keyframes for a param (revert to its constant fx value).
+    pub fn clear_keyframes(&mut self, id: &str, param: &str) -> anyhow::Result<()> {
+        let kf = self.clip_kf_obj(id)?;
+        if self.doc.get(&kf, param)?.is_some() {
+            self.doc.delete(&kf, param)?;
+        }
         Ok(())
     }
 
@@ -268,6 +364,7 @@ impl Project {
                 len: right_len,
                 src_in: to,
                 fx: fx_from_json(&clip), // split inherits the clip's effects
+                kf: Default::default(),  // keyframes drop on split (v1)
             })?;
         }
         if left_len > 1e-9 {
@@ -371,6 +468,24 @@ impl Project {
                 }
             }
         }
+        let mut kf: BTreeMap<String, BTreeMap<String, f64>> = BTreeMap::new();
+        if let Ok(Some((Value::Object(ObjType::Map), kfid))) = self.doc.get(&obj, "kf") {
+            for param in self.doc.keys(&kfid) {
+                if let Ok(Some((Value::Object(ObjType::Map), pid))) = self.doc.get(&kfid, &param) {
+                    let mut pts = BTreeMap::new();
+                    for tk in self.doc.keys(&pid) {
+                        if let Ok(Some((Value::Scalar(s), _))) = self.doc.get(&pid, &tk) {
+                            if let Some(v) = s.as_ref().to_f64() {
+                                pts.insert(tk, v);
+                            }
+                        }
+                    }
+                    if !pts.is_empty() {
+                        kf.insert(param, pts);
+                    }
+                }
+            }
+        }
         Some(Clip {
             id: id.to_string(),
             name: get_str("name")?,
@@ -380,6 +495,7 @@ impl Project {
             len: get_f64("len")?,
             src_in: get_f64("src_in")?,
             fx,
+            kf,
         })
     }
 
@@ -422,6 +538,9 @@ impl Project {
                     self.doc.put(&obj, "src_in", t.src_in)?;
                     if c.fx != t.fx {
                         self.write_fx(&obj, &t.fx)?;
+                    }
+                    if c.kf != t.kf {
+                        self.write_kf(&obj, &t.kf)?;
                     }
                 }
                 Some(_) => {}
@@ -513,6 +632,7 @@ mod tests {
             len: 4.0,
             src_in: 0.0,
             fx: BTreeMap::new(),
+            kf: BTreeMap::new(),
         }
     }
 
@@ -629,6 +749,44 @@ mod tests {
         assert!(p.clips_state()[0].fx.is_empty());
         p.restore_clips(&after).unwrap(); // redo restores them
         assert_eq!(p.clips_state()[0].fx.get("brightness"), Some(&0.3));
+    }
+
+    #[test]
+    fn interp_is_linear_and_clamped() {
+        let pts = vec![(0.0, 0.0), (2.0, 10.0)];
+        assert_eq!(interp(&pts, -1.0), Some(0.0)); // clamp low
+        assert_eq!(interp(&pts, 0.0), Some(0.0));
+        assert_eq!(interp(&pts, 1.0), Some(5.0)); // midpoint
+        assert_eq!(interp(&pts, 2.0), Some(10.0));
+        assert_eq!(interp(&pts, 3.0), Some(10.0)); // clamp high
+        assert_eq!(interp(&[], 1.0), None);
+        assert_eq!(interp(&[(5.0, 7.0)], 1.0), Some(7.0)); // single
+    }
+
+    #[test]
+    fn keyframes_persist_undo_and_interp() {
+        let mut p = Project::new("Kf");
+        p.add_clip(&demo_clip("a", "V1", 0.0)).unwrap();
+        let before = p.clips_state();
+
+        p.set_keyframe("a", "scale", 0.0, 1.0).unwrap();
+        p.set_keyframe("a", "scale", 2.0, 2.0).unwrap();
+        let after = p.clips_state();
+        let pts = kf_points(&after[0].kf, "scale");
+        assert_eq!(pts, vec![(0.0, 1.0), (2.0, 2.0)]);
+        assert_eq!(interp(&pts, 1.0), Some(1.5));
+
+        // snapshot carries kf
+        let snap = p.snapshot();
+        assert_eq!(snap["clips"][0]["kf"]["scale"]["2.000"], 2.0);
+
+        p.restore_clips(&before).unwrap(); // undo strips keyframes
+        assert!(p.clips_state()[0].kf.is_empty());
+        p.restore_clips(&after).unwrap(); // redo restores
+        assert_eq!(kf_points(&p.clips_state()[0].kf, "scale").len(), 2);
+
+        p.clear_keyframes("a", "scale").unwrap();
+        assert!(p.clips_state()[0].kf.get("scale").is_none());
     }
 
     #[test]

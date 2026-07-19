@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Clip, FX_DEFAULTS, fxValue, MediaItem, Word } from "../ipc";
+import { Clip, FX_DEFAULTS, fxValue, fxValueAt, kfPoints, MediaItem, Word } from "../ipc";
 import { formatTC, mediaHue, Segmented } from "./ui";
 
 type Tab = "inspector" | "transcript";
@@ -41,29 +41,44 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
   },
 ];
 
-/// Slider row: live preview on drag, single committed edit on release,
-/// double-click label to reset to the identity default.
+/// Slider row with keyframe support. Constant mode: live preview on
+/// drag, one committed edit on release, double-click label resets. ◆
+/// writes a keyframe at the playhead — once keyframed the shown value
+/// tracks the animation and edits update the keyframe there; ✕ clears.
 function FxSlider({
   param,
-  value,
+  clip,
+  clipTime,
   onPreview,
   onCommit,
+  onSetKeyframe,
+  onClearKeyframes,
 }: {
   param: FxParam;
-  value: number;
+  clip: Clip;
+  clipTime: number;
   onPreview: (key: string, v: number) => void;
   onCommit: (key: string, v: number) => void;
+  onSetKeyframe: (key: string, t: number, v: number) => void;
+  onClearKeyframes: (key: string) => void;
 }) {
+  const points = kfPoints(clip, param.key);
+  const keyframed = points.length > 0;
+  const value = keyframed ? fxValueAt(clip, param.key, clipTime) : fxValue(clip, param.key);
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
-  const isDefault = Math.abs(draft - (FX_DEFAULTS[param.key] ?? 0)) < 1e-9;
+  const isDefault = !keyframed && Math.abs(draft - (FX_DEFAULTS[param.key] ?? 0)) < 1e-9;
   const fmt = param.fmt ?? ((v: number) => v.toFixed(2));
+  const commit = (v: number) =>
+    keyframed ? onSetKeyframe(param.key, clipTime, v) : onCommit(param.key, v);
+
   return (
-    <div className={`fx-row${isDefault ? "" : " active"}`}>
+    <div className={`fx-row${isDefault ? "" : " active"}${keyframed ? " kf" : ""}`}>
       <span
         className="fx-label"
         title="Double-click to reset"
         onDoubleClick={() => {
+          if (keyframed) return;
           const d = FX_DEFAULTS[param.key] ?? 0;
           setDraft(d);
           onCommit(param.key, d);
@@ -82,10 +97,30 @@ function FxSlider({
           setDraft(v);
           onPreview(param.key, v);
         }}
-        onPointerUp={() => onCommit(param.key, draft)}
-        onKeyUp={() => onCommit(param.key, draft)}
+        onPointerUp={() => commit(draft)}
+        onKeyUp={() => commit(draft)}
       />
       <span className="fx-val">{fmt(draft)}</span>
+      <button
+        className={`kf-btn${keyframed ? " on" : ""}`}
+        title={
+          keyframed
+            ? `Keyframe at ${clipTime.toFixed(1)}s (${points.length} total)`
+            : "Add keyframe at playhead"
+        }
+        onClick={() => onSetKeyframe(param.key, clipTime, draft)}
+      >
+        ◆
+      </button>
+      {keyframed && (
+        <button
+          className="kf-btn clear"
+          title="Clear keyframes"
+          onClick={() => onClearKeyframes(param.key)}
+        >
+          ✕
+        </button>
+      )}
     </div>
   );
 }
@@ -140,8 +175,11 @@ function TransitionControl(p: { clip: Clip; onSet: (dur: number, dip: boolean) =
 
 function EffectControls(p: {
   clip: Clip;
+  clipTime: number;
   onPreview: (key: string, v: number) => void;
   onCommit: (key: string, v: number) => void;
+  onSetKeyframe: (key: string, t: number, v: number) => void;
+  onClearKeyframes: (key: string) => void;
 }) {
   return (
     <div className="fx-panel">
@@ -152,9 +190,12 @@ function EffectControls(p: {
             <FxSlider
               key={param.key}
               param={param}
-              value={fxValue(p.clip, param.key)}
+              clip={p.clip}
+              clipTime={p.clipTime}
               onPreview={p.onPreview}
               onCommit={p.onCommit}
+              onSetKeyframe={p.onSetKeyframe}
+              onClearKeyframes={p.onClearKeyframes}
             />
           ))}
         </div>
@@ -198,6 +239,9 @@ export function Inspector(p: {
   onTrim: (id: string, start: number, len: number, srcIn: number) => void;
   onFxPreview: (key: string, v: number) => void;
   onFxCommit: (key: string, v: number) => void;
+  clipTime: number;
+  onSetKeyframe: (key: string, t: number, v: number) => void;
+  onClearKeyframes: (key: string) => void;
   hasLeftNeighbor: boolean;
   onSetTransition: (dur: number, dip: boolean) => void;
   // transcript
@@ -287,8 +331,18 @@ export function Inspector(p: {
               {p.hasLeftNeighbor && (
                 <TransitionControl clip={p.clip} onSet={p.onSetTransition} />
               )}
-              <div className="fx-heading">Effect Controls</div>
-              <EffectControls clip={p.clip} onPreview={p.onFxPreview} onCommit={p.onFxCommit} />
+              <div className="fx-heading">
+                Effect Controls
+                <span className="fx-kf-hint">◆ keyframe @ {p.clipTime.toFixed(1)}s</span>
+              </div>
+              <EffectControls
+                clip={p.clip}
+                clipTime={p.clipTime}
+                onPreview={p.onFxPreview}
+                onCommit={p.onFxCommit}
+                onSetKeyframe={p.onSetKeyframe}
+                onClearKeyframes={p.onClearKeyframes}
+              />
             </>
           )}
         </div>

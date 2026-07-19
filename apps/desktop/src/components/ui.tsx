@@ -1,6 +1,7 @@
 // Shared UI primitives for the Cutlass shell. Presentation only — no
 // editor logic lives here.
 import { ReactNode, useEffect, useRef, useState } from "react";
+import { Clip, fxValue, fxValueAt } from "../ipc";
 
 /// The Cutlass mark: a play button sliced by the blade.
 export function Logo({ size = 20 }: { size?: number }) {
@@ -216,27 +217,24 @@ export function mediaHue(mediaId: string): number {
   return h % 360;
 }
 
-/// Approximate a clip's Effect Controls as CSS for the live preview.
-/// Export is the pixel-accurate path (ffmpeg); this just has to feel
-/// right while scrubbing. `playhead` is absolute timeline seconds.
-export function fxStyle(
-  clip: { start: number; len: number; fx?: Record<string, number> } | null,
-  playhead: number
-): React.CSSProperties {
+/// Approximate a clip's Effect Controls as CSS for the live preview,
+/// evaluating any keyframed params at the playhead. Export is the
+/// pixel-accurate path (ffmpeg); this just has to feel right scrubbing.
+export function fxStyle(clip: Clip | null, playhead: number): React.CSSProperties {
   if (!clip) return {};
-  const v = (k: string, d: number) => clip.fx?.[k] ?? d;
-  const scale = v("scale", 1);
-  const rot = v("rot", 0);
-  const px = v("pos_x", 0) * 100;
-  const py = v("pos_y", 0) * 100;
-  const brightness = 1 + v("brightness", 0); // additive → multiplicative approx
-  const contrast = v("contrast", 1);
-  const saturation = v("saturation", 1);
-
   const inClip = playhead - clip.start;
-  const fi = v("fade_in", 0);
-  const fo = v("fade_out", 0);
-  const tr = v("trans_dur", 0); // incoming transition reads as a fade-in
+  const v = (k: string) => fxValueAt(clip, k, inClip);
+  const scale = v("scale");
+  const rot = v("rot");
+  const px = v("pos_x") * 100;
+  const py = v("pos_y") * 100;
+  const brightness = 1 + v("brightness"); // additive → multiplicative approx
+  const contrast = v("contrast");
+  const saturation = v("saturation");
+
+  const fi = fxValue(clip, "fade_in");
+  const fo = fxValue(clip, "fade_out");
+  const tr = fxValue(clip, "trans_dur"); // incoming transition reads as fade-in
   let opacity = 1;
   const rampIn = Math.max(fi, tr);
   if (rampIn > 0 && inClip < rampIn) opacity = Math.max(0, inClip / rampIn);
