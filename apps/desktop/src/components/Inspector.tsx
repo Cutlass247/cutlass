@@ -241,6 +241,57 @@ function TransitionControl(p: { clip: Clip; onSet: (dur: number, dip: boolean) =
   );
 }
 
+/// Retime (speed) control — presets + fine slider. Constant per clip.
+function RetimeControl(p: {
+  clip: Clip;
+  onPreview: (key: string, v: number) => void;
+  onCommit: (key: string, v: number) => void;
+}) {
+  const speed = p.clip.fx?.speed ?? 1;
+  const [draft, setDraft] = useState(speed);
+  useEffect(() => setDraft(speed), [speed]);
+  const presets = [0.25, 0.5, 1, 2, 4];
+  return (
+    <>
+      <div className="fx-heading">Retime</div>
+      <div className="fx-panel">
+        <div className="speed-presets">
+          {presets.map((s) => (
+            <button
+              key={s}
+              className={Math.abs(draft - s) < 0.01 ? "on" : ""}
+              onClick={() => {
+                setDraft(s);
+                p.onCommit("speed", s);
+              }}
+            >
+              {s}×
+            </button>
+          ))}
+        </div>
+        <div className="fx-row active">
+          <span className="fx-label">Speed</span>
+          <input
+            type="range"
+            min={0.25}
+            max={4}
+            step={0.05}
+            value={draft}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setDraft(v);
+              p.onPreview("speed", v);
+            }}
+            onPointerUp={() => p.onCommit("speed", draft)}
+            onKeyUp={() => p.onCommit("speed", draft)}
+          />
+          <span className="fx-val">{draft.toFixed(2)}×</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
 function EffectControls(p: {
   clip: Clip;
   clipTime: number;
@@ -406,6 +457,7 @@ export function Inspector(p: {
                 />
               ) : (
                 <>
+                  <RetimeControl clip={p.clip} onPreview={p.onFxPreview} onCommit={p.onFxCommit} />
                   {p.hasLeftNeighbor && (
                     <TransitionControl clip={p.clip} onSet={p.onSetTransition} />
                   )}

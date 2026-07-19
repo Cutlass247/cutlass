@@ -250,7 +250,9 @@ export default function App() {
       if (!clip) continue;
       const m = media[clip.media];
       if (!m || m.thumbs.length === 0) continue;
-      return { media: m, srcT: playhead - clip.start + clip.src_in, clip };
+      const speed = clip.fx?.speed ?? 1;
+      const srcT = clip.src_in + (playhead - clip.start) * speed;
+      return { media: m, srcT: Math.min(srcT, m.duration_s), clip };
     }
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps

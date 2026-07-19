@@ -27,6 +27,7 @@ fn main() -> anyhow::Result<()> {
         scale: 0.7,
         pos_x: 0.1,
         rot: 8.0,
+        speed: 2.0, // 2× fast-motion (consumes 5s of source into 2.5s)
         ..Default::default()
     };
     // clip 1 → (1s cross-dissolve) → clip 2, then a gap, then clip 3.

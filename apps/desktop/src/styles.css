@@ -1154,6 +1154,43 @@ button {
   border-color: var(--accent);
 }
 
+.speed-badge {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #101215;
+  background: var(--warn);
+  border-radius: 4px;
+  padding: 0 4px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.speed-presets {
+  display: flex;
+  gap: 4px;
+}
+
+.speed-presets button {
+  flex: 1;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 4px 0;
+  font-weight: 600;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.speed-presets button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .trans-badge {
   position: absolute;
   left: 2px;

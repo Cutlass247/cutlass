@@ -491,6 +491,9 @@ fn play(from_t: f64, muted: Option<Vec<String>>, state: State<AppState>) -> bool
                     .map(|cs| {
                         cs.iter()
                             .filter(|c| c["track"] == *track)
+                            // retimed clips are silent in live playback (v1);
+                            // export renders their audio pitch-corrected
+                            .filter(|c| (c["fx"]["speed"].as_f64().unwrap_or(1.0) - 1.0).abs() < 0.01)
                             .filter_map(|c| {
                                 let m = media.get(c["media"].as_str()?)?;
                                 Some(cutlass_engine::player::AudioClip {

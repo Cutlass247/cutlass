@@ -262,6 +262,9 @@ function ClipView({
           ⧓
         </div>
       )}
+      {Math.abs((clip.fx?.speed ?? 1) - 1) > 0.01 && (
+        <div className="speed-badge">{(clip.fx?.speed ?? 1).toFixed(2).replace(/\.?0+$/, "")}×</div>
+      )}
       <div className="trim-handle trim-l" />
       <div className="trim-handle trim-r" />
     </div>
