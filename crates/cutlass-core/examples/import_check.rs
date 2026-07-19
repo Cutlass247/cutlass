@@ -30,6 +30,7 @@ fn main() -> anyhow::Result<()> {
         start: 0.0,
         len: info.duration_s,
         src_in: 0.0,
+        text: String::new(),
         fx: Default::default(),
         kf: Default::default(),
     })?;

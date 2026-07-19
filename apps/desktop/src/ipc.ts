@@ -13,6 +13,8 @@ export interface Clip {
   start: number;
   len: number;
   src_in: number;
+  /// non-empty = a title (text) clip, no media.
+  text?: string;
   fx?: Fx;
   /// param → (time-string → value); present params animate.
   kf?: Record<string, Record<string, number>>;
@@ -223,6 +225,36 @@ export async function clearKeyframes(id: string, param: string): Promise<Project
     return structuredClone(mockState.project);
   }
   return invoke<ProjectSnapshot>("clear_keyframes", { id, param });
+}
+
+/// Add a title clip on V2 at `start` (default lower-third style).
+export async function addTitle(start: number): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    mockState.project.clips.push({
+      id: `title-${Date.now()}`,
+      name: "Title",
+      media: "",
+      track: "V2",
+      start,
+      len: 4,
+      src_in: 0,
+      text: "Title",
+      fx: { pos_y: 0.3, font_size: 56, title_bg: 0.5 },
+    });
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("add_title", { start });
+}
+
+export async function setTitleText(id: string, text: string): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip) clip.text = text;
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("set_title_text", { id, text });
 }
 
 /// Set (dur=0 clears) a transition into a clip from its left neighbor.

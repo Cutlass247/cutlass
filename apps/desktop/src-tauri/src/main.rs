@@ -168,6 +168,7 @@ fn import_media(path: String, state: State<AppState>) -> Result<serde_json::Valu
             start: project.track_end("V1"),
             len: info.duration_s,
             src_in: 0.0,
+            text: String::new(),
             fx: Default::default(),
             kf: Default::default(),
         };
@@ -276,6 +277,40 @@ fn set_effect(
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
     with_undo(&state, |p| p.set_effect(&id, &key, value).map_err(err_str))
+}
+
+/// Create a title (text) clip on V2 at `start`, default lower-third style.
+#[tauri::command]
+fn add_title(start: f64, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    with_undo(&state, |p| {
+        let mut fx = std::collections::BTreeMap::new();
+        fx.insert("pos_y".to_string(), 0.3);
+        fx.insert("font_size".to_string(), 56.0);
+        fx.insert("title_bg".to_string(), 0.5);
+        p.add_clip(&Clip {
+            id: format!("t{nanos:x}"),
+            name: "Title".into(),
+            media: String::new(),
+            track: "V2".into(),
+            start,
+            len: 4.0,
+            src_in: 0.0,
+            text: "Title".into(),
+            fx,
+            kf: Default::default(),
+        })
+        .map_err(err_str)
+    })
+}
+
+#[tauri::command]
+fn set_title_text(
+    id: String,
+    text: String,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| p.set_title_text(&id, &text).map_err(err_str))
 }
 
 /// Add/update a keyframe for a param at clip-relative time `t` (undoable).
@@ -542,7 +577,7 @@ fn export_project(
     state: State<AppState>,
 ) -> Result<String, String> {
     use tauri::Emitter;
-    let (clips, overlays) = {
+    let (clips, overlays, titles) = {
         let mut project = state.project.lock().unwrap();
         let paths: HashMap<String, String> = project
             .media_entries()
@@ -550,10 +585,23 @@ fn export_project(
             .map(|(id, _, p, _)| (id, p))
             .collect();
         let all = project.clips_state();
-        use cutlass_core::export::{ClipFx, ExportClip};
+        use cutlass_core::export::{ClipFx, ExportClip, Title};
+        let titles: Vec<Title> = all
+            .iter()
+            .filter(|c| !c.text.is_empty())
+            .map(|c| Title {
+                text: c.text.clone(),
+                start: c.start,
+                len: c.len,
+                pos_x: c.fx.get("pos_x").copied().unwrap_or(0.0),
+                pos_y: c.fx.get("pos_y").copied().unwrap_or(0.25),
+                font_size: c.fx.get("font_size").copied().unwrap_or(56.0),
+                bg: c.fx.get("title_bg").copied().unwrap_or(0.0),
+            })
+            .collect();
         let clips: Vec<ExportClip> = all
             .iter()
-            .filter(|c| c.track == "V1")
+            .filter(|c| c.track == "V1" && c.text.is_empty())
             .filter_map(|c| {
                 Some(ExportClip {
                     start: c.start,
@@ -573,7 +621,7 @@ fn export_project(
             .collect();
         let overlays: Vec<cutlass_core::export::Overlay> = all
             .iter()
-            .filter(|c| c.track == "V2")
+            .filter(|c| c.track == "V2" && c.text.is_empty())
             .filter_map(|c| {
                 Some(cutlass_core::export::Overlay {
                     path: paths.get(&c.media)?.clone(),
@@ -584,7 +632,7 @@ fn export_project(
                 })
             })
             .collect();
-        (clips, overlays)
+        (clips, overlays, titles)
     };
     if clips.is_empty() {
         return Err("nothing on V1 to export".into());
@@ -595,7 +643,7 @@ fn export_project(
         height: height.unwrap_or(1080),
         fps: 30,
     };
-    cutlass_core::export::export(&segments, &overlays, Path::new(&path), &settings, &mut |p| {
+    cutlass_core::export::export(&segments, &overlays, &titles, Path::new(&path), &settings, &mut |p| {
         let _ = app.emit("export-progress", p);
     })
     .map_err(err_str)
@@ -760,7 +808,9 @@ fn main() {
             set_effect,
             set_transition,
             set_keyframe,
-            clear_keyframes
+            clear_keyframes,
+            add_title,
+            set_title_text
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");

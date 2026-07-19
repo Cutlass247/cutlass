@@ -1086,6 +1086,74 @@ button {
   white-space: nowrap;
 }
 
+.panel-btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.panel-btn-row .primary-btn {
+  flex: 1;
+}
+
+.primary-btn.ghost {
+  flex: 0 0 auto;
+  border-style: solid;
+  border-color: var(--border);
+}
+
+.title-clip .title-clip-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #e6ddff;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.monitor-frame {
+  container-type: size;
+}
+
+.title-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  text-align: center;
+}
+
+.title-overlay span {
+  color: #fff;
+  font-weight: 700;
+  line-height: 1.2;
+  border-radius: 4px;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  max-width: 90%;
+}
+
+.title-text {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  resize: vertical;
+  outline: none;
+}
+
+.title-text:focus {
+  border-color: var(--accent);
+}
+
 .trans-badge {
   position: absolute;
   left: 2px;

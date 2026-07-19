@@ -26,6 +26,10 @@ pub struct Clip {
     pub len: f64,
     /// source in-point, seconds
     pub src_in: f64,
+    /// Non-empty = this is a title clip (generated text, no media file).
+    /// Style (font size, position, background) lives in fx.
+    #[serde(default)]
+    pub text: String,
     /// Effect Controls: sparse map of param → value (absent = default).
     /// BTreeMap keeps snapshot/equality deterministic. Keys: brightness,
     /// contrast, saturation, scale, rot, pos_x, pos_y, fade_in, fade_out,
@@ -202,6 +206,9 @@ impl Project {
         self.doc.put(&obj, "start", clip.start)?;
         self.doc.put(&obj, "len", clip.len)?;
         self.doc.put(&obj, "src_in", clip.src_in)?;
+        if !clip.text.is_empty() {
+            self.doc.put(&obj, "text", clip.text.as_str())?;
+        }
         if !clip.fx.is_empty() {
             self.write_fx(&obj, &clip.fx)?;
         }
@@ -246,6 +253,17 @@ impl Project {
             _ => self.doc.put_object(&kf, param, ObjType::Map)?,
         };
         self.doc.put(&pobj, format!("{t:.3}").as_str(), v)?;
+        Ok(())
+    }
+
+    /// Set a title clip's text.
+    pub fn set_title_text(&mut self, id: &str, text: &str) -> anyhow::Result<()> {
+        let clips = self.clips_obj();
+        let (_, obj) = self
+            .doc
+            .get(&clips, id)?
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?;
+        self.doc.put(&obj, "text", text)?;
         Ok(())
     }
 
@@ -363,6 +381,7 @@ impl Project {
                 start: start + left_len,
                 len: right_len,
                 src_in: to,
+                text: clip["text"].as_str().unwrap_or("").to_string(),
                 fx: fx_from_json(&clip), // split inherits the clip's effects
                 kf: Default::default(),  // keyframes drop on split (v1)
             })?;
@@ -494,6 +513,7 @@ impl Project {
             start: get_f64("start")?,
             len: get_f64("len")?,
             src_in: get_f64("src_in")?,
+            text: get_str("text").unwrap_or_default(),
             fx,
             kf,
         })
@@ -536,6 +556,9 @@ impl Project {
                     self.doc.put(&obj, "start", t.start)?;
                     self.doc.put(&obj, "len", t.len)?;
                     self.doc.put(&obj, "src_in", t.src_in)?;
+                    if c.text != t.text {
+                        self.doc.put(&obj, "text", t.text.as_str())?;
+                    }
                     if c.fx != t.fx {
                         self.write_fx(&obj, &t.fx)?;
                     }
@@ -631,6 +654,7 @@ mod tests {
             start,
             len: 4.0,
             src_in: 0.0,
+            text: String::new(),
             fx: BTreeMap::new(),
             kf: BTreeMap::new(),
         }
@@ -729,6 +753,24 @@ mod tests {
         assert_eq!(get("b"), Some(0.0));
         assert_eq!(get("c"), Some(4.0));
         assert_eq!(get("x"), Some(6.0));
+    }
+
+    #[test]
+    fn title_text_persists_and_undoes() {
+        let mut p = Project::new("T");
+        let mut t = demo_clip("t1", "V2", 0.0);
+        t.text = "Hello".into();
+        p.add_clip(&t).unwrap();
+        let before = p.clips_state();
+        assert_eq!(p.snapshot()["clips"][0]["text"], "Hello");
+
+        p.set_title_text("t1", "Lower third").unwrap();
+        let after = p.clips_state();
+        assert_eq!(after[0].text, "Lower third");
+        assert_ne!(before, after);
+
+        p.restore_clips(&before).unwrap();
+        assert_eq!(p.clips_state()[0].text, "Hello");
     }
 
     #[test]

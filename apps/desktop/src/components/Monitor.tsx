@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { ReactNode, useRef, useState } from "react";
 import { formatTC, IconButton } from "./ui";
 
 export type Resolution = { label: string; w: number; h: number };
@@ -11,6 +11,7 @@ export const RESOLUTIONS: Resolution[] = [
 export function Monitor(p: {
   src: string | null;
   imgStyle?: React.CSSProperties;
+  titleOverlay?: ReactNode;
   caption: string | null;
   playhead: number;
   playing: boolean;
@@ -38,6 +39,7 @@ export function Monitor(p: {
             <div className="safe title" />
           </>
         )}
+        {p.titleOverlay}
         {p.caption && <div className="caption">{p.caption}</div>}
       </div>
       <div className="transport">

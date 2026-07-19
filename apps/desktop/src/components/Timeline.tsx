@@ -193,10 +193,11 @@ function ClipView({
   onPointerUp: () => void;
 }) {
   const w = clip.len * pps;
-  const hue = mediaHue(clip.media);
+  const isTitle = !!clip.text;
+  const hue = isTitle ? 265 : mediaHue(clip.media);
 
   const filmstrip = useMemo(() => {
-    if (!media) return [];
+    if (!media || isTitle) return [];
     const cellW = 56;
     const n = Math.max(1, Math.floor(w / cellW));
     return Array.from({ length: n }, (_, i) => {
@@ -225,21 +226,26 @@ function ClipView({
 
   return (
     <div
-      className={`clip${dragging ? " dragging" : ""}${selected ? " selected" : ""}${locked ? " locked" : ""}`}
+      className={`clip${dragging ? " dragging" : ""}${selected ? " selected" : ""}${locked ? " locked" : ""}${isTitle ? " title-clip" : ""}`}
       style={{
         left: clip.start * pps,
         width: w,
         borderColor: `hsl(${hue} 55% ${selected ? 62 : 40}%)`,
+        ...(isTitle ? { background: `hsl(${hue} 45% 26%)` } : {}),
       }}
       onPointerDown={(e) => onPointerDown(e, clip)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
     >
-      <div className="clip-strip">
-        {filmstrip.map((src, i) => (
-          <img key={i} src={src} alt="" draggable={false} />
-        ))}
-      </div>
+      {isTitle ? (
+        <span className="title-clip-label">T {clip.text}</span>
+      ) : (
+        <div className="clip-strip">
+          {filmstrip.map((src, i) => (
+            <img key={i} src={src} alt="" draggable={false} />
+          ))}
+        </div>
+      )}
       {wave && (
         <svg className="clip-wave" viewBox={`0 0 ${wave.n - 1} 30`} preserveAspectRatio="none">
           <path d={wave.d} />
