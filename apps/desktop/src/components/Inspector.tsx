@@ -125,6 +125,74 @@ function FxSlider({
   );
 }
 
+/// Editor for a title (text) clip: content + font/background/position.
+function TitleEditor(p: {
+  clip: Clip;
+  onSetText: (text: string) => void;
+  onPreview: (key: string, v: number) => void;
+  onCommit: (key: string, v: number) => void;
+}) {
+  const [text, setText] = useState(p.clip.text ?? "");
+  useEffect(() => setText(p.clip.text ?? ""), [p.clip.text, p.clip.id]);
+
+  const sliders: { key: string; label: string; min: number; max: number; step: number; def: number }[] = [
+    { key: "font_size", label: "Font size", min: 16, max: 160, step: 2, def: 56 },
+    { key: "title_bg", label: "Background", min: 0, max: 1, step: 0.05, def: 0.5 },
+    { key: "pos_x", label: "Position X", min: -0.5, max: 0.5, step: 0.01, def: 0 },
+    { key: "pos_y", label: "Position Y", min: -0.5, max: 0.5, step: 0.01, def: 0.3 },
+  ];
+
+  return (
+    <>
+      <div className="fx-heading">Title</div>
+      <div className="fx-panel">
+        <textarea
+          className="title-text"
+          value={text}
+          rows={2}
+          placeholder="Title text…"
+          onChange={(e) => setText(e.target.value)}
+          onBlur={(e) => p.onSetText(e.currentTarget.value)}
+        />
+        {sliders.map((s) => (
+          <TitleSlider key={s.key} spec={s} clip={p.clip} onPreview={p.onPreview} onCommit={p.onCommit} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+function TitleSlider(p: {
+  spec: { key: string; label: string; min: number; max: number; step: number; def: number };
+  clip: Clip;
+  onPreview: (key: string, v: number) => void;
+  onCommit: (key: string, v: number) => void;
+}) {
+  const val = p.clip.fx?.[p.spec.key] ?? p.spec.def;
+  const [draft, setDraft] = useState(val);
+  useEffect(() => setDraft(val), [val]);
+  return (
+    <div className="fx-row active">
+      <span className="fx-label">{p.spec.label}</span>
+      <input
+        type="range"
+        min={p.spec.min}
+        max={p.spec.max}
+        step={p.spec.step}
+        value={draft}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          setDraft(v);
+          p.onPreview(p.spec.key, v);
+        }}
+        onPointerUp={() => p.onCommit(p.spec.key, draft)}
+        onKeyUp={() => p.onCommit(p.spec.key, draft)}
+      />
+      <span className="fx-val">{draft.toFixed(2)}</span>
+    </div>
+  );
+}
+
 /// Transition INTO the selected clip from its left neighbor.
 function TransitionControl(p: { clip: Clip; onSet: (dur: number, dip: boolean) => void }) {
   const dur = fxValue(p.clip, "trans_dur");
@@ -244,6 +312,7 @@ export function Inspector(p: {
   onClearKeyframes: (key: string) => void;
   hasLeftNeighbor: boolean;
   onSetTransition: (dur: number, dip: boolean) => void;
+  onSetTitleText: (text: string) => void;
   // transcript
   words: Word[] | null;
   transcriptMediaName: string | null;
@@ -328,21 +397,32 @@ export function Inspector(p: {
                   </div>
                 </div>
               )}
-              {p.hasLeftNeighbor && (
-                <TransitionControl clip={p.clip} onSet={p.onSetTransition} />
+              {p.clip.text ? (
+                <TitleEditor
+                  clip={p.clip}
+                  onSetText={p.onSetTitleText}
+                  onPreview={p.onFxPreview}
+                  onCommit={p.onFxCommit}
+                />
+              ) : (
+                <>
+                  {p.hasLeftNeighbor && (
+                    <TransitionControl clip={p.clip} onSet={p.onSetTransition} />
+                  )}
+                  <div className="fx-heading">
+                    Effect Controls
+                    <span className="fx-kf-hint">◆ keyframe @ {p.clipTime.toFixed(1)}s</span>
+                  </div>
+                  <EffectControls
+                    clip={p.clip}
+                    clipTime={p.clipTime}
+                    onPreview={p.onFxPreview}
+                    onCommit={p.onFxCommit}
+                    onSetKeyframe={p.onSetKeyframe}
+                    onClearKeyframes={p.onClearKeyframes}
+                  />
+                </>
               )}
-              <div className="fx-heading">
-                Effect Controls
-                <span className="fx-kf-hint">◆ keyframe @ {p.clipTime.toFixed(1)}s</span>
-              </div>
-              <EffectControls
-                clip={p.clip}
-                clipTime={p.clipTime}
-                onPreview={p.onFxPreview}
-                onCommit={p.onFxCommit}
-                onSetKeyframe={p.onSetKeyframe}
-                onClearKeyframes={p.onClearKeyframes}
-              />
             </>
           )}
         </div>

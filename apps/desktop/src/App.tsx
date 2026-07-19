@@ -5,6 +5,7 @@ import {
   Presence,
   ProjectSnapshot,
   Word,
+  addTitle,
   audioClock,
   clearKeyframes,
   currentRoom,
@@ -31,6 +32,7 @@ import {
   sendPresence,
   setEffect,
   setKeyframe,
+  setTitleText,
   setTransition,
   transcribeMedia,
   trimClip,
@@ -357,6 +359,56 @@ export default function App() {
     },
     [selected, applyEdit]
   );
+
+  const onAddTitle = useCallback(() => {
+    addTitle(playheadRef.current)
+      .then((snap) => {
+        applyEdit(snap);
+        // select the newest title so the editor opens
+        const t = snap.clips.filter((c) => c.text).slice(-1)[0];
+        if (t) setSelected(t.id);
+      })
+      .catch((e) => setError(String(e)));
+  }, [applyEdit]);
+
+  const onSetTitleText = useCallback(
+    (text: string) => {
+      if (!selected) return;
+      setTitleText(selected, text).then(applyEdit).catch((e) => setError(String(e)));
+    },
+    [selected, applyEdit]
+  );
+
+  // titles visible under the playhead → monitor overlay
+  const titleOverlay = useMemo(() => {
+    const active = clips.filter(
+      (c) => c.text && playhead >= c.start && playhead < c.start + c.len
+    );
+    if (active.length === 0) return null;
+    return active.map((c) => {
+      const fs = (c.fx?.font_size ?? 56) / 1080; // fraction of frame height
+      const bg = c.fx?.title_bg ?? 0;
+      const px = (c.fx?.pos_x ?? 0) * 100;
+      const py = (c.fx?.pos_y ?? 0) * 100;
+      return (
+        <div
+          key={c.id}
+          className="title-overlay"
+          style={{ transform: `translate(${px}%, ${py}%)` }}
+        >
+          <span
+            style={{
+              fontSize: `${fs * 100}cqh`,
+              background: bg > 0 ? `rgba(0,0,0,${bg})` : "transparent",
+              padding: bg > 0 ? "0.1em 0.4em" : 0,
+            }}
+          >
+            {c.text}
+          </span>
+        </div>
+      );
+    });
+  }, [clips, playhead]);
 
   // ── import / transcribe ─────────────────────────────────────────────
   const doTranscribe = useCallback(async (mediaId: string) => {
@@ -798,6 +850,7 @@ export default function App() {
                 transcripts={transcripts}
                 transcribing={transcribing}
                 onImport={doImport}
+                onAddTitle={onAddTitle}
                 onTranscribe={doTranscribe}
                 busy={busy !== null}
               />
@@ -809,6 +862,7 @@ export default function App() {
         <Monitor
           src={previewSrc}
           imgStyle={previewStyle}
+          titleOverlay={titleOverlay}
           caption={caption}
           playhead={playhead}
           playing={playing}
@@ -839,6 +893,7 @@ export default function App() {
             onClearKeyframes={onClearKeyframes}
             hasLeftNeighbor={selectedHasLeftNeighbor}
             onSetTransition={onSetTransition}
+            onSetTitleText={onSetTitleText}
             words={words}
             transcriptMediaName={transcriptMedia ? media[transcriptMedia]?.name ?? null : null}
             wordSel={wordSel && wordSel.media === transcriptMedia ? wordSel : null}

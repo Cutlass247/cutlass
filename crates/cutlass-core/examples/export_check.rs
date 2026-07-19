@@ -57,11 +57,19 @@ fn main() -> anyhow::Result<()> {
     let expected = 1.0 + 1.0 + 2.0 + 1.5 + 2.5;
     let out = std::env::temp_dir().join("cutlass_export_check.mp4");
 
+    // a lower-third title over the first ~3s, and a centered one later
+    use cutlass_core::export::Title;
+    let titles = vec![
+        Title { text: "Cutlass — it's alive".into(), start: 0.3, len: 3.0, pos_x: 0.0, pos_y: 0.3, font_size: 56.0, bg: 0.5 },
+        Title { text: "Chapter 2: Effects".into(), start: 4.0, len: 3.0, pos_x: 0.0, pos_y: 0.0, font_size: 64.0, bg: 0.0 },
+    ];
+
     let t0 = std::time::Instant::now();
     let mut last = -1.0f32;
     let encoder = export(
         &segments,
         &overlays,
+        &titles,
         &out,
         &ExportSettings { width: 1280, height: 720, fps: 30 },
         &mut |p| {
@@ -103,7 +111,7 @@ fn main() -> anyhow::Result<()> {
     let kf_segs = build_segments(vec![kf_clip]);
     println!("keyframed clip -> {} sub-segments", kf_segs.len());
     let kf_out = std::env::temp_dir().join("cutlass_export_kf.mp4");
-    export(&kf_segs, &[], &kf_out, &ExportSettings { width: 1280, height: 720, fps: 30 }, &mut |_| {})?;
+    export(&kf_segs, &[], &[], &kf_out, &ExportSettings { width: 1280, height: 720, fps: 30 }, &mut |_| {})?;
     let kf_dur = probe_duration_s(&kf_out)?;
     println!("keyframed export duration {kf_dur:.2}s (expected 3.00)");
     assert!((kf_dur - 3.0).abs() < 0.3, "keyframe duration {kf_dur:.2} != 3.0");

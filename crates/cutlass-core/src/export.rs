@@ -150,6 +150,48 @@ pub struct Overlay {
     pub fx: ClipFx,
 }
 
+/// A generated text title drawn over the program during its window.
+#[derive(Debug, Clone)]
+pub struct Title {
+    pub text: String,
+    pub start: f64,
+    pub len: f64,
+    pub pos_x: f64,    // fraction of width, 0 = centered
+    pub pos_y: f64,    // fraction of height, 0 = centered
+    pub font_size: f64, // px at 1080p, scaled to output height
+    pub bg: f64,        // background band opacity, 0 = none
+}
+
+/// Escape text for ffmpeg drawtext `text='...'`. Apostrophes become
+/// typographic ’ to sidestep single-quote termination entirely.
+fn esc_drawtext(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace(':', "\\:")
+        .replace('%', "\\%")
+        .replace('\'', "\u{2019}")
+        .replace('\n', " ")
+        .replace('\r', "")
+}
+
+/// A ffmpeg-filter-safe path (forward slashes, escaped drive colon).
+fn ff_path(p: &str) -> String {
+    p.replace('\\', "/").replace(':', "\\:")
+}
+
+fn title_font() -> String {
+    for f in [
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ] {
+        if std::path::Path::new(f).exists() {
+            return f.to_string();
+        }
+    }
+    "C:/Windows/Fonts/arial.ttf".to_string()
+}
+
 /// Build a clip's fitted-frame video chain `[{vi}:v] → [v{k}]`:
 /// letterbox to frame, color-correct, optional transform, optional fades.
 fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &ClipFx) -> String {
@@ -257,6 +299,7 @@ pub fn has_audio(path: &str) -> bool {
 pub fn export(
     segments: &[Segment],
     overlays: &[Overlay],
+    titles: &[Title],
     out: &Path,
     settings: &ExportSettings,
     progress: &mut dyn FnMut(f32),
@@ -266,7 +309,7 @@ pub fn export(
 
     for encoder in ["h264_qsv", "libx264"] {
         progress(0.0);
-        match run_export(segments, overlays, out, settings, encoder, total, progress) {
+        match run_export(segments, overlays, titles, out, settings, encoder, total, progress) {
             Ok(()) => return Ok(encoder.to_string()),
             Err(e) if encoder == "h264_qsv" => {
                 eprintln!("qsv encode failed ({e:#}); falling back to libx264");
@@ -280,6 +323,7 @@ pub fn export(
 fn run_export(
     segments: &[Segment],
     overlays: &[Overlay],
+    titles: &[Title],
     out: &Path,
     s: &ExportSettings,
     encoder: &str,
@@ -419,7 +463,41 @@ fn run_export(
             overlay_audio.len() + 1
         ));
     }
-    filters.push_str(&format!("[{base}]null[outv]"));
+    // titles: chain drawtext over the program during each title's window
+    if titles.is_empty() {
+        filters.push_str(&format!("[{base}]null[outv]"));
+    } else {
+        let font = ff_path(&title_font());
+        let mut cur = base.clone();
+        for (ti, title) in titles.iter().enumerate() {
+            let fs = ((title.font_size * h as f64 / 1080.0).round() as i64).max(8);
+            let x = if title.pos_x.abs() < 1e-9 {
+                "(w-text_w)/2".to_string()
+            } else {
+                format!("(w-text_w)/2+({:.0})", title.pos_x * w as f64)
+            };
+            let y = if title.pos_y.abs() < 1e-9 {
+                "(h-text_h)/2".to_string()
+            } else {
+                format!("(h-text_h)/2+({:.0})", title.pos_y * h as f64)
+            };
+            let boxpart = if title.bg > 0.0 {
+                format!(":box=1:boxcolor=black@{:.2}:boxborderw=14", title.bg.min(1.0))
+            } else {
+                String::new()
+            };
+            let (t0, t1) = (title.start, title.start + title.len);
+            let out_lbl = format!("dt{ti}");
+            filters.push_str(&format!(
+                "[{cur}]drawtext=fontfile='{font}':text='{txt}':fontsize={fs}:\
+                 fontcolor=white:x={x}:y={y}{boxpart}:\
+                 enable='between(t,{t0:.3},{t1:.3})'[{out_lbl}];",
+                txt = esc_drawtext(&title.text)
+            ));
+            cur = out_lbl;
+        }
+        filters.push_str(&format!("[{cur}]null[outv]"));
+    }
 
     let quality: &[&str] = if encoder == "h264_qsv" {
         &["-global_quality", "23"]
