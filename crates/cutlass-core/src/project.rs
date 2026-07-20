@@ -407,6 +407,37 @@ impl Project {
         Ok(())
     }
 
+    /// Split a clip at timeline position `at` into two adjacent clips
+    /// (the blade tool). No ripple — both halves stay in place. `new_id`
+    /// names the right half. Effects carry to both; keyframes drop (v1).
+    pub fn split_clip(&mut self, id: &str, at: f64, new_id: &str) -> anyhow::Result<()> {
+        let clip = self
+            .clips_state()
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?;
+        let rel = at - clip.start;
+        if rel <= 0.02 || rel >= clip.len - 0.02 {
+            return Ok(()); // split point outside the clip body — no-op
+        }
+        let speed = clip.fx.get("speed").copied().unwrap_or(1.0);
+        let src_split = clip.src_in + rel * speed;
+        self.add_clip(&Clip {
+            id: new_id.to_string(),
+            name: clip.name.clone(),
+            media: clip.media.clone(),
+            track: clip.track.clone(),
+            start: clip.start + rel,
+            len: clip.len - rel,
+            src_in: src_split,
+            text: clip.text.clone(),
+            fx: clip.fx.clone(),
+            kf: BTreeMap::new(),
+        })?;
+        self.trim_clip(id, clip.start, rel, clip.src_in)?;
+        Ok(())
+    }
+
     /// Ripple delete: remove the clip and close the gap — every later clip
     /// on the same track shifts left by the removed length.
     pub fn remove_clip_ripple(&mut self, id: &str) -> anyhow::Result<()> {
@@ -730,6 +761,41 @@ mod tests {
         assert_eq!(clips[0]["start"], 2.0);
         assert_eq!(clips[0]["len"], 2.5);
         assert_eq!(clips[0]["src_in"], 1.5);
+    }
+
+    #[test]
+    fn split_clip_halves_at_playhead() {
+        let mut p = Project::new("T");
+        let mut a = demo_clip("a", "V1", 0.0);
+        a.len = 10.0;
+        a.src_in = 2.0;
+        p.add_clip(&a).unwrap();
+        p.split_clip("a", 4.0, "a-r").unwrap(); // split at timeline 4s
+        let snap = p.snapshot();
+        let get = |id: &str| {
+            snap["clips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == id)
+                .cloned()
+                .unwrap()
+        };
+        let left = get("a");
+        assert_eq!((left["start"].as_f64(), left["len"].as_f64(), left["src_in"].as_f64()),
+                   (Some(0.0), Some(4.0), Some(2.0)));
+        let right = get("a-r");
+        // right starts at timeline 4, src continues at 2+4=6, len 6
+        assert_eq!((right["start"].as_f64(), right["len"].as_f64(), right["src_in"].as_f64()),
+                   (Some(4.0), Some(6.0), Some(6.0)));
+    }
+
+    #[test]
+    fn split_outside_body_is_noop() {
+        let mut p = Project::new("T");
+        p.add_clip(&demo_clip("a", "V1", 5.0)).unwrap(); // [5, 9]
+        p.split_clip("a", 20.0, "x").unwrap();
+        assert_eq!(p.clips_state().len(), 1);
     }
 
     #[test]

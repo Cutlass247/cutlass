@@ -198,14 +198,17 @@ function ClipView({
 
   const filmstrip = useMemo(() => {
     if (!media || isTitle) return [];
+    // Cap the thumbnail count so a long clip doesn't spawn thousands of
+    // <img> nodes and freeze the timeline; they flex-stretch to fill.
     const cellW = 56;
-    const n = Math.max(1, Math.floor(w / cellW));
+    const n = Math.max(1, Math.min(48, Math.floor(w / cellW)));
+    const speed = clip.fx?.speed ?? 1;
     return Array.from({ length: n }, (_, i) => {
-      const srcT = clip.src_in + (i / n) * clip.len;
+      const srcT = clip.src_in + (i / n) * clip.len * speed;
       const idx = Math.min(media.thumbs.length - 1, Math.floor(srcT * media.scrub_fps));
       return media.thumbs[idx];
     });
-  }, [media, w, clip.src_in, clip.len]);
+  }, [media, w, clip.src_in, clip.len, clip.fx?.speed]);
 
   const wave = useMemo(() => {
     const wf = media?.waveform;

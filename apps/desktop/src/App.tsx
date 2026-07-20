@@ -29,6 +29,7 @@ import {
   redoEdit,
   removeClip,
   saveProject,
+  splitClip,
   sendPresence,
   setEffect,
   setKeyframe,
@@ -528,6 +529,27 @@ export default function App() {
     [selected, applyEdit]
   );
 
+  // blade: split the clip at the playhead (selected clip if the playhead
+  // is inside it, else the topmost clip under the playhead)
+  const doSplit = useCallback(() => {
+    const ph = playheadRef.current;
+    const within = (c: Clip) => ph > c.start + 0.02 && ph < c.start + c.len - 0.02;
+    const sel = selected ? project.clips.find((c) => c.id === selected) : null;
+    let target = sel && within(sel) ? sel : null;
+    if (!target) {
+      for (const track of tracks) {
+        const c = project.clips.find((c) => c.track === track && within(c));
+        if (c) {
+          target = c;
+          break;
+        }
+      }
+    }
+    if (!target) return;
+    splitClip(target.id, ph).then(applyEdit).catch((e) => setError(String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, project, applyEdit]);
+
   // ── keyboard ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -554,6 +576,9 @@ export default function App() {
       } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         const step = (e.shiftKey ? 1 : 1 / 30) * (e.key === "ArrowLeft" ? -1 : 1);
         setPlayhead((t) => Math.max(0, t + step));
+      } else if (e.key.toLowerCase() === "s" && !e.ctrlKey) {
+        e.preventDefault();
+        doSplit();
       } else if (e.key.toLowerCase() === "m") {
         setMarkers((ms) => {
           const t = playheadRef.current;
@@ -567,7 +592,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected, doSave, doOpen, doUndo, doRedo, doDeleteSel]);
+  }, [selected, doSave, doOpen, doUndo, doRedo, doDeleteSel, doSplit]);
 
   // ── scrubbing + clip dragging (with snapping) ───────────────────────
   const capture = (e: React.PointerEvent) => {
@@ -825,6 +850,7 @@ export default function App() {
         onExport={doExport}
         onUndo={doUndo}
         onRedo={doRedo}
+        onSplit={doSplit}
         onDeleteSel={doDeleteSel}
         onCollab={doCollab}
         onZoom={(dir) =>

@@ -17,6 +17,7 @@ export function TopBar(p: {
   onExport: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onSplit: () => void;
   onDeleteSel: (ripple: boolean) => void;
   onCollab: () => void;
   onZoom: (dir: 1 | -1) => void;
@@ -45,6 +46,7 @@ export function TopBar(p: {
             { label: "Undo", hint: "Ctrl+Z", onSelect: p.onUndo },
             { label: "Redo", hint: "Ctrl+Y", onSelect: p.onRedo },
             { separator: true, label: "" },
+            { label: "Split at playhead", hint: "S", onSelect: p.onSplit },
             {
               label: "Delete clip (lift)",
               hint: "Del",
