@@ -158,6 +158,31 @@ export async function trimClip(
   return invoke<ProjectSnapshot>("trim_clip", { id, start, len, srcIn });
 }
 
+/// Split a clip at timeline position `at` (the blade tool).
+export async function splitClip(id: string, at: number): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip) {
+      const rel = at - clip.start;
+      if (rel > 0.02 && rel < clip.len - 0.02) {
+        const speed = clip.fx?.speed ?? 1;
+        mockState.project.clips.push({
+          ...clip,
+          id: `${id}-s${Date.now()}`,
+          start: clip.start + rel,
+          len: clip.len - rel,
+          src_in: clip.src_in + rel * speed,
+          kf: undefined,
+        });
+        clip.len = rel;
+      }
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("split_clip", { id, at });
+}
+
 export async function removeClip(id: string, ripple: boolean): Promise<ProjectSnapshot> {
   if (!inTauri) {
     mockCheckpoint();

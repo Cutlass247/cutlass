@@ -107,27 +107,55 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
     let mut eng = cutlass_engine::MediaEngine::open(&path_str)?;
     let duration_s = eng.duration_s();
     anyhow::ensure!(duration_s > 0.05, "no usable duration");
-    let scrub_fps =
-        (cutlass_core::media::MAX_SCRUB_FRAMES / duration_s.max(0.1)).min(10.0);
+    // Aim for ~480 proxy frames (dense on short clips, capped on long
+    // ones so an hour is ~8s/frame instead of 15s), at most 10 fps.
+    let scrub_fps = (480.0 / duration_s.max(0.1)).min(10.0);
+    let interval = 1.0 / scrub_fps;
+    let width = cutlass_core::media::SCRUB_WIDTH;
     let dir = cutlass_core::media::cache_dir(path)?;
     let mut thumb_paths = cutlass_core::media::read_frames(&dir)?;
+
+    let encode = |f: &cutlass_engine::RgbaFrame, i: u32| -> anyhow::Result<()> {
+        let rgb: Vec<u8> = f.data.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let mut out = std::fs::File::create(dir.join(format!("f{i:05}.jpg")))?;
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
+            .encode(&rgb, f.width, f.height, image::ExtendedColorType::Rgb8)?;
+        Ok(())
+    };
+
     if thumb_paths.is_empty() {
-        let mut i = 0u32;
-        eng.sample_frames(1.0 / scrub_fps, cutlass_core::media::SCRUB_WIDTH, |f| {
-            i += 1;
-            let rgb: Vec<u8> = f.data.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
-            let mut out = std::fs::File::create(dir.join(format!("f{i:05}.jpg")))?;
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80).encode(
-                &rgb,
-                f.width,
-                f.height,
-                image::ExtendedColorType::Rgb8,
-            )?;
-            Ok(())
-        })?;
+        if interval > 1.5 {
+            // Long clip: SEEK to each thumbnail time (keyframe-fast). One
+            // sequential decode of an hour would be minutes; ~480 seeks
+            // is seconds.
+            let n = (duration_s * scrub_fps).ceil() as u32;
+            for i in 1..=n {
+                let t = (i - 1) as f64 * interval;
+                match eng.keyframe_at(t, width) {
+                    Ok(f) => encode(&f, i)?,
+                    Err(_) => break,
+                }
+            }
+        } else {
+            // Short clip: one sequential pass is faster than many seeks.
+            let mut i = 0u32;
+            eng.sample_frames(interval, width, |f| {
+                i += 1;
+                encode(&f, i)
+            })?;
+        }
         thumb_paths = cutlass_core::media::read_frames(&dir)?;
         anyhow::ensure!(!thumb_paths.is_empty(), "no frames sampled");
     }
+
+    // Waveform is a full audio decode; skip it for very long clips to
+    // keep import responsive (they can still be edited without it).
+    let waveform = if duration_s <= 1800.0 {
+        cutlass_engine::audio::waveform_peaks(&path_str, 1200)
+    } else {
+        Vec::new()
+    };
+
     Ok(MediaInfo {
         id: format!("m{:016x}", cutlass_core::media::path_hash(path)),
         name: path
@@ -138,7 +166,7 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
         duration_s,
         scrub_fps,
         thumb_paths,
-        waveform: cutlass_engine::audio::waveform_peaks(&path_str, 1200),
+        waveform,
     })
 }
 
@@ -250,6 +278,13 @@ fn redo(state: State<AppState>) -> Result<serde_json::Value, String> {
     state.history.lock().unwrap().undo.push((before, after));
     notify_sync(&state);
     Ok(snap)
+}
+
+/// Split a clip at timeline position `at` (the blade tool).
+#[tauri::command]
+fn split_clip(id: String, at: f64, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    with_undo(&state, |p| p.split_clip(&id, at, &format!("s{nanos:x}")).map_err(err_str))
 }
 
 /// One logical edit that razors many source ranges (silence / filler
@@ -808,6 +843,7 @@ fn main() {
             undo,
             redo,
             cut_ranges,
+            split_clip,
             set_effect,
             set_transition,
             set_keyframe,
