@@ -1078,7 +1078,7 @@ export default function App() {
         </div>
       </main>
 
-      <Resizer direction="v" onDelta={(d) => setTlH((h) => clamp(h - d, 180, 520))} />
+      <Resizer direction="v" onDelta={(d) => setTlH((h) => clamp(h - d, 180, 760))} />
       <Timeline
         tracks={tracks}
         clips={clips}
