@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MEDIA_DND_TYPE, MediaItem } from "../ipc";
+import { MediaItem } from "../ipc";
 import { mediaHue, Segmented } from "./ui";
 
 type Tab = "media" | "effects";
@@ -11,6 +11,7 @@ export function MediaPanel(p: {
   onImport: () => void;
   onAddTitle: () => void;
   onTranscribe: (id: string) => void;
+  onMediaPointerDown: (mediaId: string, e: React.PointerEvent) => void;
   busy: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("media");
@@ -61,12 +62,8 @@ export function MediaPanel(p: {
               <div
                 className="bin-item"
                 key={m.id}
-                draggable
                 title="Drag onto a timeline track to place it"
-                onDragStart={(e) => {
-                  e.dataTransfer.setData(MEDIA_DND_TYPE, m.id);
-                  e.dataTransfer.effectAllowed = "copy";
-                }}
+                onPointerDown={(e) => p.onMediaPointerDown(m.id, e)}
               >
                 <div
                   className="bin-thumb"

@@ -23,9 +23,6 @@ export interface Clip {
 /// Track names are a kind letter + 1-based index: "V1".."Vn" (video,
 /// composited bottom→top), "A1".."An" (audio-only beds). These helpers
 /// are the single source of truth for parsing them across the app.
-/// dataTransfer MIME used to drag a media-bin item onto the timeline.
-export const MEDIA_DND_TYPE = "application/x-cutlass-media";
-
 export type TrackKind = "video" | "audio";
 export function trackKind(name: string): TrackKind {
   return name.charAt(0).toUpperCase() === "A" ? "audio" : "video";
