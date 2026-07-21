@@ -28,8 +28,6 @@ struct AppState {
     project: Mutex<Project>,
     history: Mutex<History>,
     media: Mutex<HashMap<String, MediaInfo>>,
-    /// open decode engines, keyed by source path
-    engines: Mutex<HashMap<String, cutlass_engine::MediaEngine>>,
     playback: Mutex<Option<cutlass_engine::player::PlaybackHandle>>,
     /// stop flag for the real-time video playback thread
     video_stop: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
@@ -193,10 +191,17 @@ fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
 }
 
 /// Import a video: probe, build scrub proxy, append a clip to V1.
-/// Runs on a worker thread (sync tauri command), so the UI stays live.
+/// ASYNC + spawn_blocking so the (potentially seconds-long) proxy build
+/// never blocks the UI thread — the app stays responsive during import.
 #[tauri::command]
-fn import_media(path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
-    let info = import_any(Path::new(&path)).map_err(err_str)?;
+async fn import_media(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let info = tauri::async_runtime::spawn_blocking(move || import_any(Path::new(&path)))
+        .await
+        .map_err(err_str)?
+        .map_err(err_str)?;
     let media_value = media_json(&info)?;
 
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -408,27 +413,42 @@ fn save_project(path: String, state: State<AppState>) -> Result<(), String> {
 /// Load a .cutlass file and rebuild the media pool from the paths stored
 /// in the document (scrub proxies come from cache when available).
 #[tauri::command]
-fn open_project(path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+async fn open_project(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
     let bytes = std::fs::read(&path).map_err(err_str)?;
     let mut project = Project::load(&bytes).map_err(err_str)?;
     let entries = project.media_entries();
 
+    // rebuilding each media (proxy/waveform) is heavy → off the UI thread
+    let media_pairs = tauri::async_runtime::spawn_blocking(
+        move || -> Vec<(MediaInfo, serde_json::Value)> {
+            let mut pairs = Vec::new();
+            for (id, name, src_path, _dur) in entries {
+                match import_any(Path::new(&src_path)) {
+                    // same path on the same machine hashes to the same id
+                    Ok(info) if info.id == id => {
+                        if let Ok(v) = media_json(&info) {
+                            pairs.push((info, v));
+                        }
+                    }
+                    Ok(_) => eprintln!("media id changed for {src_path} (moved file?)"),
+                    Err(e) => eprintln!("media offline: {name} ({src_path}): {e:#}"),
+                }
+            }
+            pairs
+        },
+    )
+    .await
+    .map_err(err_str)?;
+
     let mut media_out = Vec::new();
     let mut media_map = state.media.lock().unwrap();
     media_map.clear();
-    for (id, name, src_path, _dur) in entries {
-        match import_any(Path::new(&src_path)) {
-            Ok(info) => {
-                // same path on the same machine hashes to the same id
-                if info.id == id {
-                    media_out.push(media_json(&info)?);
-                    media_map.insert(info.id.clone(), info);
-                } else {
-                    eprintln!("media id changed for {src_path} (moved file?)");
-                }
-            }
-            Err(e) => eprintln!("media offline: {name} ({src_path}): {e:#}"),
-        }
+    for (info, v) in media_pairs {
+        media_out.push(v);
+        media_map.insert(info.id.clone(), info);
     }
     drop(media_map);
 
@@ -442,7 +462,10 @@ fn open_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
 /// Build thumbs/proxy for a media id that exists in the doc but not in
 /// this instance's pool yet (opened project or collab peer).
 #[tauri::command]
-fn hydrate_media(media_id: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+async fn hydrate_media(
+    media_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
     let entry = state
         .project
         .lock()
@@ -451,8 +474,16 @@ fn hydrate_media(media_id: String, state: State<AppState>) -> Result<serde_json:
         .into_iter()
         .find(|(id, ..)| *id == media_id)
         .ok_or_else(|| format!("media {media_id} not in project"))?;
-    let info = import_any(Path::new(&entry.2)).map_err(err_str)?;
-    let out = media_json(&info)?;
+    let src = entry.2;
+    let (info, out) = tauri::async_runtime::spawn_blocking(
+        move || -> Result<(MediaInfo, serde_json::Value), String> {
+            let info = import_any(Path::new(&src)).map_err(err_str)?;
+            let out = media_json(&info)?;
+            Ok((info, out))
+        },
+    )
+    .await
+    .map_err(err_str)??;
     state.media.lock().unwrap().insert(media_id, info);
     Ok(out)
 }
@@ -487,9 +518,9 @@ fn whisper_model_path() -> Result<std::path::PathBuf, String> {
 /// On-device transcription with word timestamps. Slow-ish (≈ 1/5 of the
 /// clip duration on CPU); runs on a worker thread.
 #[tauri::command]
-fn transcribe_media(
+async fn transcribe_media(
     media_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<cutlass_engine::transcribe::Word>, String> {
     let path = state
         .media
@@ -499,7 +530,12 @@ fn transcribe_media(
         .map(|m| m.path.clone())
         .ok_or_else(|| format!("unknown media {media_id}"))?;
     let model = whisper_model_path()?;
-    cutlass_engine::transcribe::transcribe(&path, &model.to_string_lossy()).map_err(err_str)
+    // whisper runs seconds+ on CPU — off the UI thread
+    tauri::async_runtime::spawn_blocking(move || {
+        cutlass_engine::transcribe::transcribe(&path, &model.to_string_lossy()).map_err(err_str)
+    })
+    .await
+    .map_err(err_str)?
 }
 
 /// Delete a source range from a clip (the "delete these words" edit).
@@ -635,16 +671,15 @@ fn playback_clock(state: State<AppState>) -> Option<serde_json::Value> {
 /// proxy to a real decoded frame. Frame-accurate, so on long-GOP sources
 /// this can take a GOP of decode — the frontend calls it debounced.
 #[tauri::command]
-fn exact_frame(path: String, t: f64, state: State<AppState>) -> Result<String, String> {
-    let mut engines = state.engines.lock().unwrap();
-    let engine = match engines.entry(path.clone()) {
-        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-        std::collections::hash_map::Entry::Vacant(v) => {
-            v.insert(cutlass_engine::MediaEngine::open(&path).map_err(err_str)?)
-        }
-    };
-    let frame = engine.frame_at(t, 1920).map_err(err_str)?;
-    frame_to_data_url(&frame, 88).map_err(err_str)
+async fn exact_frame(path: String, t: f64) -> Result<String, String> {
+    // frame-accurate decode off the UI thread — a settle never freezes it
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut engine = cutlass_engine::MediaEngine::open(&path).map_err(err_str)?;
+        let frame = engine.frame_at(t, 1920).map_err(err_str)?;
+        frame_to_data_url(&frame, 88).map_err(err_str)
+    })
+    .await
+    .map_err(err_str)?
 }
 
 /// RGBA frame → JPEG data URL (drops alpha; the encoder rejects Rgba8).
@@ -721,12 +756,12 @@ fn start_video_thread(
 /// Render the V1 track to an MP4. Long-running; emits `export-progress`
 /// (0..=1). Returns the encoder used (h264_qsv or libx264).
 #[tauri::command]
-fn export_project(
+async fn export_project(
     path: String,
     width: Option<u32>,
     height: Option<u32>,
     app: tauri::AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
     use tauri::Emitter;
     let (clips, overlays, titles) = {
@@ -795,10 +830,22 @@ fn export_project(
         height: height.unwrap_or(1080),
         fps: 30,
     };
-    cutlass_core::export::export(&segments, &overlays, &titles, Path::new(&path), &settings, &mut |p| {
-        let _ = app.emit("export-progress", p);
+    // the render runs minutes — off the UI thread; progress still streams
+    tauri::async_runtime::spawn_blocking(move || {
+        cutlass_core::export::export(
+            &segments,
+            &overlays,
+            &titles,
+            Path::new(&path),
+            &settings,
+            &mut |p| {
+                let _ = app.emit("export-progress", p);
+            },
+        )
+        .map_err(err_str)
     })
-    .map_err(err_str)
+    .await
+    .map_err(err_str)?
 }
 
 /// Join (or start) a collab room. The task speaks the Automerge sync
