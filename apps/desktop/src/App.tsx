@@ -5,6 +5,7 @@ import {
   Presence,
   ProjectSnapshot,
   Word,
+  addClipFromMedia,
   addTitle,
   audioClock,
   clearKeyframes,
@@ -227,6 +228,10 @@ export default function App() {
   useEffect(() => {
     playingRef.current = playing;
   }, [playing]);
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
   const contentEndRef = useRef(0);
   useEffect(() => {
     contentEndRef.current = contentEndS;
@@ -527,7 +532,16 @@ export default function App() {
       const res = await importMedia(path);
       setMedia((m) => ({ ...m, [res.media.id]: res.media }));
       applyEdit(res.project);
-      if (mode === "create") doTranscribe(res.media.id);
+      // Studio: the clip waits in the bin to be dragged onto a track.
+      // Create (beginner, no bin) auto-drops it at the end of V1.
+      if (mode === "create") {
+        const v1End = projectRef.current.clips
+          .filter((c) => c.track === "V1")
+          .reduce((mx, c) => Math.max(mx, c.start + c.len), 0);
+        const placed = await addClipFromMedia(res.media.id, "V1", v1End);
+        applyEdit(placed.project);
+        doTranscribe(res.media.id);
+      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -535,6 +549,20 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
+
+  // drag-and-drop a bin item onto a lane → place a clip there (studio)
+  const onDropMedia = useCallback(
+    async (mediaId: string, track: string, start: number) => {
+      try {
+        const placed = await addClipFromMedia(mediaId, track, start);
+        applyEdit(placed.project);
+        setSelected(placed.clipId);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [applyEdit]
+  );
 
   // hydrate media known to the doc but not local (open/collab)
   const hydrating = useRef<Set<string>>(new Set());
@@ -1082,6 +1110,7 @@ export default function App() {
         onAddAudioTrack={addAudioTrack}
         canAddVideo={vCount < MAX_TRACKS}
         canAddAudio={aCount < MAX_TRACKS}
+        onDropMedia={onDropMedia}
       />
     </div>
   );

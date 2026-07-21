@@ -23,6 +23,9 @@ export interface Clip {
 /// Track names are a kind letter + 1-based index: "V1".."Vn" (video,
 /// composited bottom→top), "A1".."An" (audio-only beds). These helpers
 /// are the single source of truth for parsing them across the app.
+/// dataTransfer MIME used to drag a media-bin item onto the timeline.
+export const MEDIA_DND_TYPE = "application/x-cutlass-media";
+
 export type TrackKind = "video" | "audio";
 export function trackKind(name: string): TrackKind {
   return name.charAt(0).toUpperCase() === "A" ? "audio" : "video";
@@ -126,6 +129,17 @@ export async function pickVideo(): Promise<string | null> {
 export async function importMedia(path: string): Promise<ImportResult> {
   if (!inTauri) return mockImport(path);
   return invoke<ImportResult>("import_media", { path });
+}
+
+/// Place a clip on the timeline from already-imported pool media (a
+/// drag-and-drop from the media bin). Returns the new snapshot + clip id.
+export async function addClipFromMedia(
+  mediaId: string,
+  track: string,
+  start: number
+): Promise<{ project: ProjectSnapshot; clipId: string }> {
+  if (!inTauri) return mockAddClipFromMedia(mediaId, track, start);
+  return invoke("add_clip_from_media", { mediaId, track, start });
 }
 
 export async function getProject(): Promise<ProjectSnapshot> {
@@ -536,9 +550,14 @@ export async function exactFrame(path: string, t: number): Promise<string | null
 
 // ── browser-only mock ──────────────────────────────────────────────────
 
-const mockState: { project: ProjectSnapshot; nextClip: number } = {
+const mockState: {
+  project: ProjectSnapshot;
+  nextClip: number;
+  media: Record<string, MediaItem>;
+} = {
   project: { name: "Untitled", clips: [] },
   nextClip: 1,
+  media: {},
 };
 
 const mockHist: { undo: ProjectSnapshot[]; redo: ProjectSnapshot[] } = { undo: [], redo: [] };
@@ -646,17 +665,28 @@ async function mockImport(path: string): Promise<ImportResult> {
       return Math.min(1, speech + Math.random() * 0.12);
     }),
   };
-  const end = mockState.project.clips
-    .filter((c) => c.track === "V1")
-    .reduce((m, c) => Math.max(m, c.start + c.len), 0);
+  // register in the pool only — no clip on the timeline until dragged in
+  mockState.media[media.id] = media;
+  return { media, project: structuredClone(mockState.project) };
+}
+
+function mockAddClipFromMedia(
+  mediaId: string,
+  track: string,
+  start: number
+): { project: ProjectSnapshot; clipId: string } {
+  mockCheckpoint();
+  const m = mockState.media[mediaId];
+  const n = mockState.nextClip++;
+  const clipId = `mock-clip-${n}`;
   mockState.project.clips.push({
-    id: `mock-clip-${n}`,
-    name,
-    media: media.id,
-    track: "V1",
-    start: end,
-    len: duration,
+    id: clipId,
+    name: m?.name ?? mediaId,
+    media: mediaId,
+    track,
+    start: Math.max(0, start),
+    len: m?.duration_s ?? 8,
     src_in: 0,
   });
-  return { media, project: structuredClone(mockState.project) };
+  return { project: structuredClone(mockState.project), clipId };
 }

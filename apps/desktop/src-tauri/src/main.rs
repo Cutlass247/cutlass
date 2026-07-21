@@ -205,9 +205,11 @@ fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
     })
 }
 
-/// Import a video: probe, build scrub proxy, append a clip to V1.
-/// ASYNC + spawn_blocking so the (potentially seconds-long) proxy build
-/// never blocks the UI thread — the app stays responsive during import.
+/// Import a video: probe, build scrub proxy, register it in the media
+/// pool. Does NOT drop a clip on the timeline — the media lands in the bin
+/// and the user drags it onto a track when they want it (see
+/// `add_clip_from_media`). ASYNC + spawn_blocking so the (potentially
+/// seconds-long) proxy build never blocks the UI thread.
 #[tauri::command]
 async fn import_media(
     path: String,
@@ -219,27 +221,48 @@ async fn import_media(
         .map_err(err_str)?;
     let media_value = media_json(&info)?;
 
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    // register in the CRDT media pool (persists + syncs) without touching
+    // the timeline — clips_state is unchanged so this adds no undo entry
     let snap = with_undo(&state, |project| {
-        let clip = Clip {
-            id: format!("c{nanos:x}"),
-            name: info.name.clone(),
-            media: info.id.clone(),
-            track: "V1".into(),
-            start: project.track_end("V1"),
-            len: info.duration_s,
-            src_in: 0.0,
-            text: String::new(),
-            fx: Default::default(),
-            kf: Default::default(),
-        };
         project
             .set_media(&info.id, &info.name, &info.path, info.duration_s)
-            .map_err(err_str)?;
-        project.add_clip(&clip).map_err(err_str)
+            .map_err(err_str)
     })?;
     state.media.lock().unwrap().insert(info.id.clone(), info);
     Ok(json!({ "media": media_value, "project": snap }))
+}
+
+/// Place a clip on the timeline from already-imported pool media, at the
+/// given track and start (undoable). This is what a drag-and-drop from the
+/// media bin calls. Returns the new snapshot and the created clip id.
+#[tauri::command]
+fn add_clip_from_media(
+    media_id: String,
+    track: String,
+    start: f64,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    let (name, dur) = {
+        let media = state.media.lock().unwrap();
+        let info = media.get(&media_id).ok_or("unknown media")?;
+        (info.name.clone(), info.duration_s)
+    };
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let id = format!("c{nanos:x}");
+    let clip = Clip {
+        id: id.clone(),
+        name,
+        media: media_id,
+        track,
+        start: start.max(0.0),
+        len: dur,
+        src_in: 0.0,
+        text: String::new(),
+        fx: Default::default(),
+        kf: Default::default(),
+    };
+    let snap = with_undo(&state, |project| project.add_clip(&clip).map_err(err_str))?;
+    Ok(json!({ "project": snap, "clipId": id }))
 }
 
 #[tauri::command]
@@ -1049,6 +1072,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             import_media,
+            add_clip_from_media,
             get_project,
             move_clip,
             trim_clip,
