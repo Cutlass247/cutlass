@@ -20,6 +20,17 @@ export interface Clip {
   kf?: Record<string, Record<string, number>>;
 }
 
+/// Track names are a kind letter + 1-based index: "V1".."Vn" (video,
+/// composited bottom→top), "A1".."An" (audio-only beds). These helpers
+/// are the single source of truth for parsing them across the app.
+export type TrackKind = "video" | "audio";
+export function trackKind(name: string): TrackKind {
+  return name.charAt(0).toUpperCase() === "A" ? "audio" : "video";
+}
+export function trackIndex(name: string): number {
+  return parseInt(name.slice(1), 10) || 1;
+}
+
 /// Sorted (time, value) points for a param's keyframes.
 export function kfPoints(clip: Clip, param: string): [number, number][] {
   const m = clip.kf?.[param];

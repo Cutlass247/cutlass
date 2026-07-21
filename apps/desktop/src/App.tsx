@@ -36,6 +36,8 @@ import {
   setKeyframe,
   setTitleText,
   setTransition,
+  trackIndex,
+  trackKind,
   transcribeMedia,
   trimClip,
   undoEdit,
@@ -47,13 +49,19 @@ import { Inspector } from "./components/Inspector";
 import { PPS_MAX, PPS_MIN, TRACK_H, Timeline, TrackCtl } from "./components/Timeline";
 import { fxStyle, Resizer } from "./components/ui";
 
-const TRACKS = ["V2", "V1"]; // rendered top→bottom; V2 wins for preview
+const MAX_TRACKS = 12; // per kind — a sane ceiling on "as many as you want"
 const TRIM_ZONE_PX = 10;
 const MIN_LEN_S = 0.1;
 const PPS_DEFAULT = 48;
 const FILLERS = new Set(["um", "uh", "uhh", "umm", "erm", "er", "ah", "hmm", "mm", "mhm"]);
 const cleanWord = (t: string) => t.toLowerCase().replace(/[^a-z']/g, "");
 const SILENCE_GAP_S = 0.8;
+
+/// Nearest scrub-proxy thumbnail for a source time.
+function thumbAt(m: MediaItem, srcT: number): string {
+  const idx = Math.min(m.thumbs.length - 1, Math.max(0, Math.floor(srcT * m.scrub_fps)));
+  return m.thumbs[idx];
+}
 
 type DragState =
   | { kind: "move"; clipId: string; track: string; start: number; grabOffsetS: number }
@@ -104,7 +112,20 @@ export default function App() {
     setMode(m);
     localStorage.setItem("cutlass-mode", m);
   }, []);
-  const tracks = mode === "create" ? ["V1"] : TRACKS;
+  // How many video / audio tracks exist. Grows on demand (add-track
+  // buttons) and auto-bumps to cover any track a loaded/synced clip sits
+  // on. Order shown top→bottom: Vn..V1 (video, higher composites on top),
+  // then A1..An (audio beds) beneath.
+  const [vCount, setVCount] = useState(2);
+  const [aCount, setACount] = useState(1);
+  const tracks = useMemo(() => {
+    if (mode === "create") return ["V1"];
+    const v = Array.from({ length: vCount }, (_, i) => `V${vCount - i}`);
+    const a = Array.from({ length: aCount }, (_, i) => `A${i + 1}`);
+    return [...v, ...a];
+  }, [mode, vCount, aCount]);
+  const addVideoTrack = useCallback(() => setVCount((v) => Math.min(MAX_TRACKS, v + 1)), []);
+  const addAudioTrack = useCallback(() => setACount((a) => Math.min(MAX_TRACKS, a + 1)), []);
   const setTrack = useCallback(
     (track: string, patch: Partial<TrackCtl>) =>
       setTrackCtl((prev) => {
@@ -172,6 +193,20 @@ export default function App() {
         : { ...c, start: drag.start, len: drag.len, src_in: drag.srcIn };
     });
   }, [project, drag]);
+
+  // a loaded or synced project may hold clips on tracks we don't show yet
+  // — grow the lane counts so nothing is invisible
+  useEffect(() => {
+    let maxV = 0;
+    let maxA = 0;
+    for (const c of project.clips) {
+      const i = trackIndex(c.track);
+      if (trackKind(c.track) === "audio") maxA = Math.max(maxA, i);
+      else maxV = Math.max(maxV, i);
+    }
+    if (maxV > 0) setVCount((v) => Math.max(v, maxV));
+    if (maxA > 0) setACount((a) => Math.max(a, maxA));
+  }, [project.clips]);
 
   const contentEndS = useMemo(
     () => clips.reduce((m, c) => Math.max(m, c.start + c.len), 0),
@@ -252,30 +287,33 @@ export default function App() {
     return () => clearInterval(timer);
   }, [room]);
 
-  // ── program monitor source ──────────────────────────────────────────
-  const underPlayhead = useMemo(() => {
-    for (const track of tracks) {
+  // ── program monitor: stacked video layers, bottom→top = V1..Vn ───────
+  // each visible video track contributes at most one clip under the
+  // playhead; they composite in order so higher tracks overlay lower.
+  const videoLayers = useMemo(() => {
+    const out: { clip: Clip; media: MediaItem; srcT: number }[] = [];
+    const vtracks = tracks
+      .filter((t) => trackKind(t) === "video")
+      .sort((a, b) => trackIndex(a) - trackIndex(b)); // ascending = bottom→top
+    for (const track of vtracks) {
       if (ctlOf(track).hide) continue;
       const clip = clips.find(
-        (c) => c.track === track && playhead >= c.start && playhead < c.start + c.len
+        (c) =>
+          c.track === track && !c.text && playhead >= c.start && playhead < c.start + c.len
       );
       if (!clip) continue;
       const m = media[clip.media];
       if (!m || m.thumbs.length === 0) continue;
       const speed = clip.fx?.speed ?? 1;
       const srcT = clip.src_in + (playhead - clip.start) * speed;
-      return { media: m, srcT: Math.min(srcT, m.duration_s), clip };
+      out.push({ clip, media: m, srcT: Math.min(srcT, m.duration_s) });
     }
-    return null;
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clips, media, playhead, mode, trackCtl]);
+  }, [clips, media, playhead, tracks, trackCtl]);
 
-  const proxySrc = useMemo(() => {
-    if (!underPlayhead) return null;
-    const { media: m, srcT } = underPlayhead;
-    const idx = Math.min(m.thumbs.length - 1, Math.max(0, Math.floor(srcT * m.scrub_fps)));
-    return m.thumbs[idx];
-  }, [underPlayhead]);
+  // topmost layer drives transcript/caption context + the settled hq frame
+  const underPlayhead = videoLayers.length ? videoLayers[videoLayers.length - 1] : null;
 
   const [hq, setHq] = useState<{ key: string; src: string } | null>(null);
   const hqKey = underPlayhead
@@ -295,10 +333,6 @@ export default function App() {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hqKey, drag, playing]);
-  // while playing, the real-time streamed frame wins; otherwise the
-  // settled engine frame, else the scrub proxy
-  const previewSrc =
-    playing && playFrame ? playFrame : hq && hq.key === hqKey ? hq.src : proxySrc;
 
   // ── effects: live preview draft for the selected clip ───────────────
   const [fxDraft, setFxDraft] = useState<Record<string, number>>({});
@@ -321,15 +355,33 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
-  const previewStyle = useMemo(() => {
-    const clip = underPlayhead?.clip;
-    if (!clip) return {};
-    const draftApplies = clip.id === selected && Object.keys(fxDraft).length > 0;
-    const effClip = draftApplies
-      ? { ...clip, fx: { ...(clip.fx ?? {}), ...fxDraft } }
-      : clip;
-    return fxStyle(effClip, playhead);
-  }, [underPlayhead, selected, fxDraft, playhead]);
+  // fxStyle for a clip, merging the selected clip's live drag draft
+  const layerStyle = useCallback(
+    (clip: Clip): React.CSSProperties => {
+      const draftApplies = clip.id === selected && Object.keys(fxDraft).length > 0;
+      const effClip = draftApplies
+        ? { ...clip, fx: { ...(clip.fx ?? {}), ...fxDraft } }
+        : clip;
+      return fxStyle(effClip, playhead);
+    },
+    [selected, fxDraft, playhead]
+  );
+
+  // what the monitor renders, bottom→top. While playing, the real-time
+  // streamed frame stands in for the topmost layer; other layers hold
+  // their proxy frame beneath it.
+  const monitorLayers = useMemo(() => {
+    return videoLayers.map((l, i) => {
+      const top = i === videoLayers.length - 1;
+      const live = playing && playFrame && top ? playFrame : null;
+      const settled = top && hq && hq.key === hqKey ? hq.src : null;
+      return {
+        key: l.clip.id,
+        src: live ?? settled ?? thumbAt(l.media, l.srcT),
+        style: layerStyle(l.clip),
+      };
+    });
+  }, [videoLayers, playing, playFrame, hq, hqKey, layerStyle]);
 
   const onFxPreview = useCallback(
     (key: string, v: number) => setFxDraft((d) => ({ ...d, [key]: v })),
@@ -948,8 +1000,7 @@ export default function App() {
         )}
 
         <Monitor
-          src={previewSrc}
-          imgStyle={previewStyle}
+          layers={monitorLayers}
           titleOverlay={titleOverlay}
           caption={caption}
           playhead={playhead}
@@ -1027,6 +1078,10 @@ export default function App() {
         onClipPointerUp={onClipPointerUp}
         onSeek={setPlayhead}
         showTrackHeads={mode === "studio"}
+        onAddVideoTrack={addVideoTrack}
+        onAddAudioTrack={addAudioTrack}
+        canAddVideo={vCount < MAX_TRACKS}
+        canAddAudio={aCount < MAX_TRACKS}
       />
     </div>
   );

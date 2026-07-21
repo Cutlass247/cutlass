@@ -54,6 +54,7 @@ fn main() -> anyhow::Result<()> {
         len: 2.0,
         start: 2.5,
         fx: ClipFx { contrast: 1.2, ..Default::default() },
+        audio_only: false,
     }];
     let expected = 1.0 + 1.0 + 2.0 + 1.5 + 2.5;
     let out = std::env::temp_dir().join("cutlass_export_check.mp4");

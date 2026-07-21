@@ -1,5 +1,5 @@
 import { RefObject, useMemo } from "react";
-import { Clip, MediaItem, Presence } from "../ipc";
+import { Clip, MediaItem, Presence, trackKind } from "../ipc";
 import { formatTC, mediaHue, Switch } from "./ui";
 
 export const TRACK_H = 64;
@@ -39,6 +39,10 @@ export function Timeline(p: {
   onClipPointerUp: () => void;
   onSeek: (t: number) => void;
   showTrackHeads: boolean;
+  onAddVideoTrack: () => void;
+  onAddAudioTrack: () => void;
+  canAddVideo: boolean;
+  canAddAudio: boolean;
 }) {
   const ticks = useMemo(
     () => Array.from({ length: Math.ceil(p.timelineEndS) + 1 }, (_, i) => i),
@@ -68,11 +72,33 @@ export function Timeline(p: {
       <div className="tl-body">
         {p.showTrackHeads && (
           <div className="track-heads">
-            <div className="track-head ruler-spacer" />
+            <div className="track-head ruler-spacer">
+              <button
+                className="add-track-btn"
+                title="Add a video track"
+                disabled={!p.canAddVideo}
+                onClick={p.onAddVideoTrack}
+              >
+                + V
+              </button>
+              <button
+                className="add-track-btn"
+                title="Add an audio track"
+                disabled={!p.canAddAudio}
+                onClick={p.onAddAudioTrack}
+              >
+                + A
+              </button>
+            </div>
             {p.tracks.map((t) => {
               const ctl = p.trackCtl[t] ?? { lock: false, mute: false, hide: false };
+              const isAudio = trackKind(t) === "audio";
               return (
-                <div className="track-head" key={t} style={{ height: TRACK_H }}>
+                <div
+                  className={`track-head${isAudio ? " audio" : ""}`}
+                  key={t}
+                  style={{ height: TRACK_H }}
+                >
                   <span className="track-name">{t}</span>
                   <button
                     className={`track-btn${ctl.lock ? " on" : ""}`}
@@ -128,9 +154,10 @@ export function Timeline(p: {
             <div className="lanes" ref={p.lanesRef} onPointerDown={p.onLanesPointerDown}>
               {p.tracks.map((track) => {
                 const ctl = p.trackCtl[track] ?? { lock: false, mute: false, hide: false };
+                const isAudio = trackKind(track) === "audio";
                 return (
                   <div
-                    className={`lane${ctl.hide ? " hidden-track" : ""}${ctl.lock ? " locked" : ""}`}
+                    className={`lane${ctl.hide ? " hidden-track" : ""}${ctl.lock ? " locked" : ""}${isAudio ? " lane-audio" : ""}`}
                     key={track}
                     style={{ height: TRACK_H }}
                   >
@@ -142,6 +169,7 @@ export function Timeline(p: {
                           clip={clip}
                           media={p.media[clip.media]}
                           pps={p.pps}
+                          audio={isAudio}
                           dragging={p.dragClipId === clip.id}
                           selected={p.selected === clip.id}
                           locked={ctl.lock}
@@ -175,6 +203,7 @@ function ClipView({
   clip,
   media,
   pps,
+  audio,
   dragging,
   selected,
   locked,
@@ -185,6 +214,7 @@ function ClipView({
   clip: Clip;
   media?: MediaItem;
   pps: number;
+  audio: boolean;
   dragging: boolean;
   selected: boolean;
   locked: boolean;
@@ -194,10 +224,10 @@ function ClipView({
 }) {
   const w = clip.len * pps;
   const isTitle = !!clip.text;
-  const hue = isTitle ? 265 : mediaHue(clip.media);
+  const hue = isTitle ? 265 : audio ? 150 : mediaHue(clip.media);
 
   const filmstrip = useMemo(() => {
-    if (!media || isTitle) return [];
+    if (!media || isTitle || audio) return []; // audio bed → waveform only
     // Cap the thumbnail count so a long clip doesn't spawn thousands of
     // <img> nodes and freeze the timeline; they flex-stretch to fill.
     const cellW = 56;
@@ -208,7 +238,7 @@ function ClipView({
       const idx = Math.min(media.thumbs.length - 1, Math.floor(srcT * media.scrub_fps));
       return media.thumbs[idx];
     });
-  }, [media, w, clip.src_in, clip.len, clip.fx?.speed]);
+  }, [media, w, clip.src_in, clip.len, clip.fx?.speed, isTitle, audio]);
 
   const wave = useMemo(() => {
     const wf = media?.waveform;
@@ -229,12 +259,12 @@ function ClipView({
 
   return (
     <div
-      className={`clip${dragging ? " dragging" : ""}${selected ? " selected" : ""}${locked ? " locked" : ""}${isTitle ? " title-clip" : ""}`}
+      className={`clip${dragging ? " dragging" : ""}${selected ? " selected" : ""}${locked ? " locked" : ""}${isTitle ? " title-clip" : ""}${audio ? " audio-clip" : ""}`}
       style={{
         left: clip.start * pps,
         width: w,
         borderColor: `hsl(${hue} 55% ${selected ? 62 : 40}%)`,
-        ...(isTitle ? { background: `hsl(${hue} 45% 26%)` } : {}),
+        ...(isTitle || audio ? { background: `hsl(${hue} 45% 26%)` } : {}),
       }}
       onPointerDown={(e) => onPointerDown(e, clip)}
       onPointerMove={onPointerMove}
