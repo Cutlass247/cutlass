@@ -19,6 +19,7 @@ import {
   joinSession,
   moveClip,
   onExportProgress,
+  onPlaybackFrame,
   onPresence,
   onProjectChanged,
   openProject,
@@ -130,12 +131,16 @@ export default function App() {
     me.current.color = `hsl(${((parseInt(me.current.id, 36) % 360) + 360) % 360}, 75%, 60%)`;
   }
 
+  // latest real-time frame streamed from the playback thread
+  const [playFrame, setPlayFrame] = useState<string | null>(null);
+
   // ── mount: load project, subscribe to events ────────────────────────
   useEffect(() => {
     getProject().then(setProject).catch((e) => setError(String(e)));
     currentRoom().then((r) => r && setRoom(r));
     const un = onProjectChanged((snap) => setProject(snap));
     const unExport = onExportProgress((p) => setExporting(p));
+    const unFrame = onPlaybackFrame((_t, src) => setPlayFrame(src));
     const unPresence = onPresence((p) =>
       setPeers((prev) => ({ ...prev, [p.id]: { ...p, ts: Date.now() } }))
     );
@@ -151,6 +156,7 @@ export default function App() {
     return () => {
       un.then((f) => f());
       unExport.then((f) => f());
+      unFrame.then((f) => f());
       unPresence.then((f) => f());
       clearInterval(prune);
     };
@@ -226,6 +232,7 @@ export default function App() {
       cancelled = true;
       clearInterval(local);
       clearInterval(sync);
+      setPlayFrame(null); // drop the streamed frame; back to proxy/engine
       pauseAudio().then((t) => {
         if (t != null) setPlayhead(t);
       });
@@ -284,7 +291,10 @@ export default function App() {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hqKey, drag, playing]);
-  const previewSrc = hq && hq.key === hqKey ? hq.src : proxySrc;
+  // while playing, the real-time streamed frame wins; otherwise the
+  // settled engine frame, else the scrub proxy
+  const previewSrc =
+    playing && playFrame ? playFrame : hq && hq.key === hqKey ? hq.src : proxySrc;
 
   // ── effects: live preview draft for the selected clip ───────────────
   const [fxDraft, setFxDraft] = useState<Record<string, number>>({});

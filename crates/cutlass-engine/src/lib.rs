@@ -36,6 +36,10 @@ pub struct MediaEngine {
     duration_s: f64,
     width: u32,
     height: u32,
+    /// streaming-playback cursor: last decoded frame held until the
+    /// requested time passes it (avoids per-frame seeks during play).
+    pending: Option<ffmpeg::frame::Video>,
+    stream_pts: Option<f64>,
 }
 
 impl MediaEngine {
@@ -65,6 +69,8 @@ impl MediaEngine {
             duration_s,
             width,
             height,
+            pending: None,
+            stream_pts: None,
         })
     }
 
@@ -133,7 +139,46 @@ impl MediaEngine {
             return Err(anyhow!("av_seek_frame({t:.3}s) failed: {ret}"));
         }
         self.decoder.flush();
+        // any seek invalidates the streaming cursor
+        self.pending = None;
+        self.stream_pts = None;
         Ok(())
+    }
+
+    /// Streaming playback access: return the frame current at time `t`.
+    /// Decodes forward from the last position (no seek) when `t` advances
+    /// normally, holding a frame until `t` passes it; only seeks on a
+    /// backward or large-forward jump. This is the fast path that makes
+    /// real-time playback possible — the 261 fps decode headroom.
+    pub fn stream_frame_at(&mut self, t: f64, max_width: u32) -> anyhow::Result<RgbaFrame> {
+        let t = t.clamp(0.0, self.duration_s.max(0.0));
+        let need_seek = match self.stream_pts {
+            None => true,
+            Some(p) => t < p - 0.05 || t > p + 1.0,
+        };
+        if need_seek {
+            self.seek_raw(t)?;
+        }
+        loop {
+            let have = self.pending.as_ref().map(|f| self.frame_pts_s(f));
+            if let Some(p) = have {
+                if p + 1e-6 >= t {
+                    break; // current held frame still covers t
+                }
+            }
+            match self.decode_next()? {
+                Some(f) => {
+                    self.stream_pts = Some(self.frame_pts_s(&f));
+                    self.pending = Some(f);
+                }
+                None => break, // EOF: return the last held frame
+            }
+        }
+        let frame = self
+            .pending
+            .as_ref()
+            .ok_or_else(|| anyhow!("no frame at t={t}"))?;
+        self.to_rgba(frame, max_width)
     }
 
     /// Sequentially decode the whole file, emitting one RGBA frame per
