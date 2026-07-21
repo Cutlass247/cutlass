@@ -634,6 +634,25 @@ export default function App() {
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
 
+  // keep the playhead on screen — the timeline follows it (page-flips
+  // forward during playback, recenters on a seek) instead of letting it
+  // march off the right edge. Skipped while dragging a clip.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || drag) return;
+    const x = playhead * pps;
+    const left = el.scrollLeft;
+    const view = el.clientWidth;
+    const margin = 48;
+    if (x < left + margin) {
+      el.scrollLeft = Math.max(0, x - view * 0.5);
+    } else if (x > left + view - margin) {
+      // playing → page-flip so the playhead restarts near the left;
+      // a big seek → recenter
+      el.scrollLeft = playing ? x - view * 0.1 : Math.max(0, x - view * 0.5);
+    }
+  }, [playhead, pps, playing, drag]);
+
   const snapStart = useCallback(
     (start: number, dur: number, movingId: string): number => {
       if (!snap) return start;
