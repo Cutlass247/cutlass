@@ -188,6 +188,10 @@ export default function App() {
   useEffect(() => {
     playheadRef.current = playhead;
   }, [playhead]);
+  const playingRef = useRef(false);
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
   const contentEndRef = useRef(0);
   useEffect(() => {
     contentEndRef.current = contentEndS;
@@ -309,7 +313,7 @@ export default function App() {
   // this is what makes Inspector edits preview live, instead of against
   // some other frame the selected clip isn't even under.
   useEffect(() => {
-    if (!selected) return;
+    if (!selected || playingRef.current) return; // never yank the playhead mid-play
     const clip = clips.find((c) => c.id === selected);
     if (!clip) return;
     const ph = playheadRef.current;
@@ -715,7 +719,8 @@ export default function App() {
     (e: React.PointerEvent, clip: Clip) => {
       e.stopPropagation();
       setSelected(clip.id);
-      setPlaying(false);
+      // selecting a clip must NOT stop playback — you can click around the
+      // timeline while the video keeps rolling, like Premiere / FCP
       if (ctlOf(clip.track).lock) return; // locked: select only
       capture(e);
       const lanes = lanesRef.current!;
