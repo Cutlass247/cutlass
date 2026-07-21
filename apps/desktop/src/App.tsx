@@ -299,6 +299,23 @@ export default function App() {
   // ── effects: live preview draft for the selected clip ───────────────
   const [fxDraft, setFxDraft] = useState<Record<string, number>>({});
   useEffect(() => setFxDraft({}), [selected]); // reset when selection changes
+  // live title-text draft: typing previews on the monitor before the blur
+  // commit, so titles read WYSIWYG just like the effect sliders
+  const [textDraft, setTextDraft] = useState<string | null>(null);
+  useEffect(() => setTextDraft(null), [selected]);
+
+  // Selecting a clip parks the playhead on it (only when the playhead is
+  // outside the clip) so the monitor shows the very clip being inspected —
+  // this is what makes Inspector edits preview live, instead of against
+  // some other frame the selected clip isn't even under.
+  useEffect(() => {
+    if (!selected) return;
+    const clip = clips.find((c) => c.id === selected);
+    if (!clip) return;
+    const ph = playheadRef.current;
+    if (ph < clip.start || ph >= clip.start + clip.len) setPlayhead(clip.start);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
 
   const previewStyle = useMemo(() => {
     const clip = underPlayhead?.clip;
@@ -387,7 +404,12 @@ export default function App() {
   const onSetTitleText = useCallback(
     (text: string) => {
       if (!selected) return;
-      setTitleText(selected, text).then(applyEdit).catch((e) => setError(String(e)));
+      setTitleText(selected, text)
+        .then((snap) => {
+          applyEdit(snap);
+          setTextDraft(null); // committed text now lives in the doc
+        })
+        .catch((e) => setError(String(e)));
     },
     [selected, applyEdit]
   );
@@ -399,10 +421,14 @@ export default function App() {
     );
     if (active.length === 0) return null;
     return active.map((c) => {
-      const fs = (c.fx?.font_size ?? 56) / 1080; // fraction of frame height
-      const bg = c.fx?.title_bg ?? 0;
-      const px = (c.fx?.pos_x ?? 0) * 100;
-      const py = (c.fx?.pos_y ?? 0) * 100;
+      // the selected title previews its live drafts (style + typed text)
+      const sel = c.id === selected;
+      const fx = sel ? { ...(c.fx ?? {}), ...fxDraft } : c.fx ?? {};
+      const text = sel && textDraft !== null ? textDraft : c.text;
+      const fs = (fx.font_size ?? 56) / 1080; // fraction of frame height
+      const bg = fx.title_bg ?? 0;
+      const px = (fx.pos_x ?? 0) * 100;
+      const py = (fx.pos_y ?? 0) * 100;
       return (
         <div
           key={c.id}
@@ -416,12 +442,12 @@ export default function App() {
               padding: bg > 0 ? "0.1em 0.4em" : 0,
             }}
           >
-            {c.text}
+            {text}
           </span>
         </div>
       );
     });
-  }, [clips, playhead]);
+  }, [clips, playhead, selected, fxDraft, textDraft]);
 
   // ── import / transcribe ─────────────────────────────────────────────
   const doTranscribe = useCallback(async (mediaId: string) => {
@@ -951,6 +977,7 @@ export default function App() {
             hasLeftNeighbor={selectedHasLeftNeighbor}
             onSetTransition={onSetTransition}
             onSetTitleText={onSetTitleText}
+            onPreviewTitleText={setTextDraft}
             words={words}
             transcriptMediaName={transcriptMedia ? media[transcriptMedia]?.name ?? null : null}
             wordSel={wordSel && wordSel.media === transcriptMedia ? wordSel : null}

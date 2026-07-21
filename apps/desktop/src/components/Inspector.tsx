@@ -129,6 +129,7 @@ function FxSlider({
 function TitleEditor(p: {
   clip: Clip;
   onSetText: (text: string) => void;
+  onPreviewText: (text: string) => void;
   onPreview: (key: string, v: number) => void;
   onCommit: (key: string, v: number) => void;
 }) {
@@ -151,7 +152,10 @@ function TitleEditor(p: {
           value={text}
           rows={2}
           placeholder="Title text…"
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            p.onPreviewText(e.target.value);
+          }}
           onBlur={(e) => p.onSetText(e.currentTarget.value)}
         />
         {sliders.map((s) => (
@@ -364,6 +368,7 @@ export function Inspector(p: {
   hasLeftNeighbor: boolean;
   onSetTransition: (dur: number, dip: boolean) => void;
   onSetTitleText: (text: string) => void;
+  onPreviewTitleText: (text: string) => void;
   // transcript
   words: Word[] | null;
   transcriptMediaName: string | null;
@@ -452,6 +457,7 @@ export function Inspector(p: {
                 <TitleEditor
                   clip={p.clip}
                   onSetText={p.onSetTitleText}
+                  onPreviewText={p.onPreviewTitleText}
                   onPreview={p.onFxPreview}
                   onCommit={p.onFxCommit}
                 />
