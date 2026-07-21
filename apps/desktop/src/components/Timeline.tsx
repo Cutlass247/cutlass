@@ -1,5 +1,5 @@
 import { RefObject, useMemo, useRef } from "react";
-import { Clip, MEDIA_DND_TYPE, MediaItem, Presence, trackKind } from "../ipc";
+import { Clip, MediaItem, Presence, trackKind } from "../ipc";
 import { formatTC, mediaHue, Switch } from "./ui";
 
 export const TRACK_H = 64;
@@ -43,7 +43,7 @@ export function Timeline(p: {
   onAddAudioTrack: () => void;
   canAddVideo: boolean;
   canAddAudio: boolean;
-  onDropMedia: (mediaId: string, track: string, start: number) => void;
+  dropActive: boolean; // a media item is being dragged toward the lanes
 }) {
   const ticks = useMemo(
     () => Array.from({ length: Math.ceil(p.timelineEndS) + 1 }, (_, i) => i),
@@ -163,30 +163,9 @@ export function Timeline(p: {
               ))}
             </div>
             <div
-              className="lanes"
+              className={`lanes${p.dropActive ? " drop-target" : ""}`}
               ref={p.lanesRef}
               onPointerDown={p.onLanesPointerDown}
-              onDragOver={(e) => {
-                if (e.dataTransfer.types.includes(MEDIA_DND_TYPE)) {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "copy";
-                  e.currentTarget.classList.add("drop-target");
-                }
-              }}
-              onDragLeave={(e) => e.currentTarget.classList.remove("drop-target")}
-              onDrop={(e) => {
-                e.currentTarget.classList.remove("drop-target");
-                const id = e.dataTransfer.getData(MEDIA_DND_TYPE);
-                if (!id || !p.lanesRef.current) return;
-                e.preventDefault();
-                const rect = p.lanesRef.current.getBoundingClientRect();
-                const lane = Math.min(
-                  p.tracks.length - 1,
-                  Math.max(0, Math.floor((e.clientY - rect.top) / TRACK_H))
-                );
-                const start = Math.max(0, (e.clientX - rect.left) / p.pps);
-                p.onDropMedia(id, p.tracks[lane], start);
-              }}
             >
               {p.tracks.map((track) => {
                 const ctl = p.trackCtl[track] ?? { lock: false, mute: false, hide: false };

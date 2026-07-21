@@ -83,6 +83,9 @@ export default function App() {
   const [playhead, setPlayhead] = useState(0);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  // a media-bin item being dragged toward the timeline (pointer-based, so
+  // it works inside the Tauri webview where HTML5 drag events don't fire)
+  const [mediaGhost, setMediaGhost] = useState<{ name: string; x: number; y: number } | null>(null);
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -228,10 +231,19 @@ export default function App() {
   useEffect(() => {
     playingRef.current = playing;
   }, [playing]);
-  const projectRef = useRef(project);
+  // latest tracks / zoom / media for the pointer-drag drop closure
+  const tracksRef = useRef(tracks);
   useEffect(() => {
-    projectRef.current = project;
-  }, [project]);
+    tracksRef.current = tracks;
+  }, [tracks]);
+  const ppsRef = useRef(pps);
+  useEffect(() => {
+    ppsRef.current = pps;
+  }, [pps]);
+  const mediaRef = useRef(media);
+  useEffect(() => {
+    mediaRef.current = media;
+  }, [media]);
   const contentEndRef = useRef(0);
   useEffect(() => {
     contentEndRef.current = contentEndS;
@@ -532,16 +544,9 @@ export default function App() {
       const res = await importMedia(path);
       setMedia((m) => ({ ...m, [res.media.id]: res.media }));
       applyEdit(res.project);
-      // Studio: the clip waits in the bin to be dragged onto a track.
-      // Create (beginner, no bin) auto-drops it at the end of V1.
-      if (mode === "create") {
-        const v1End = projectRef.current.clips
-          .filter((c) => c.track === "V1")
-          .reduce((mx, c) => Math.max(mx, c.start + c.len), 0);
-        const placed = await addClipFromMedia(res.media.id, "V1", v1End);
-        applyEdit(placed.project);
-        doTranscribe(res.media.id);
-      }
+      // The clip always waits in the bin; you drag it onto a track when
+      // you want it. Create mode still auto-transcribes for the workflow.
+      if (mode === "create") doTranscribe(res.media.id);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -550,7 +555,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // drag-and-drop a bin item onto a lane → place a clip there (studio)
+  // place a clip from a bin item at a given track + start
   const onDropMedia = useCallback(
     async (mediaId: string, track: string, start: number) => {
       try {
@@ -562,6 +567,48 @@ export default function App() {
       }
     },
     [applyEdit]
+  );
+
+  // Pointer-based drag of a media-bin item onto the timeline. Pointer
+  // events (unlike HTML5 drag) fire inside the Tauri webview, so this
+  // works in the native app. A ghost follows the cursor; releasing over
+  // the lanes drops a clip on the track/time under the pointer.
+  const onMediaPointerDown = useCallback(
+    (mediaId: string, e: React.PointerEvent) => {
+      if ((e.target as HTMLElement).closest("button")) return; // let buttons click
+      e.preventDefault();
+      const name = mediaRef.current[mediaId]?.name ?? "";
+      let moved = false;
+      setMediaGhost({ name, x: e.clientX, y: e.clientY });
+      const move = (ev: PointerEvent) => {
+        moved = true;
+        setMediaGhost({ name, x: ev.clientX, y: ev.clientY });
+      };
+      const up = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        setMediaGhost(null);
+        const lanes = lanesRef.current;
+        if (!moved || !lanes) return;
+        const rect = lanes.getBoundingClientRect();
+        if (
+          ev.clientX < rect.left ||
+          ev.clientX > rect.right ||
+          ev.clientY < rect.top ||
+          ev.clientY > rect.bottom
+        )
+          return; // released outside the timeline
+        const lane = Math.min(
+          tracksRef.current.length - 1,
+          Math.max(0, Math.floor((ev.clientY - rect.top) / TRACK_H))
+        );
+        const start = Math.max(0, (ev.clientX - rect.left) / ppsRef.current);
+        onDropMedia(mediaId, tracksRef.current[lane], start);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    },
+    [onDropMedia]
   );
 
   // hydrate media known to the doc but not local (open/collab)
@@ -1010,22 +1057,21 @@ export default function App() {
       )}
 
       <main className="workspace">
-        {mode === "studio" && (
-          <>
-            <div style={{ width: leftW, display: "flex", minWidth: 0 }}>
-              <MediaPanel
-                media={Object.values(media)}
-                transcripts={transcripts}
-                transcribing={transcribing}
-                onImport={doImport}
-                onAddTitle={onAddTitle}
-                onTranscribe={doTranscribe}
-                busy={busy !== null}
-              />
-            </div>
-            <Resizer direction="h" onDelta={(d) => setLeftW((w) => clamp(w + d, 200, 440))} />
-          </>
-        )}
+        {/* the media bin is where imports land — shown in both modes so
+            there's always something to drag onto the timeline */}
+        <div style={{ width: leftW, display: "flex", minWidth: 0 }}>
+          <MediaPanel
+            media={Object.values(media)}
+            transcripts={transcripts}
+            transcribing={transcribing}
+            onImport={doImport}
+            onAddTitle={onAddTitle}
+            onTranscribe={doTranscribe}
+            onMediaPointerDown={onMediaPointerDown}
+            busy={busy !== null}
+          />
+        </div>
+        <Resizer direction="h" onDelta={(d) => setLeftW((w) => clamp(w + d, 200, 440))} />
 
         <Monitor
           layers={monitorLayers}
@@ -1110,8 +1156,13 @@ export default function App() {
         onAddAudioTrack={addAudioTrack}
         canAddVideo={vCount < MAX_TRACKS}
         canAddAudio={aCount < MAX_TRACKS}
-        onDropMedia={onDropMedia}
+        dropActive={mediaGhost !== null}
       />
+      {mediaGhost && (
+        <div className="media-ghost" style={{ left: mediaGhost.x + 12, top: mediaGhost.y + 12 }}>
+          {mediaGhost.name}
+        </div>
+      )}
     </div>
   );
 }
