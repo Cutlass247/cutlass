@@ -31,9 +31,22 @@ struct AppState {
     /// open decode engines, keyed by source path
     engines: Mutex<HashMap<String, cutlass_engine::MediaEngine>>,
     playback: Mutex<Option<cutlass_engine::player::PlaybackHandle>>,
+    /// stop flag for the real-time video playback thread
+    video_stop: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// pings the collab task after a local edit, when a session is live
     sync_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<SyncCmd>>>,
     room: Mutex<Option<String>>,
+}
+
+/// A video clip as the playback thread sees it (visible tracks only).
+#[derive(Clone)]
+struct PlayClip {
+    path: String,
+    start: f64,
+    len: f64,
+    src_in: f64,
+    speed: f64,
+    track_pri: u8, // higher wins the monitor (V2 over V1)
 }
 
 enum SyncCmd {
@@ -508,11 +521,52 @@ fn razor_out(
 /// error) when audio can't start — the UI then runs its silent local
 /// clock, so playback still works on machines with no output device.
 #[tauri::command]
-fn play(from_t: f64, muted: Option<Vec<String>>, state: State<AppState>) -> bool {
+fn play(
+    from_t: f64,
+    muted: Option<Vec<String>>,
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> bool {
+    use std::sync::atomic::Ordering;
     if let Some(h) = state.playback.lock().unwrap().take() {
         h.stop();
     }
+    if let Some(v) = state.video_stop.lock().unwrap().take() {
+        v.store(true, Ordering::Relaxed);
+    }
     let muted = muted.unwrap_or_default();
+
+    // ── real-time video playback thread ────────────────────────────────
+    let video_clips: Vec<PlayClip> = {
+        let project = state.project.lock().unwrap();
+        let media = state.media.lock().unwrap();
+        let snap = project.snapshot();
+        snap["clips"]
+            .as_array()
+            .map(|cs| {
+                cs.iter()
+                    .filter(|c| c["text"].as_str().unwrap_or("").is_empty()) // not titles
+                    .filter_map(|c| {
+                        let m = media.get(c["media"].as_str()?)?;
+                        let track = c["track"].as_str()?;
+                        Some(PlayClip {
+                            path: m.path.clone(),
+                            start: c["start"].as_f64()?,
+                            len: c["len"].as_f64()?,
+                            src_in: c["src_in"].as_f64()?,
+                            speed: c["fx"]["speed"].as_f64().unwrap_or(1.0),
+                            track_pri: if track == "V2" { 1 } else { 0 },
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if !video_clips.is_empty() {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *state.video_stop.lock().unwrap() = Some(stop.clone());
+        start_video_thread(app, video_clips, from_t, stop);
+    }
     let tracks: Vec<Vec<cutlass_engine::player::AudioClip>> = {
         let project = state.project.lock().unwrap();
         let media = state.media.lock().unwrap();
@@ -557,9 +611,12 @@ fn play(from_t: f64, muted: Option<Vec<String>>, state: State<AppState>) -> bool
     }
 }
 
-/// Stop audio; returns the timeline position where it stopped.
+/// Stop audio + video playback; returns where audio stopped.
 #[tauri::command]
 fn pause(state: State<AppState>) -> Option<f64> {
+    if let Some(v) = state.video_stop.lock().unwrap().take() {
+        v.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     state.playback.lock().unwrap().take().map(|h| h.stop())
 }
 
@@ -587,21 +644,78 @@ fn exact_frame(path: String, t: f64, state: State<AppState>) -> Result<String, S
         }
     };
     let frame = engine.frame_at(t, 1920).map_err(err_str)?;
+    frame_to_data_url(&frame, 88).map_err(err_str)
+}
 
-    // JPEG has no alpha channel and image's encoder rejects Rgba8
+/// RGBA frame → JPEG data URL (drops alpha; the encoder rejects Rgba8).
+fn frame_to_data_url(frame: &cutlass_engine::RgbaFrame, quality: u8) -> anyhow::Result<String> {
     let rgb: Vec<u8> = frame
         .data
         .chunks_exact(4)
         .flat_map(|px| [px[0], px[1], px[2]])
         .collect();
     let mut jpeg = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 88)
-        .encode(&rgb, frame.width, frame.height, image::ExtendedColorType::Rgb8)
-        .map_err(err_str)?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
+        .encode(&rgb, frame.width, frame.height, image::ExtendedColorType::Rgb8)?;
     Ok(format!(
         "data:image/jpeg;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(jpeg)
     ))
+}
+
+/// Real-time video playback: a dedicated thread decodes the visible clip
+/// under the moving playhead and streams JPEG frames to the UI at ~30fps.
+/// Paced by wall clock from `from_t` (matching the audio, also wall-paced).
+fn start_video_thread(
+    app: tauri::AppHandle,
+    clips: Vec<PlayClip>,
+    from_t: f64,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+    use tauri::Emitter;
+    std::thread::Builder::new()
+        .name("cutlass-video-playback".into())
+        .spawn(move || {
+            let mut engines: HashMap<String, cutlass_engine::MediaEngine> = HashMap::new();
+            let frame_dur = Duration::from_millis(33); // ~30 fps
+            let start = Instant::now();
+            let mut next = start + frame_dur;
+            while !stop.load(Ordering::Relaxed) {
+                let t = from_t + start.elapsed().as_secs_f64();
+                // topmost visible clip under the playhead (V2 over V1)
+                let active = clips
+                    .iter()
+                    .filter(|c| t >= c.start && t < c.start + c.len)
+                    .max_by_key(|c| c.track_pri);
+                if let Some(c) = active {
+                    let src_t = c.src_in + (t - c.start) * c.speed;
+                    if !engines.contains_key(&c.path) {
+                        if let Ok(e) = cutlass_engine::MediaEngine::open(&c.path) {
+                            engines.insert(c.path.clone(), e);
+                        }
+                    }
+                    if let Some(eng) = engines.get_mut(&c.path) {
+                        if let Ok(frame) = eng.stream_frame_at(src_t, 854) {
+                            if let Ok(url) = frame_to_data_url(&frame, 72) {
+                                let _ = app.emit("playback-frame", json!({ "t": t, "src": url }));
+                            }
+                        }
+                    }
+                }
+                // pace to the frame grid, catching up if we fell behind
+                let now = Instant::now();
+                if next > now {
+                    std::thread::sleep(next - now);
+                }
+                next += frame_dur;
+                if next < Instant::now() {
+                    next = Instant::now() + frame_dur;
+                }
+            }
+        })
+        .ok();
 }
 
 /// Render the V1 track to an MP4. Long-running; emits `export-progress`

@@ -496,6 +496,17 @@ export async function pauseAudio(): Promise<number | null> {
   }
 }
 
+/// Real-time video frames streamed from the playback thread during play.
+export async function onPlaybackFrame(
+  cb: (t: number, src: string) => void
+): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ t: number; src: string }>("playback-frame", (e) =>
+    cb(e.payload.t, e.payload.src)
+  );
+}
+
 export async function audioClock(): Promise<{ t: number; ended: boolean } | null> {
   if (!inTauri) return null;
   try {
