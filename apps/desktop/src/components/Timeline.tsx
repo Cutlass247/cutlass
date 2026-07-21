@@ -1,4 +1,4 @@
-import { RefObject, useMemo } from "react";
+import { RefObject, useMemo, useRef } from "react";
 import { Clip, MEDIA_DND_TYPE, MediaItem, Presence, trackKind } from "../ipc";
 import { formatTC, mediaHue, Switch } from "./ui";
 
@@ -50,6 +50,9 @@ export function Timeline(p: {
     [p.timelineEndS]
   );
   const labelEvery = p.pps < 24 ? 10 : p.pps < 60 ? 5 : 1;
+  // the track-heads column mirrors the lanes' vertical scroll so headers
+  // stay aligned with their lane when the stack is taller than the panel
+  const headsRef = useRef<HTMLDivElement>(null);
 
   return (
     <section className="timeline" style={{ height: p.height }}>
@@ -72,7 +75,7 @@ export function Timeline(p: {
       </div>
       <div className="tl-body">
         {p.showTrackHeads && (
-          <div className="track-heads">
+          <div className="track-heads" ref={headsRef}>
             <div className="track-head ruler-spacer">
               <button
                 className="add-track-btn"
@@ -127,7 +130,14 @@ export function Timeline(p: {
             })}
           </div>
         )}
-        <div className="timeline-scroll" ref={p.scrollRef}>
+        <div
+          className="timeline-scroll"
+          ref={p.scrollRef}
+          onScroll={(e) => {
+            const h = headsRef.current;
+            if (h) h.scrollTop = e.currentTarget.scrollTop;
+          }}
+        >
           <div className="timeline-inner" style={{ width: p.timelineEndS * p.pps }}>
             <div
               className="ruler"

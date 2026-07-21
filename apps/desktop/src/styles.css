@@ -911,6 +911,9 @@ button {
   width: 118px;
   border-right: 1px solid var(--border);
   background: var(--panel-2);
+  /* scrolls in lockstep with the lanes (driven from JS); hidden so it
+     shows no scrollbar of its own but still accepts a scrollTop */
+  overflow: hidden;
 }
 
 .track-head {
@@ -926,6 +929,11 @@ button {
   gap: 4px;
   justify-content: center;
   padding: 0 4px;
+  /* stays pinned at the top of the header column while it scrolls */
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel-2);
 }
 
 .add-track-btn {
@@ -987,17 +995,19 @@ button {
 .timeline-scroll {
   flex: 1;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto; /* scroll down to reach tracks past the panel height */
 }
 
 .timeline-inner {
   position: relative;
   min-width: 100%;
-  height: 100%;
+  min-height: 100%; /* grows past the panel as tracks are added */
 }
 
 .ruler {
-  position: relative;
+  position: sticky; /* stays put while the lanes scroll under it */
+  top: 0;
+  z-index: 6;
   height: 30px;
   border-bottom: 1px solid var(--border);
   cursor: col-resize;
