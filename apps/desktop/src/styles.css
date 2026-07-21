@@ -455,6 +455,15 @@ button {
   background: var(--panel-2);
   border: 1px solid transparent;
   transition: border-color var(--speed);
+  cursor: grab;
+}
+.bin-item:active {
+  cursor: grabbing;
+}
+/* lane highlights while dragging a bin item over it */
+.lanes.drop-target {
+  outline: 2px dashed var(--accent, #3b82f6);
+  outline-offset: -2px;
 }
 
 .bin-item:hover {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MediaItem } from "../ipc";
+import { MEDIA_DND_TYPE, MediaItem } from "../ipc";
 import { mediaHue, Segmented } from "./ui";
 
 type Tab = "media" | "effects";
@@ -58,7 +58,16 @@ export function MediaPanel(p: {
               </div>
             )}
             {filtered.map((m) => (
-              <div className="bin-item" key={m.id}>
+              <div
+                className="bin-item"
+                key={m.id}
+                draggable
+                title="Drag onto a timeline track to place it"
+                onDragStart={(e) => {
+                  e.dataTransfer.setData(MEDIA_DND_TYPE, m.id);
+                  e.dataTransfer.effectAllowed = "copy";
+                }}
+              >
                 <div
                   className="bin-thumb"
                   style={{ borderColor: `hsl(${mediaHue(m.id)} 60% 45%)` }}
