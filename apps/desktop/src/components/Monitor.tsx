@@ -9,8 +9,7 @@ export const RESOLUTIONS: Resolution[] = [
 ];
 
 export function Monitor(p: {
-  src: string | null;
-  imgStyle?: React.CSSProperties;
+  layers: { key: string; src: string; style?: React.CSSProperties }[];
   titleOverlay?: ReactNode;
   caption: string | null;
   playhead: number;
@@ -28,8 +27,12 @@ export function Monitor(p: {
   return (
     <section className="monitor">
       <div className="monitor-frame" ref={frameRef}>
-        {p.src ? (
-          <img src={p.src} alt="program monitor" draggable={false} style={p.imgStyle} />
+        {p.layers.length ? (
+          <div className="monitor-layers">
+            {p.layers.map((l) => (
+              <img key={l.key} src={l.src} alt="" draggable={false} style={l.style} />
+            ))}
+          </div>
         ) : (
           <div className="monitor-empty">No clip under the playhead</div>
         )}

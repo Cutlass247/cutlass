@@ -162,8 +162,9 @@ pub struct ExportClip {
 const KF_STEP_S: f64 = 0.2;
 const KF_MAX_SEGS: usize = 80;
 
-/// A V2 clip composited over the program at its timeline position.
-/// (Video only — matching in-app playback, where V1 carries the audio.)
+/// A clip from a track above the base, composited over the program at its
+/// timeline position. Higher video tracks stack in order; `audio_only`
+/// beds (from A-tracks) contribute their audio to the mix but no picture.
 #[derive(Debug, Clone)]
 pub struct Overlay {
     pub path: String,
@@ -171,6 +172,7 @@ pub struct Overlay {
     pub len: f64,
     pub start: f64,
     pub fx: ClipFx,
+    pub audio_only: bool,
 }
 
 /// A generated text title drawn over the program during its window.
@@ -467,17 +469,20 @@ fn run_export(
         let vi = input_idx;
         input_idx += 1;
         let (t0, t1) = (ov.start, ov.start + ov.len);
-        filters.push_str(&format!(
-            "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
-             pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p,\
-             eq=brightness={b}:contrast={c}:saturation={sat},\
-             setpts=PTS-STARTPTS+{t0:.3}/TB[ov{j}];\
-             [{base}][ov{j}]overlay=eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
-            b = ov.fx.brightness,
-            c = ov.fx.contrast,
-            sat = ov.fx.saturation
-        ));
-        base = format!("ovd{j}");
+        // audio beds carry no picture; only higher video tracks composite
+        if !ov.audio_only {
+            filters.push_str(&format!(
+                "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
+                 pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p,\
+                 eq=brightness={b}:contrast={c}:saturation={sat},\
+                 setpts=PTS-STARTPTS+{t0:.3}/TB[ov{j}];\
+                 [{base}][ov{j}]overlay=eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
+                b = ov.fx.brightness,
+                c = ov.fx.contrast,
+                sat = ov.fx.saturation
+            ));
+            base = format!("ovd{j}");
+        }
         if has_audio(&ov.path) {
             let ms = (ov.start * 1000.0).round() as i64;
             let vol = if ov.fx.volume != 1.0 {

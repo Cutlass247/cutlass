@@ -44,7 +44,22 @@ struct PlayClip {
     len: f64,
     src_in: f64,
     speed: f64,
-    track_pri: u8, // higher wins the monitor (V2 over V1)
+    track_pri: u8, // higher wins the monitor (Vn over ... over V1)
+}
+
+/// Track names are "V1".."Vn" (video, composited bottom→top) or
+/// "A1".."An" (audio-only beds). These parse the kind and z-order.
+fn track_is_audio(t: &str) -> bool {
+    matches!(t.chars().next(), Some('A') | Some('a'))
+}
+/// Video z-order: "V2" → 2 (higher composites on top). Audio tracks → 0.
+fn track_video_pri(t: &str) -> u8 {
+    if track_is_audio(t) {
+        return 0;
+    }
+    t.trim_start_matches(|c: char| c.is_alphabetic())
+        .parse::<u8>()
+        .unwrap_or(0)
 }
 
 enum SyncCmd {
@@ -582,6 +597,7 @@ fn play(
             .map(|cs| {
                 cs.iter()
                     .filter(|c| c["text"].as_str().unwrap_or("").is_empty()) // not titles
+                    .filter(|c| !track_is_audio(c["track"].as_str().unwrap_or(""))) // video tracks only
                     .filter_map(|c| {
                         let m = media.get(c["media"].as_str()?)?;
                         let track = c["track"].as_str()?;
@@ -591,7 +607,7 @@ fn play(
                             len: c["len"].as_f64()?,
                             src_in: c["src_in"].as_f64()?,
                             speed: c["fx"]["speed"].as_f64().unwrap_or(1.0),
-                            track_pri: if track == "V2" { 1 } else { 0 },
+                            track_pri: track_video_pri(track),
                         })
                     })
                     .collect()
@@ -607,7 +623,17 @@ fn play(
         let project = state.project.lock().unwrap();
         let media = state.media.lock().unwrap();
         let snap = project.snapshot();
-        ["V1", "V2"]
+        // every track that carries clips contributes audio — video tracks
+        // (their embedded audio) and audio-only beds alike
+        let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        if let Some(cs) = snap["clips"].as_array() {
+            for c in cs {
+                if let Some(t) = c["track"].as_str() {
+                    names.insert(t.to_string());
+                }
+            }
+        }
+        names
             .iter()
             .filter(|t| !muted.iter().any(|m| m == *t))
             .map(|track| {
@@ -615,7 +641,8 @@ fn play(
                     .as_array()
                     .map(|cs| {
                         cs.iter()
-                            .filter(|c| c["track"] == *track)
+                            .filter(|c| c["track"].as_str() == Some(track.as_str()))
+                            .filter(|c| c["text"].as_str().unwrap_or("").is_empty()) // titles are silent
                             // retimed clips are silent in live playback (v1);
                             // export renders their audio pitch-corrected
                             .filter(|c| (c["fx"]["speed"].as_f64().unwrap_or(1.0) - 1.0).abs() < 0.01)
@@ -786,9 +813,21 @@ async fn export_project(
                 bg: c.fx.get("title_bg").copied().unwrap_or(0.0),
             })
             .collect();
+        // base program = the lowest-index video track carrying real clips;
+        // higher video tracks composite over it, audio tracks mix in as beds
+        let base_pri = all
+            .iter()
+            .filter(|c| c.text.is_empty() && !track_is_audio(&c.track))
+            .map(|c| track_video_pri(&c.track))
+            .min()
+            .unwrap_or(1);
         let clips: Vec<ExportClip> = all
             .iter()
-            .filter(|c| c.track == "V1" && c.text.is_empty())
+            .filter(|c| {
+                c.text.is_empty()
+                    && !track_is_audio(&c.track)
+                    && track_video_pri(&c.track) == base_pri
+            })
             .filter_map(|c| {
                 Some(ExportClip {
                     start: c.start,
@@ -806,9 +845,19 @@ async fn export_project(
                 })
             })
             .collect();
-        let overlays: Vec<cutlass_core::export::Overlay> = all
+        // higher video tracks → video overlays, ascending so they stack in
+        // z-order; A-tracks → audio-only beds
+        let mut higher: Vec<&cutlass_core::project::Clip> = all
             .iter()
-            .filter(|c| c.track == "V2" && c.text.is_empty())
+            .filter(|c| {
+                c.text.is_empty()
+                    && !track_is_audio(&c.track)
+                    && track_video_pri(&c.track) > base_pri
+            })
+            .collect();
+        higher.sort_by_key(|c| track_video_pri(&c.track));
+        let mut overlays: Vec<cutlass_core::export::Overlay> = higher
+            .iter()
             .filter_map(|c| {
                 Some(cutlass_core::export::Overlay {
                     path: paths.get(&c.media)?.clone(),
@@ -816,13 +865,29 @@ async fn export_project(
                     len: c.len,
                     start: c.start,
                     fx: ClipFx::from_map(&c.fx),
+                    audio_only: false,
                 })
             })
             .collect();
+        for c in all
+            .iter()
+            .filter(|c| c.text.is_empty() && track_is_audio(&c.track))
+        {
+            if let Some(p) = paths.get(&c.media) {
+                overlays.push(cutlass_core::export::Overlay {
+                    path: p.clone(),
+                    src_in: c.src_in,
+                    len: c.len,
+                    start: c.start,
+                    fx: ClipFx::from_map(&c.fx),
+                    audio_only: true,
+                });
+            }
+        }
         (clips, overlays, titles)
     };
     if clips.is_empty() {
-        return Err("nothing on V1 to export".into());
+        return Err("nothing to export — add a video clip to the timeline".into());
     }
     let segments = cutlass_core::export::build_segments(clips);
     let settings = cutlass_core::export::ExportSettings {
