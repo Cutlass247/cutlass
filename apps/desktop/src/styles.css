@@ -926,7 +926,7 @@ button {
 
 .track-heads {
   flex: none;
-  width: 118px;
+  width: 146px;
   border-right: 1px solid var(--border);
   background: var(--panel-2);
   /* scrolls in lockstep with the lanes (driven from JS); hidden so it
@@ -937,8 +937,8 @@ button {
 .track-head {
   display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 0 8px;
+  gap: 2px;
+  padding: 0 6px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1008,6 +1008,16 @@ button {
 .track-btn.on {
   opacity: 1;
   background: var(--panel-3);
+}
+
+.track-btn.remove {
+  margin-left: auto; /* push to the far edge of the header */
+  font-size: 10px;
+}
+.track-btn.remove:hover {
+  background: #b13b3b;
+  color: #fff;
+  opacity: 1;
 }
 
 .timeline-scroll {

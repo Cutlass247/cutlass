@@ -30,6 +30,7 @@ import {
   razorOut,
   redoEdit,
   removeClip,
+  removeTrack,
   saveProject,
   splitClip,
   sendPresence,
@@ -148,6 +149,23 @@ export default function App() {
     setProject(snap);
     setDirty(true);
   }, []);
+
+  // remove a track (deletes its clips, shifts higher tracks down). V1/V2
+  // are the protected defaults, so only V3+ and any A-track are removable.
+  const onRemoveTrack = useCallback(
+    (track: string) => {
+      const audio = trackKind(track) === "audio";
+      if (!audio && trackIndex(track) <= 2) return; // never the default video tracks
+      removeTrack(track)
+        .then((snap) => {
+          applyEdit(snap);
+          if (audio) setACount((a) => Math.max(0, a - 1));
+          else setVCount((v) => Math.max(2, v - 1));
+        })
+        .catch((e) => setError(String(e)));
+    },
+    [applyEdit]
+  );
 
   // ── presence identity ───────────────────────────────────────────────
   const me = useRef({ id: Math.random().toString(36).slice(2, 8), name: "", color: "" });
@@ -1154,6 +1172,7 @@ export default function App() {
         showTrackHeads={mode === "studio"}
         onAddVideoTrack={addVideoTrack}
         onAddAudioTrack={addAudioTrack}
+        onRemoveTrack={onRemoveTrack}
         canAddVideo={vCount < MAX_TRACKS}
         canAddAudio={aCount < MAX_TRACKS}
         dropActive={mediaGhost !== null}

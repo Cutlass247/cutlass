@@ -1,5 +1,5 @@
 import { RefObject, useMemo, useRef } from "react";
-import { Clip, MediaItem, Presence, trackKind } from "../ipc";
+import { Clip, MediaItem, Presence, trackIndex, trackKind } from "../ipc";
 import { formatTC, mediaHue, Switch } from "./ui";
 
 export const TRACK_H = 64;
@@ -41,6 +41,7 @@ export function Timeline(p: {
   showTrackHeads: boolean;
   onAddVideoTrack: () => void;
   onAddAudioTrack: () => void;
+  onRemoveTrack: (track: string) => void;
   canAddVideo: boolean;
   canAddAudio: boolean;
   dropActive: boolean; // a media item is being dragged toward the lanes
@@ -97,6 +98,8 @@ export function Timeline(p: {
             {p.tracks.map((t) => {
               const ctl = p.trackCtl[t] ?? { lock: false, mute: false, hide: false };
               const isAudio = trackKind(t) === "audio";
+              // V1/V2 are the protected defaults; everything else is removable
+              const removable = isAudio || trackIndex(t) > 2;
               return (
                 <div
                   className={`track-head${isAudio ? " audio" : ""}`}
@@ -125,6 +128,15 @@ export function Timeline(p: {
                   >
                     {ctl.hide ? "🚫" : "👁"}
                   </button>
+                  {removable && (
+                    <button
+                      className="track-btn remove"
+                      title="Remove this track (deletes its clips)"
+                      onClick={() => p.onRemoveTrack(t)}
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
               );
             })}

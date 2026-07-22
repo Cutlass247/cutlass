@@ -139,6 +139,13 @@ export async function addClipFromMedia(
   return invoke("add_clip_from_media", { mediaId, track, start });
 }
 
+/// Remove a track: deletes its clips and shifts higher same-kind tracks
+/// down so numbering stays contiguous.
+export async function removeTrack(track: string): Promise<ProjectSnapshot> {
+  if (!inTauri) return mockRemoveTrack(track);
+  return invoke("remove_track", { track });
+}
+
 export async function getProject(): Promise<ProjectSnapshot> {
   if (!inTauri) return structuredClone(mockState.project);
   return invoke<ProjectSnapshot>("get_project");
@@ -686,4 +693,19 @@ function mockAddClipFromMedia(
     src_in: 0,
   });
   return { project: structuredClone(mockState.project), clipId };
+}
+
+function mockRemoveTrack(track: string): ProjectSnapshot {
+  mockCheckpoint();
+  const audio = trackKind(track) === "audio";
+  const removed = trackIndex(track);
+  const kind = audio ? "A" : "V";
+  mockState.project.clips = mockState.project.clips
+    .filter((c) => c.track !== track)
+    .map((c) =>
+      trackKind(c.track) === (audio ? "audio" : "video") && trackIndex(c.track) > removed
+        ? { ...c, track: `${kind}${trackIndex(c.track) - 1}` }
+        : c
+    );
+  return structuredClone(mockState.project);
 }
