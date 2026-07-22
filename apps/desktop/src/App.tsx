@@ -437,11 +437,12 @@ export default function App() {
 
   // vignette is a monitor overlay (not a CSS filter) — driven by the
   // topmost clip, honouring the selected clip's live drag draft
-  const monitorVignette = useMemo(() => {
+  const monitorOverlay = useMemo(() => {
     const clip = underPlayhead?.clip;
-    if (!clip) return 0;
-    if (clip.id === selected && fxDraft.vignette !== undefined) return fxDraft.vignette;
-    return clip.fx?.vignette ?? 0;
+    if (!clip) return { vignette: 0, grain: 0 };
+    const draft = clip.id === selected ? fxDraft : {};
+    const val = (k: string) => draft[k] ?? clip.fx?.[k] ?? 0;
+    return { vignette: val("vignette"), grain: val("grain") };
   }, [underPlayhead, selected, fxDraft]);
 
   const onFxPreview = useCallback(
@@ -474,6 +475,18 @@ export default function App() {
     },
     [selected, applyEdit]
   );
+
+  // Ken Burns: a slow push-in via scale keyframes across the clip
+  const onKenBurns = useCallback(() => {
+    if (!selectedClip) return;
+    const id = selectedClip.id;
+    const end = Math.max(0.1, selectedClip.len);
+    setKeyframe(id, "scale", 0, 1.0)
+      .then(() => setKeyframe(id, "scale", end, 1.18))
+      .then((snap) => applyEdit(snap))
+      .catch((e) => setError(String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClip, applyEdit]);
 
   // a clip can take a transition if another clip on its track ends where
   // it begins (adjacency)
@@ -1139,6 +1152,7 @@ export default function App() {
             onMediaPointerDown={onMediaPointerDown}
             hasSelection={selected !== null}
             onApplyEffect={onApplyEffect}
+            onKenBurns={onKenBurns}
             busy={busy !== null}
           />
         </div>
@@ -1146,7 +1160,8 @@ export default function App() {
 
         <Monitor
           layers={monitorLayers}
-          vignette={monitorVignette}
+          vignette={monitorOverlay.vignette}
+          grain={monitorOverlay.grain}
           titleOverlay={titleOverlay}
           caption={caption}
           playhead={playhead}

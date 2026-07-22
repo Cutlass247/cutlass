@@ -233,6 +233,10 @@ export function fxStyle(clip: Clip | null, playhead: number): React.CSSPropertie
   const saturation = v("saturation");
   const hue = v("hue");
   const blur = v("blur");
+  const temp = v("temperature");
+  // approximate warmth in CSS: warm → sepia + tiny hue toward orange
+  const sepia = Math.max(0, temp) / 220;
+  const tempHue = -temp * 0.06; // cool nudges toward blue, warm toward red
   const flipX = v("flip_h") > 0.5 ? -1 : 1;
   const flipY = v("flip_v") > 0.5 ? -1 : 1;
 
@@ -247,7 +251,7 @@ export function fxStyle(clip: Clip | null, playhead: number): React.CSSPropertie
 
   return {
     transform: `translate(${px}%, ${py}%) scale(${scale}) scaleX(${flipX}) scaleY(${flipY}) rotate(${rot}deg)`,
-    filter: `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) hue-rotate(${hue}deg) blur(${blur}px)`,
+    filter: `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) hue-rotate(${hue + tempHue}deg) sepia(${sepia}) blur(${blur}px)`,
     opacity,
   };
 }

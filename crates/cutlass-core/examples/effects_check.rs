@@ -12,10 +12,15 @@ fn main() -> anyhow::Result<()> {
     let fx = ClipFx {
         contrast: 1.2,
         saturation: 1.3,
+        temperature: 40.0,
+        tint: -20.0,
         hue: 40.0,
         blur: 5.0,
+        sharpen: 0.6,
+        grain: 0.4,
         vignette: 0.5,
         flip_h: 1.0,
+        denoise: 1.0,
         ..Default::default()
     };
     let segs = vec![Segment::Clip { path: a, src_in: 0.0, len: 3.0, fx }];
