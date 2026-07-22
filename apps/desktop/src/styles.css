@@ -813,6 +813,25 @@ button {
   color: var(--accent);
 }
 
+.fx-val.editable {
+  cursor: text;
+}
+.fx-val.editable:hover {
+  text-decoration: underline dotted;
+}
+.fx-val-edit {
+  width: 100%;
+  min-width: 0;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel-3);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 3px;
+  text-align: right;
+}
+
 .transcript-hint {
   font-size: 11px;
   color: var(--muted);
