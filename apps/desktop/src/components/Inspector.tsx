@@ -20,6 +20,8 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
       { key: "brightness", label: "Brightness", min: -1, max: 1, step: 0.02 },
       { key: "contrast", label: "Contrast", min: 0, max: 2, step: 0.02 },
       { key: "saturation", label: "Saturation", min: 0, max: 2, step: 0.02 },
+      { key: "temperature", label: "Temperature", min: -100, max: 100, step: 1, fmt: (v) => `${Math.round(v)}` },
+      { key: "tint", label: "Tint", min: -100, max: 100, step: 1, fmt: (v) => `${Math.round(v)}` },
     ],
   },
   {
@@ -36,6 +38,8 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
     params: [
       { key: "hue", label: "Hue", min: -180, max: 180, step: 1, fmt: (v) => `${Math.round(v)}°` },
       { key: "blur", label: "Blur", min: 0, max: 20, step: 0.5 },
+      { key: "sharpen", label: "Sharpen", min: 0, max: 1, step: 0.05 },
+      { key: "grain", label: "Film grain", min: 0, max: 1, step: 0.05 },
       { key: "vignette", label: "Vignette", min: 0, max: 1, step: 0.05 },
       { key: "flip_h", label: "Mirror H", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
       { key: "flip_v", label: "Flip V", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
@@ -47,6 +51,7 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
       { key: "fade_in", label: "Fade in", min: 0, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}s` },
       { key: "fade_out", label: "Fade out", min: 0, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}s` },
       { key: "volume", label: "Volume", min: 0, max: 2, step: 0.02 },
+      { key: "denoise", label: "Voice cleanup", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
     ],
   },
 ];

@@ -15,14 +15,19 @@ use ffmpeg_sidecar::event::FfmpegEvent;
 /// same vocabulary the preview (CSS) and playback (gain) speak.
 #[derive(Debug, Clone)]
 pub struct ClipFx {
-    pub brightness: f64, // 0, range -1..1
-    pub contrast: f64,   // 1
-    pub saturation: f64, // 1
-    pub hue: f64,        // 0, degrees -180..180
-    pub blur: f64,       // 0, gaussian sigma
-    pub vignette: f64,   // 0, 0..1 strength
-    pub flip_h: f64,     // 0 or 1
-    pub flip_v: f64,     // 0 or 1
+    pub brightness: f64,  // 0, range -1..1
+    pub contrast: f64,    // 1
+    pub saturation: f64,  // 1
+    pub temperature: f64, // 0, -100 (cool) .. 100 (warm)
+    pub tint: f64,        // 0, -100 (green) .. 100 (magenta)
+    pub hue: f64,         // 0, degrees -180..180
+    pub blur: f64,        // 0, gaussian sigma
+    pub sharpen: f64,     // 0, 0..1 amount
+    pub grain: f64,       // 0, 0..1 film-grain strength
+    pub vignette: f64,    // 0, 0..1 strength
+    pub flip_h: f64,      // 0 or 1
+    pub flip_v: f64,      // 0 or 1
+    pub denoise: f64,     // 0 or 1 — audio voice cleanup
     pub scale: f64,      // 1
     pub rot: f64,        // degrees
     pub pos_x: f64,      // fraction of width
@@ -39,11 +44,16 @@ impl Default for ClipFx {
             brightness: 0.0,
             contrast: 1.0,
             saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
             hue: 0.0,
             blur: 0.0,
+            sharpen: 0.0,
+            grain: 0.0,
             vignette: 0.0,
             flip_h: 0.0,
             flip_v: 0.0,
+            denoise: 0.0,
             scale: 1.0,
             rot: 0.0,
             pos_x: 0.0,
@@ -78,11 +88,16 @@ impl ClipFx {
             "brightness" => self.brightness = v,
             "contrast" => self.contrast = v,
             "saturation" => self.saturation = v,
+            "temperature" => self.temperature = v,
+            "tint" => self.tint = v,
             "hue" => self.hue = v,
             "blur" => self.blur = v,
+            "sharpen" => self.sharpen = v,
+            "grain" => self.grain = v,
             "vignette" => self.vignette = v,
             "flip_h" => self.flip_h = v,
             "flip_v" => self.flip_v = v,
+            "denoise" => self.denoise = v,
             "scale" => self.scale = v,
             "rot" => self.rot = v,
             "pos_x" => self.pos_x = v,
@@ -114,11 +129,16 @@ impl ClipFx {
             brightness: g("brightness", d.brightness),
             contrast: g("contrast", d.contrast),
             saturation: g("saturation", d.saturation),
+            temperature: g("temperature", d.temperature),
+            tint: g("tint", d.tint),
             hue: g("hue", d.hue),
             blur: g("blur", d.blur),
+            sharpen: g("sharpen", d.sharpen),
+            grain: g("grain", d.grain),
             vignette: g("vignette", d.vignette),
             flip_h: g("flip_h", d.flip_h),
             flip_v: g("flip_v", d.flip_v),
+            denoise: g("denoise", d.denoise),
             scale: g("scale", d.scale),
             rot: g("rot", d.rot),
             pos_x: g("pos_x", d.pos_x),
@@ -246,10 +266,21 @@ fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &
     } else {
         format!("setpts=(PTS-STARTPTS)/{:.5}", fx.speed)
     };
+    // temperature/tint as a midtone colour-balance shift (warm = +red/-blue)
+    let cb = if fx.temperature != 0.0 || fx.tint != 0.0 {
+        format!(
+            ",colorbalance=rm={rm:.4}:gm={gm:.4}:bm={bm:.4}",
+            rm = fx.temperature / 200.0,
+            gm = -fx.tint / 200.0,
+            bm = -fx.temperature / 200.0
+        )
+    } else {
+        String::new()
+    };
     let mut s = format!(
         "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
          pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},{setpts},\
-         format=yuv420p,eq=brightness={b}:contrast={c}:saturation={sat}[cf{k}];",
+         format=yuv420p,eq=brightness={b}:contrast={c}:saturation={sat}{cb}[cf{k}];",
         b = fx.brightness,
         c = fx.contrast,
         sat = fx.saturation
@@ -262,6 +293,14 @@ fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &
     }
     if fx.blur > 0.01 {
         stylize.push_str(&format!("gblur=sigma={:.2},", fx.blur));
+    }
+    if fx.sharpen > 0.01 {
+        // luma unsharp; amount scales 0..~2.5
+        stylize.push_str(&format!("unsharp=5:5:{:.3}:5:5:0,", fx.sharpen * 2.5));
+    }
+    if fx.grain > 0.01 {
+        // temporal noise = animated film grain
+        stylize.push_str(&format!("noise=alls={}:allf=t,", (fx.grain * 22.0).round() as i64));
     }
     if fx.flip_h > 0.5 {
         stylize.push_str("hflip,");
@@ -321,6 +360,10 @@ fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &
 /// Build a clip's audio chain `[{vi}:a] → [a{k}]`: resample, gain, fades.
 fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
     let mut c = format!("[{vi}:a]aresample=48000,asetpts=PTS-STARTPTS");
+    if fx.denoise > 0.5 {
+        // FFT denoise cleans up voice hiss / room tone
+        c.push_str(",afftdn=nr=12:nf=-25");
+    }
     if (fx.speed - 1.0).abs() >= 1e-9 {
         // atempo is pitch-corrected; input span len*speed → len
         c.push(',');

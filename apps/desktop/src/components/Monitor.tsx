@@ -11,6 +11,7 @@ export const RESOLUTIONS: Resolution[] = [
 export function Monitor(p: {
   layers: { key: string; src: string; style?: React.CSSProperties }[];
   vignette?: number;
+  grain?: number;
   titleOverlay?: ReactNode;
   caption: string | null;
   playhead: number;
@@ -37,6 +38,9 @@ export function Monitor(p: {
         ) : (
           <div className="monitor-empty">No clip under the playhead</div>
         )}
+        {p.grain && p.grain > 0.01 ? (
+          <div className="grain-overlay" style={{ opacity: Math.min(0.5, p.grain * 0.5) }} />
+        ) : null}
         {p.vignette && p.vignette > 0.01 ? (
           <div className="vignette-overlay" style={{ opacity: Math.min(1, p.vignette) }} />
         ) : null}

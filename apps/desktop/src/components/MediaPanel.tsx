@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { MediaItem } from "../ipc";
-import { EFFECTS, LOOKS } from "../effects";
+import { EFFECT_GROUPS, LOOKS } from "../effects";
 import { mediaHue, Segmented } from "./ui";
 
 type Tab = "media" | "effects";
@@ -14,6 +14,7 @@ export function MediaPanel(p: {
   onMediaPointerDown: (mediaId: string, e: React.PointerEvent) => void;
   hasSelection: boolean;
   onApplyEffect: (params: Record<string, number>) => void;
+  onKenBurns: () => void;
   busy: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("media");
@@ -34,39 +35,52 @@ export function MediaPanel(p: {
       />
       {tab === "effects" ? (
         <div className="fx-library">
-          <div className="fx-lib-hint">
+          <div className={`fx-lib-hint${p.hasSelection ? "" : " warn"}`}>
             {p.hasSelection
-              ? "Click a Look or effect to apply it to the selected clip — tune it in the Inspector."
-              : "Select a clip on the timeline, then apply a Look or effect."}
+              ? "Click to apply to the selected clip — fine-tune in the Inspector."
+              : "Select a clip on the timeline to apply effects."}
           </div>
-          <div className="fx-lib-title">Looks</div>
-          <div className="look-grid">
-            {LOOKS.map((l) => (
-              <button
-                key={l.name}
-                className="look-chip"
-                title={l.desc}
-                disabled={!p.hasSelection}
-                onClick={() => p.onApplyEffect(l.params)}
-              >
-                {l.name}
-              </button>
-            ))}
+
+          <div className="fx-lib-section">
+            <div className="fx-lib-title">Looks</div>
+            <div className="look-grid">
+              {LOOKS.map((l) => (
+                <button
+                  key={l.name}
+                  className="look-chip"
+                  title={l.desc}
+                  disabled={!p.hasSelection}
+                  onClick={() => l.params && p.onApplyEffect(l.params)}
+                >
+                  {l.name}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="fx-lib-title">Effects</div>
-          <div className="effect-list">
-            {EFFECTS.map((e) => (
-              <button
-                key={e.name}
-                className="effect-row"
-                disabled={!p.hasSelection}
-                onClick={() => p.onApplyEffect(e.params)}
-              >
-                <span className="effect-name">{e.name}</span>
-                <span className="effect-desc">{e.desc}</span>
-              </button>
-            ))}
-          </div>
+
+          {EFFECT_GROUPS.map((g) => (
+            <div className="fx-lib-section" key={g.title}>
+              <div className="fx-lib-title">{g.title}</div>
+              <div className="effect-grid">
+                {g.items.map((e) => (
+                  <button
+                    key={e.name}
+                    className="effect-chip"
+                    title={e.desc}
+                    disabled={!p.hasSelection}
+                    onClick={() =>
+                      e.action === "kenburns"
+                        ? p.onKenBurns()
+                        : e.params && p.onApplyEffect(e.params)
+                    }
+                  >
+                    <span className="effect-chip-name">{e.name}</span>
+                    <span className="effect-chip-desc">{e.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
         <>
