@@ -31,6 +31,8 @@ struct AppState {
     playback: Mutex<Option<cutlass_engine::player::PlaybackHandle>>,
     /// stop flag for the real-time video playback thread
     video_stop: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+    /// cancel flag for the in-flight export render
+    export_cancel: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// pings the collab task after a local edit, when a session is live
     sync_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<SyncCmd>>>,
     room: Mutex<Option<String>>,
@@ -982,8 +984,11 @@ async fn export_project(
         format: cutlass_core::export::ExportFormat::parse(format.as_deref().unwrap_or("mp4_h264")),
         quality: cutlass_core::export::Quality::parse(quality.as_deref().unwrap_or("medium")),
     };
+    // cancel handle: cancel_export flips this; the render loop kills ffmpeg
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    *state.export_cancel.lock().unwrap() = Some(cancel.clone());
     // the render runs minutes — off the UI thread; progress still streams
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         cutlass_core::export::export(
             &segments,
             &overlays,
@@ -993,11 +998,22 @@ async fn export_project(
             &mut |p| {
                 let _ = app.emit("export-progress", p);
             },
+            &cancel,
         )
         .map_err(err_str)
     })
     .await
-    .map_err(err_str)?
+    .map_err(err_str)?;
+    *state.export_cancel.lock().unwrap() = None; // done — drop the handle
+    result
+}
+
+/// Cancel the in-flight export (kills the ffmpeg render).
+#[tauri::command]
+fn cancel_export(state: State<AppState>) {
+    if let Some(c) = state.export_cancel.lock().unwrap().as_ref() {
+        c.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Join (or start) a collab room. The task speaks the Automerge sync
@@ -1139,6 +1155,7 @@ fn main() {
             add_clip_from_media,
             remove_track,
             reveal_file,
+            cancel_export,
             get_project,
             move_clip,
             trim_clip,

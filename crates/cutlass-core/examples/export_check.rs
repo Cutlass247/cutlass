@@ -80,6 +80,7 @@ fn main() -> anyhow::Result<()> {
                 last = p;
             }
         },
+        &std::sync::atomic::AtomicBool::new(false),
     )?;
     let took = t0.elapsed().as_secs_f64();
 
@@ -113,7 +114,7 @@ fn main() -> anyhow::Result<()> {
     let kf_segs = build_segments(vec![kf_clip]);
     println!("keyframed clip -> {} sub-segments", kf_segs.len());
     let kf_out = std::env::temp_dir().join("cutlass_export_kf.mp4");
-    export(&kf_segs, &[], &[], &kf_out, &ExportSettings { width: 1280, height: 720, fps: 30, ..Default::default() }, &mut |_| {})?;
+    export(&kf_segs, &[], &[], &kf_out, &ExportSettings { width: 1280, height: 720, fps: 30, ..Default::default() }, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false))?;
     let kf_dur = probe_duration_s(&kf_out)?;
     println!("keyframed export duration {kf_dur:.2}s (expected 3.00)");
     assert!((kf_dur - 3.0).abs() < 0.3, "keyframe duration {kf_dur:.2} != 3.0");

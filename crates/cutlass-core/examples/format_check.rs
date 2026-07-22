@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
             format: fmt,
             quality: Quality::Medium,
         };
-        let enc = export(&segs, &[], &[], &out, &settings, &mut |_| {})?;
+        let enc = export(&segs, &[], &[], &out, &settings, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false))?;
         let dur = probe_duration_s(&out)?;
         println!("{name}: encoder={enc} dur={dur:.2}s -> {}", out.display());
         assert!((dur - 3.0).abs() < 0.3, "{name} duration off: {dur}");

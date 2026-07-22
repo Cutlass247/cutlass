@@ -363,14 +363,33 @@ export interface ExportOptions {
   quality: string; // low | medium | high
 }
 
+let mockExportCancelled = false;
+
 /// Render the timeline with the chosen settings. Returns the encoder used.
 export async function exportProject(opts: ExportOptions): Promise<string> {
   if (!inTauri) {
-    await new Promise((r) => setTimeout(r, 700)); // simulate a render
+    mockExportCancelled = false;
+    for (let i = 0; i < 24; i++) {
+      await new Promise((r) => setTimeout(r, 70)); // simulate a render
+      if (mockExportCancelled) throw new Error("export cancelled");
+    }
     return "mock (h264)";
   }
   const { path, width, height, fps, format, quality } = opts;
   return invoke<string>("export_project", { path, width, height, fps, format, quality });
+}
+
+/// Cancel the in-flight export (kills the ffmpeg render).
+export async function cancelExport(): Promise<void> {
+  if (!inTauri) {
+    mockExportCancelled = true;
+    return;
+  }
+  try {
+    await invoke("cancel_export");
+  } catch {
+    /* best-effort */
+  }
 }
 
 /// Pick a destination folder for the export (native directory dialog).
