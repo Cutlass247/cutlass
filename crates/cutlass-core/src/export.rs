@@ -463,16 +463,22 @@ pub fn export(
     out: &Path,
     settings: &ExportSettings,
     progress: &mut dyn FnMut(f32),
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> anyhow::Result<String> {
+    use std::sync::atomic::Ordering;
     anyhow::ensure!(!segments.is_empty(), "nothing to export");
     let total: f64 = segments.iter().map(|s| s.len()).sum();
 
     let encoders = settings.format.encoders();
     for (i, encoder) in encoders.iter().enumerate() {
         progress(0.0);
-        match run_export(segments, overlays, titles, out, settings, encoder, total, progress) {
+        match run_export(segments, overlays, titles, out, settings, encoder, total, progress, cancel) {
             Ok(()) => return Ok(encoder.to_string()),
             Err(e) => {
+                // a user cancel must not fall through to the next encoder
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(e);
+                }
                 if i + 1 < encoders.len() {
                     eprintln!("{encoder} encode failed ({e:#}); trying {}", encoders[i + 1]);
                 } else {
@@ -493,6 +499,7 @@ fn run_export(
     encoder: &str,
     total: f64,
     progress: &mut dyn FnMut(f32),
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> anyhow::Result<()> {
     let (w, h, fps) = (s.width, s.height, s.fps);
     let mut cmd = FfmpegCommand::new();
@@ -680,6 +687,11 @@ fn run_export(
 
     let mut saw_error = None;
     for event in child.iter()? {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = std::fs::remove_file(out); // drop the partial output
+            anyhow::bail!("export cancelled");
+        }
         match event {
             FfmpegEvent::Progress(p) => {
                 let done = parse_time_s(&p.time).unwrap_or(0.0);

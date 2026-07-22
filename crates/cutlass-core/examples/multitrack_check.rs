@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     let out = std::env::temp_dir().join("cutlass_multitrack_check.mp4");
     let settings = ExportSettings { width: 1280, height: 720, fps: 30, ..Default::default() };
     let no_titles: &[Title] = &[];
-    export(&segments, &overlays, no_titles, &out, &settings, &mut |_p| {})?;
+    export(&segments, &overlays, no_titles, &out, &settings, &mut |_p| {}, &std::sync::atomic::AtomicBool::new(false))?;
 
     let dur = probe_duration_s(&out)?;
     let audio = has_audio(&out.to_string_lossy());

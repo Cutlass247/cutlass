@@ -8,6 +8,7 @@ import {
   addClipFromMedia,
   addTitle,
   audioClock,
+  cancelExport,
   clearKeyframes,
   currentRoom,
   cutRanges,
@@ -102,7 +103,7 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportDir, setExportDir] = useState("");
   const [exportModal, setExportModal] = useState<
-    | { phase: "running"; progress: number; name: string }
+    | { phase: "running"; progress: number; name: string; cancelling: boolean }
     | { phase: "done"; path: string; encoder: string }
     | { phase: "error"; message: string }
     | null
@@ -695,13 +696,21 @@ export default function App() {
   const runExport = useCallback(async (opts: ExportOptions) => {
     setExportOpen(false);
     const name = opts.path.split(/[\\/]/).pop() ?? "export";
-    setExportModal({ phase: "running", progress: 0, name });
+    setExportModal({ phase: "running", progress: 0, name, cancelling: false });
     try {
       const encoder = await exportProject(opts);
       setExportModal({ phase: "done", path: opts.path, encoder });
     } catch (e) {
-      setExportModal({ phase: "error", message: String(e) });
+      const msg = String(e);
+      // a user cancel just closes the modal — it isn't an error
+      if (/cancel/i.test(msg)) setExportModal(null);
+      else setExportModal({ phase: "error", message: msg });
     }
+  }, []);
+
+  const onCancelExport = useCallback(() => {
+    cancelExport();
+    setExportModal((m) => (m && m.phase === "running" ? { ...m, cancelling: true } : m));
   }, []);
 
   const doCollab = useCallback(async () => {
@@ -1214,7 +1223,9 @@ export default function App() {
           <div className="modal export-progress" onPointerDown={(e) => e.stopPropagation()}>
             {exportModal.phase === "running" && (
               <>
-                <div className="modal-title">Exporting {exportModal.name}</div>
+                <div className="modal-title">
+                  {exportModal.cancelling ? "Cancelling…" : `Exporting ${exportModal.name}`}
+                </div>
                 <div className="progress-track">
                   <div
                     className="progress-fill"
@@ -1222,6 +1233,15 @@ export default function App() {
                   />
                 </div>
                 <div className="progress-pct">{Math.round(exportModal.progress * 100)}%</div>
+                <div className="modal-actions">
+                  <button
+                    className="ghost-btn"
+                    onClick={onCancelExport}
+                    disabled={exportModal.cancelling}
+                  >
+                    {exportModal.cancelling ? "Cancelling…" : "Cancel"}
+                  </button>
+                </div>
               </>
             )}
             {exportModal.phase === "done" && (
