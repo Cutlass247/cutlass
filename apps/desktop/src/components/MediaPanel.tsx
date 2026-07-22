@@ -9,7 +9,6 @@ export function MediaPanel(p: {
   transcripts: Record<string, unknown[]>;
   transcribing: string | null;
   onImport: () => void;
-  onAddTitle: () => void;
   onTranscribe: (id: string) => void;
   onMediaPointerDown: (mediaId: string, e: React.PointerEvent) => void;
   busy: boolean;
@@ -45,9 +44,6 @@ export function MediaPanel(p: {
           <div className="panel-btn-row">
             <button className="primary-btn" onClick={p.onImport} disabled={p.busy}>
               {p.busy ? "Importing…" : "+ Import media"}
-            </button>
-            <button className="primary-btn ghost" onClick={p.onAddTitle} title="Add a title on V2 at the playhead">
-              + Title
             </button>
           </div>
           <div className="bin-list">

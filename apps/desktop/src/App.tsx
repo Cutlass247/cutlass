@@ -1056,6 +1056,7 @@ export default function App() {
         onUndo={doUndo}
         onRedo={doRedo}
         onSplit={doSplit}
+        onAddTitle={onAddTitle}
         onDeleteSel={doDeleteSel}
         onCollab={doCollab}
         onZoom={(dir) =>
@@ -1083,7 +1084,6 @@ export default function App() {
             transcripts={transcripts}
             transcribing={transcribing}
             onImport={doImport}
-            onAddTitle={onAddTitle}
             onTranscribe={doTranscribe}
             onMediaPointerDown={onMediaPointerDown}
             busy={busy !== null}
