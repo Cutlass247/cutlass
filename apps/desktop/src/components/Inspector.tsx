@@ -51,6 +51,53 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
   },
 ];
 
+/// A value readout you can click to type an exact number — the manual
+/// alternative to dragging the slider. Shows the formatted value when
+/// idle; a raw-number field while editing (Enter/blur commit, Esc cancel).
+function EditableValue(p: {
+  value: number;
+  fmt: (v: number) => string;
+  min: number;
+  max: number;
+  onCommit: (v: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  if (editing) {
+    const done = () => {
+      const v = parseFloat(text);
+      if (!Number.isNaN(v)) p.onCommit(Math.min(p.max, Math.max(p.min, v)));
+      setEditing(false);
+    };
+    return (
+      <input
+        className="fx-val-edit"
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={done}
+        onFocus={(e) => e.currentTarget.select()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") done();
+          else if (e.key === "Escape") setEditing(false);
+        }}
+      />
+    );
+  }
+  return (
+    <span
+      className="fx-val editable"
+      title="Click to type a value"
+      onClick={() => {
+        setText(String(Math.round(p.value * 1000) / 1000));
+        setEditing(true);
+      }}
+    >
+      {p.fmt(p.value)}
+    </span>
+  );
+}
+
 /// Slider row with keyframe support. Constant mode: live preview on
 /// drag, one committed edit on release, double-click label resets. ◆
 /// writes a keyframe at the playhead — once keyframed the shown value
@@ -110,7 +157,16 @@ function FxSlider({
         onPointerUp={() => commit(draft)}
         onKeyUp={() => commit(draft)}
       />
-      <span className="fx-val">{fmt(draft)}</span>
+      <EditableValue
+        value={draft}
+        fmt={fmt}
+        min={param.min}
+        max={param.max}
+        onCommit={(v) => {
+          setDraft(v);
+          commit(v);
+        }}
+      />
       <button
         className={`kf-btn${keyframed ? " on" : ""}`}
         title={
@@ -202,7 +258,16 @@ function TitleSlider(p: {
         onPointerUp={() => p.onCommit(p.spec.key, draft)}
         onKeyUp={() => p.onCommit(p.spec.key, draft)}
       />
-      <span className="fx-val">{draft.toFixed(2)}</span>
+      <EditableValue
+        value={draft}
+        fmt={(v) => v.toFixed(2)}
+        min={p.spec.min}
+        max={p.spec.max}
+        onCommit={(v) => {
+          setDraft(v);
+          p.onCommit(p.spec.key, v);
+        }}
+      />
     </div>
   );
 }
@@ -248,7 +313,16 @@ function TransitionControl(p: { clip: Clip; onSet: (dur: number, dip: boolean) =
             onPointerUp={() => kind !== "none" && apply(kind, len)}
             onKeyUp={() => kind !== "none" && apply(kind, len)}
           />
-          <span className="fx-val">{len.toFixed(1)}s</span>
+          <EditableValue
+            value={len}
+            fmt={(v) => `${v.toFixed(1)}s`}
+            min={0.2}
+            max={2}
+            onCommit={(v) => {
+              setLen(v);
+              if (kind !== "none") apply(kind, v);
+            }}
+          />
         </div>
       </div>
     </>
@@ -299,7 +373,16 @@ function RetimeControl(p: {
             onPointerUp={() => p.onCommit("speed", draft)}
             onKeyUp={() => p.onCommit("speed", draft)}
           />
-          <span className="fx-val">{draft.toFixed(2)}×</span>
+          <EditableValue
+            value={draft}
+            fmt={(v) => `${v.toFixed(2)}×`}
+            min={0.25}
+            max={4}
+            onCommit={(v) => {
+              setDraft(v);
+              p.onCommit("speed", v);
+            }}
+          />
         </div>
       </div>
     </>
