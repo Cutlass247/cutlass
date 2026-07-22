@@ -298,16 +298,140 @@ fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
     c
 }
 
+/// Container + codec the export renders to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportFormat {
+    Mp4H264,   // universal
+    Mp4H265,   // HEVC — smaller files
+    MovProres, // editing/master quality
+    WebmVp9,   // web
+}
+
+impl ExportFormat {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "mp4_h265" | "h265" | "hevc" => Self::Mp4H265,
+            "mov_prores" | "prores" => Self::MovProres,
+            "webm_vp9" | "webm" | "vp9" => Self::WebmVp9,
+            _ => Self::Mp4H264,
+        }
+    }
+    /// File extension (also selects the container).
+    pub fn ext(self) -> &'static str {
+        match self {
+            Self::Mp4H264 | Self::Mp4H265 => "mp4",
+            Self::MovProres => "mov",
+            Self::WebmVp9 => "webm",
+        }
+    }
+    /// Video encoders to try in order (first that works wins).
+    fn encoders(self) -> &'static [&'static str] {
+        match self {
+            Self::Mp4H264 => &["h264_qsv", "libx264"],
+            Self::Mp4H265 => &["libx265"],
+            Self::MovProres => &["prores_ks"],
+            Self::WebmVp9 => &["libvpx-vp9"],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quality {
+    Low,
+    Medium,
+    High,
+}
+
+impl Quality {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "low" => Self::Low,
+            "high" => Self::High,
+            _ => Self::Medium,
+        }
+    }
+}
+
 pub struct ExportSettings {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    pub format: ExportFormat,
+    pub quality: Quality,
 }
 
 impl Default for ExportSettings {
     fn default() -> Self {
-        Self { width: 1920, height: 1080, fps: 30 }
+        Self {
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            format: ExportFormat::Mp4H264,
+            quality: Quality::Medium,
+        }
     }
+}
+
+/// The output-encoding args for a format/quality/encoder combination —
+/// everything after the filtergraph maps.
+fn output_args(format: ExportFormat, quality: Quality, encoder: &str) -> Vec<String> {
+    let s = |x: &str| x.to_string();
+    let mut a = vec![s("-c:v"), s(encoder)];
+    match format {
+        ExportFormat::Mp4H264 => {
+            if encoder == "h264_qsv" {
+                let q = match quality {
+                    Quality::Low => 28,
+                    Quality::Medium => 23,
+                    Quality::High => 20,
+                };
+                a.extend([s("-global_quality"), q.to_string()]);
+            } else {
+                let q = match quality {
+                    Quality::Low => 28,
+                    Quality::Medium => 23,
+                    Quality::High => 18,
+                };
+                a.extend([s("-crf"), q.to_string(), s("-preset"), s("fast")]);
+            }
+            a.extend([s("-pix_fmt"), s("yuv420p")]);
+            a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
+            a.extend([s("-movflags"), s("+faststart")]);
+        }
+        ExportFormat::Mp4H265 => {
+            let q = match quality {
+                Quality::Low => 30,
+                Quality::Medium => 26,
+                Quality::High => 22,
+            };
+            a.extend([s("-crf"), q.to_string(), s("-preset"), s("fast")]);
+            a.extend([s("-pix_fmt"), s("yuv420p")]);
+            a.extend([s("-tag:v"), s("hvc1")]); // QuickTime-playable HEVC
+            a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
+            a.extend([s("-movflags"), s("+faststart")]);
+        }
+        ExportFormat::MovProres => {
+            let p = match quality {
+                Quality::Low => 1,    // ProRes 422 LT
+                Quality::Medium => 2, // ProRes 422
+                Quality::High => 3,   // ProRes 422 HQ
+            };
+            a.extend([s("-profile:v"), p.to_string()]);
+            a.extend([s("-pix_fmt"), s("yuv422p10le")]);
+            a.extend([s("-c:a"), s("pcm_s16le")]);
+        }
+        ExportFormat::WebmVp9 => {
+            let q = match quality {
+                Quality::Low => 36,
+                Quality::Medium => 31,
+                Quality::High => 24,
+            };
+            a.extend([s("-crf"), q.to_string(), s("-b:v"), s("0"), s("-row-mt"), s("1")]);
+            a.extend([s("-pix_fmt"), s("yuv420p")]);
+            a.extend([s("-c:a"), s("libopus"), s("-b:a"), s("160k")]);
+        }
+    }
+    a
 }
 
 /// Does the file have an audio stream? (stderr probe)
@@ -343,14 +467,18 @@ pub fn export(
     anyhow::ensure!(!segments.is_empty(), "nothing to export");
     let total: f64 = segments.iter().map(|s| s.len()).sum();
 
-    for encoder in ["h264_qsv", "libx264"] {
+    let encoders = settings.format.encoders();
+    for (i, encoder) in encoders.iter().enumerate() {
         progress(0.0);
         match run_export(segments, overlays, titles, out, settings, encoder, total, progress) {
             Ok(()) => return Ok(encoder.to_string()),
-            Err(e) if encoder == "h264_qsv" => {
-                eprintln!("qsv encode failed ({e:#}); falling back to libx264");
+            Err(e) => {
+                if i + 1 < encoders.len() {
+                    eprintln!("{encoder} encode failed ({e:#}); trying {}", encoders[i + 1]);
+                } else {
+                    return Err(e);
+                }
             }
-            Err(e) => return Err(e),
         }
     }
     unreachable!()
@@ -541,18 +669,12 @@ fn run_export(
         filters.push_str(&format!("[{cur}]null[outv]"));
     }
 
-    let quality: &[&str] = if encoder == "h264_qsv" {
-        &["-global_quality", "23"]
-    } else {
-        &["-crf", "20", "-preset", "fast"]
-    };
+    let out_args = output_args(s.format, s.quality, encoder);
     let mut child = cmd
         .args(["-filter_complex", &filters])
         .args(["-map", "[outv]", "-map", "[outa]"])
-        .args(["-c:v", encoder])
-        .args(quality)
-        .args(["-c:a", "aac", "-b:a", "192k"])
-        .args(["-movflags", "+faststart", "-y"])
+        .args(out_args.iter())
+        .args(["-y"])
         .output(out.to_string_lossy())
         .spawn()?;
 

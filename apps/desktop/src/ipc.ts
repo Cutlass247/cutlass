@@ -354,18 +354,52 @@ export async function onPresence(cb: (p: Presence) => void): Promise<() => void>
 
 /// Render the V1 track to an MP4. Resolves to the encoder used, or null
 /// if the user cancelled the file picker.
-export async function exportProject(
-  width = 1920,
-  height = 1080
-): Promise<string | null> {
-  if (!inTauri) throw new Error("export requires the desktop app");
-  const { save } = await import("@tauri-apps/plugin-dialog");
-  const path = await save({
-    filters: [{ name: "MP4 video", extensions: ["mp4"] }],
-    defaultPath: "export.mp4",
-  });
-  if (!path) return null;
-  return invoke<string>("export_project", { path, width, height });
+export interface ExportOptions {
+  path: string;
+  width: number;
+  height: number;
+  fps: number;
+  format: string; // mp4_h264 | mp4_h265 | mov_prores | webm_vp9
+  quality: string; // low | medium | high
+}
+
+/// Render the timeline with the chosen settings. Returns the encoder used.
+export async function exportProject(opts: ExportOptions): Promise<string> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 700)); // simulate a render
+    return "mock (h264)";
+  }
+  const { path, width, height, fps, format, quality } = opts;
+  return invoke<string>("export_project", { path, width, height, fps, format, quality });
+}
+
+/// Pick a destination folder for the export (native directory dialog).
+export async function pickExportDir(): Promise<string | null> {
+  if (!inTauri) return "C:/Users/You/Videos";
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const dir = await open({ directory: true, multiple: false });
+  return typeof dir === "string" ? dir : null;
+}
+
+/// A sensible default export folder (Downloads, else home).
+export async function defaultExportDir(): Promise<string> {
+  if (!inTauri) return "C:/Users/You/Videos";
+  try {
+    const { downloadDir } = await import("@tauri-apps/api/path");
+    return await downloadDir();
+  } catch {
+    return "";
+  }
+}
+
+/// Reveal the exported file in the OS file browser.
+export async function revealFile(path: string): Promise<void> {
+  if (!inTauri) return;
+  try {
+    await invoke("reveal_file", { path });
+  } catch {
+    /* best-effort */
+  }
 }
 
 export async function onExportProgress(

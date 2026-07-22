@@ -307,6 +307,28 @@ fn get_project(state: State<AppState>) -> serde_json::Value {
     state.project.lock().unwrap().snapshot()
 }
 
+/// Reveal a file in the OS file browser (selects it in its folder).
+#[tauri::command]
+fn reveal_file(path: String) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(dir) = std::path::Path::new(&path).parent() {
+            let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+        }
+    }
+}
+
 #[tauri::command]
 fn move_clip(
     id: String,
@@ -847,6 +869,9 @@ async fn export_project(
     path: String,
     width: Option<u32>,
     height: Option<u32>,
+    fps: Option<u32>,
+    format: Option<String>,
+    quality: Option<String>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -953,7 +978,9 @@ async fn export_project(
     let settings = cutlass_core::export::ExportSettings {
         width: width.unwrap_or(1920),
         height: height.unwrap_or(1080),
-        fps: 30,
+        fps: fps.unwrap_or(30),
+        format: cutlass_core::export::ExportFormat::parse(format.as_deref().unwrap_or("mp4_h264")),
+        quality: cutlass_core::export::Quality::parse(quality.as_deref().unwrap_or("medium")),
     };
     // the render runs minutes — off the UI thread; progress still streams
     tauri::async_runtime::spawn_blocking(move || {
@@ -1111,6 +1138,7 @@ fn main() {
             import_media,
             add_clip_from_media,
             remove_track,
+            reveal_file,
             get_project,
             move_clip,
             trim_clip,
