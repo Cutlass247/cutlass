@@ -61,6 +61,12 @@ fn track_video_pri(t: &str) -> u8 {
         .parse::<u8>()
         .unwrap_or(0)
 }
+/// 1-based index in a track name ("V3" → 3, "A2" → 2), either kind.
+fn track_num(t: &str) -> u32 {
+    t.trim_start_matches(|c: char| c.is_alphabetic())
+        .parse::<u32>()
+        .unwrap_or(0)
+}
 
 enum SyncCmd {
     /// local doc changed — push sync messages
@@ -263,6 +269,37 @@ fn add_clip_from_media(
     };
     let snap = with_undo(&state, |project| project.add_clip(&clip).map_err(err_str))?;
     Ok(json!({ "project": snap, "clipId": id }))
+}
+
+/// Remove a track: delete its clips, then shift the higher same-kind
+/// tracks down one so numbering stays contiguous (V4→V3, …). Undoable.
+#[tauri::command]
+fn remove_track(track: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let audio = track_is_audio(&track);
+    let removed = track_num(&track);
+    let kind = if audio { "A" } else { "V" };
+    with_undo(&state, |p| {
+        for id in p
+            .clips_state()
+            .iter()
+            .filter(|c| c.track == track)
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>()
+        {
+            p.remove_clip(&id).map_err(err_str)?;
+        }
+        // renumber clips on higher tracks of the same kind down by one
+        let shifts: Vec<(String, String, f64)> = p
+            .clips_state()
+            .iter()
+            .filter(|c| track_is_audio(&c.track) == audio && track_num(&c.track) > removed)
+            .map(|c| (c.id.clone(), format!("{kind}{}", track_num(&c.track) - 1), c.start))
+            .collect();
+        for (id, new_track, start) in shifts {
+            p.move_clip(&id, &new_track, start).map_err(err_str)?;
+        }
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -1073,6 +1110,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             import_media,
             add_clip_from_media,
+            remove_track,
             get_project,
             move_clip,
             trim_clip,
