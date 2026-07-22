@@ -10,6 +10,7 @@ export const RESOLUTIONS: Resolution[] = [
 
 export function Monitor(p: {
   layers: { key: string; src: string; style?: React.CSSProperties }[];
+  vignette?: number;
   titleOverlay?: ReactNode;
   caption: string | null;
   playhead: number;
@@ -36,6 +37,9 @@ export function Monitor(p: {
         ) : (
           <div className="monitor-empty">No clip under the playhead</div>
         )}
+        {p.vignette && p.vignette > 0.01 ? (
+          <div className="vignette-overlay" style={{ opacity: Math.min(1, p.vignette) }} />
+        ) : null}
         {safe && (
           <>
             <div className="safe action" />

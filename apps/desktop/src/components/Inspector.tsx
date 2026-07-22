@@ -32,6 +32,16 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
     ],
   },
   {
+    title: "Stylize",
+    params: [
+      { key: "hue", label: "Hue", min: -180, max: 180, step: 1, fmt: (v) => `${Math.round(v)}°` },
+      { key: "blur", label: "Blur", min: 0, max: 20, step: 0.5 },
+      { key: "vignette", label: "Vignette", min: 0, max: 1, step: 0.05 },
+      { key: "flip_h", label: "Mirror H", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
+      { key: "flip_v", label: "Flip V", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
+    ],
+  },
+  {
     title: "Fade & audio",
     params: [
       { key: "fade_in", label: "Fade in", min: 0, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}s` },

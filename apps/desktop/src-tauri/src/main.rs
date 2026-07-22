@@ -431,6 +431,22 @@ fn set_effect(
     with_undo(&state, |p| p.set_effect(&id, &key, value).map_err(err_str))
 }
 
+/// Apply several fx params at once (one undo step) — used by the Effects
+/// tab to drop a whole "Look" or effect preset onto a clip.
+#[tauri::command]
+fn set_effects(
+    id: String,
+    params: std::collections::HashMap<String, f64>,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| {
+        for (key, value) in &params {
+            p.set_effect(&id, key, *value).map_err(err_str)?;
+        }
+        Ok(())
+    })
+}
+
 /// Create a title (text) clip on V2 at `start`, default lower-third style.
 #[tauri::command]
 fn add_title(start: f64, state: State<AppState>) -> Result<serde_json::Value, String> {
@@ -1156,6 +1172,7 @@ fn main() {
             remove_track,
             reveal_file,
             cancel_export,
+            set_effects,
             get_project,
             move_clip,
             trim_clip,

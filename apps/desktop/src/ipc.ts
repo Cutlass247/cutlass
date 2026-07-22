@@ -69,6 +69,11 @@ export const FX_DEFAULTS: Record<string, number> = {
   brightness: 0,
   contrast: 1,
   saturation: 1,
+  hue: 0,
+  blur: 0,
+  vignette: 0,
+  flip_h: 0,
+  flip_v: 0,
   scale: 1,
   rot: 0,
   pos_x: 0,
@@ -245,6 +250,20 @@ export async function setEffect(
     return structuredClone(mockState.project);
   }
   return invoke<ProjectSnapshot>("set_effect", { id, key, value });
+}
+
+/// Apply several fx params in one undoable step (Effects-tab Look/effect).
+export async function setEffects(
+  id: string,
+  params: Record<string, number>
+): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip) clip.fx = { ...(clip.fx ?? {}), ...params };
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("set_effects", { id, params });
 }
 
 /// Add/update a keyframe for a param at clip-relative time (undoable).

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { MediaItem } from "../ipc";
+import { EFFECTS, LOOKS } from "../effects";
 import { mediaHue, Segmented } from "./ui";
 
 type Tab = "media" | "effects";
@@ -11,6 +12,8 @@ export function MediaPanel(p: {
   onImport: () => void;
   onTranscribe: (id: string) => void;
   onMediaPointerDown: (mediaId: string, e: React.PointerEvent) => void;
+  hasSelection: boolean;
+  onApplyEffect: (params: Record<string, number>) => void;
   busy: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("media");
@@ -30,8 +33,40 @@ export function MediaPanel(p: {
         onChange={setTab}
       />
       {tab === "effects" ? (
-        <div className="empty-state">
-          Effects, transitions and titles land after alpha.
+        <div className="fx-library">
+          <div className="fx-lib-hint">
+            {p.hasSelection
+              ? "Click a Look or effect to apply it to the selected clip — tune it in the Inspector."
+              : "Select a clip on the timeline, then apply a Look or effect."}
+          </div>
+          <div className="fx-lib-title">Looks</div>
+          <div className="look-grid">
+            {LOOKS.map((l) => (
+              <button
+                key={l.name}
+                className="look-chip"
+                title={l.desc}
+                disabled={!p.hasSelection}
+                onClick={() => p.onApplyEffect(l.params)}
+              >
+                {l.name}
+              </button>
+            ))}
+          </div>
+          <div className="fx-lib-title">Effects</div>
+          <div className="effect-list">
+            {EFFECTS.map((e) => (
+              <button
+                key={e.name}
+                className="effect-row"
+                disabled={!p.hasSelection}
+                onClick={() => p.onApplyEffect(e.params)}
+              >
+                <span className="effect-name">{e.name}</span>
+                <span className="effect-desc">{e.desc}</span>
+              </button>
+            ))}
+          </div>
         </div>
       ) : (
         <>
