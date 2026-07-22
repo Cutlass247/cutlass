@@ -11,7 +11,9 @@ import {
   clearKeyframes,
   currentRoom,
   cutRanges,
+  defaultExportDir,
   exactFrame,
+  ExportOptions,
   exportProject,
   getProject,
   hydrateMedia,
@@ -31,6 +33,7 @@ import {
   redoEdit,
   removeClip,
   removeTrack,
+  revealFile,
   saveProject,
   splitClip,
   sendPresence,
@@ -48,6 +51,7 @@ import { Mode, TopBar } from "./components/TopBar";
 import { MediaPanel } from "./components/MediaPanel";
 import { Monitor, RESOLUTIONS, Resolution } from "./components/Monitor";
 import { Inspector } from "./components/Inspector";
+import { ExportDialog } from "./components/ExportDialog";
 import { PPS_MAX, PPS_MIN, TRACK_H, Timeline, TrackCtl } from "./components/Timeline";
 import { fxStyle, Resizer } from "./components/ui";
 
@@ -94,7 +98,15 @@ export default function App() {
   const [transcribing, setTranscribing] = useState<string | null>(null);
   const [wordSel, setWordSel] = useState<{ media: string; a: number; b: number } | null>(null);
   const [room, setRoom] = useState<string | null>(null);
-  const [exporting, setExporting] = useState<number | null>(null);
+  // export flow: settings dialog → progress modal (running → done | error)
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportDir, setExportDir] = useState("");
+  const [exportModal, setExportModal] = useState<
+    | { phase: "running"; progress: number; name: string }
+    | { phase: "done"; path: string; encoder: string }
+    | { phase: "error"; message: string }
+    | null
+  >(null);
   const [peers, setPeers] = useState<Record<string, Presence & { ts: number }>>({});
 
   // ── shell state ─────────────────────────────────────────────────────
@@ -181,8 +193,11 @@ export default function App() {
   useEffect(() => {
     getProject().then(setProject).catch((e) => setError(String(e)));
     currentRoom().then((r) => r && setRoom(r));
+    defaultExportDir().then((d) => d && setExportDir(d));
     const un = onProjectChanged((snap) => setProject(snap));
-    const unExport = onExportProgress((p) => setExporting(p));
+    const unExport = onExportProgress((p) =>
+      setExportModal((m) => (m && m.phase === "running" ? { ...m, progress: p } : m))
+    );
     const unFrame = onPlaybackFrame((_t, src) => setPlayFrame(src));
     const unPresence = onPresence((p) =>
       setPeers((prev) => ({ ...prev, [p.id]: { ...p, ts: Date.now() } }))
@@ -670,21 +685,24 @@ export default function App() {
     }
   }, []);
 
-  const doExport = useCallback(async () => {
+  // Export button / File menu → open the settings dialog
+  const doExport = useCallback(() => {
     setError(null);
-    setExporting(0);
+    setExportOpen(true);
+  }, []);
+
+  // dialog confirmed → run the render, driving the progress modal
+  const runExport = useCallback(async (opts: ExportOptions) => {
+    setExportOpen(false);
+    const name = opts.path.split(/[\\/]/).pop() ?? "export";
+    setExportModal({ phase: "running", progress: 0, name });
     try {
-      const encoder = await exportProject(resolution.w, resolution.h);
-      setExporting(null);
-      if (encoder) {
-        setBusy(`Exported ✓ ${resolution.label} (${encoder})`);
-        setTimeout(() => setBusy(null), 4000);
-      }
+      const encoder = await exportProject(opts);
+      setExportModal({ phase: "done", path: opts.path, encoder });
     } catch (e) {
-      setExporting(null);
-      setError(String(e));
+      setExportModal({ phase: "error", message: String(e) });
     }
-  }, [resolution]);
+  }, []);
 
   const doCollab = useCallback(async () => {
     const name = window.prompt("Room name (share it with your collaborator):", "cutlass-demo");
@@ -1045,7 +1063,7 @@ export default function App() {
         dirty={dirty}
         mode={mode}
         room={room}
-        exporting={exporting}
+        exporting={exportModal?.phase === "running" ? exportModal.progress : null}
         canEdit={clips.length > 0}
         inTauri={inTauri}
         onMode={switchMode}
@@ -1180,6 +1198,61 @@ export default function App() {
       {mediaGhost && (
         <div className="media-ghost" style={{ left: mediaGhost.x + 12, top: mediaGhost.y + 12 }}>
           {mediaGhost.name}
+        </div>
+      )}
+
+      {exportOpen && (
+        <ExportDialog
+          initialDir={exportDir}
+          onCancel={() => setExportOpen(false)}
+          onExport={runExport}
+        />
+      )}
+
+      {exportModal && (
+        <div className="modal-overlay">
+          <div className="modal export-progress" onPointerDown={(e) => e.stopPropagation()}>
+            {exportModal.phase === "running" && (
+              <>
+                <div className="modal-title">Exporting {exportModal.name}</div>
+                <div className="progress-track">
+                  <div
+                    className="progress-fill"
+                    style={{ width: `${Math.round(exportModal.progress * 100)}%` }}
+                  />
+                </div>
+                <div className="progress-pct">{Math.round(exportModal.progress * 100)}%</div>
+              </>
+            )}
+            {exportModal.phase === "done" && (
+              <>
+                <div className="modal-title">Export complete ✓</div>
+                <div className="export-path" title={exportModal.path}>
+                  {exportModal.path}
+                </div>
+                <div className="modal-sub">Encoded with {exportModal.encoder}</div>
+                <div className="modal-actions">
+                  <button className="ghost-btn" onClick={() => setExportModal(null)}>
+                    Close
+                  </button>
+                  <button className="primary-action" onClick={() => revealFile(exportModal.path)}>
+                    Open folder
+                  </button>
+                </div>
+              </>
+            )}
+            {exportModal.phase === "error" && (
+              <>
+                <div className="modal-title">Export failed</div>
+                <div className="modal-sub error">{exportModal.message}</div>
+                <div className="modal-actions">
+                  <button className="primary-action" onClick={() => setExportModal(null)}>
+                    Close
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

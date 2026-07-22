@@ -1372,3 +1372,163 @@ button {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ── modals: export settings + progress ─────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+}
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  padding: 20px;
+  width: 460px;
+  max-width: 92vw;
+}
+
+.export-progress {
+  width: 400px;
+}
+
+.modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+
+.modal-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+.modal-sub.error {
+  color: var(--danger);
+  word-break: break-word;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.ghost-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 8px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ghost-btn:hover {
+  border-color: var(--muted);
+}
+.ghost-btn.small {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.primary-action {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #fff;
+  border-radius: 7px;
+  padding: 8px 18px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.primary-action:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.primary-action:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* export-dialog fields */
+.ex-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.ex-field > span {
+  color: var(--muted);
+  font-weight: 600;
+}
+.ex-field select,
+.ex-field input {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 13px;
+  width: 100%;
+}
+.ex-name {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.ex-name input {
+  flex: 1;
+  min-width: 0;
+}
+.ex-ext {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.ex-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 14px;
+}
+
+.export-path {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* progress bar */
+.progress-track {
+  height: 10px;
+  background: var(--panel-3);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 6px;
+  transition: width 0.2s ease;
+}
+.progress-pct {
+  margin-top: 8px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}

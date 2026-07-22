@@ -38,7 +38,7 @@ export function TopBar(p: {
             { label: "Open project…", hint: "Ctrl+O", onSelect: p.onOpen },
             { label: "Save project", hint: "Ctrl+S", onSelect: p.onSave },
             { separator: true, label: "" },
-            { label: "Export MP4…", onSelect: p.onExport, disabled: !p.inTauri },
+            { label: "Export…", onSelect: p.onExport },
           ]}
         />
         <MenuBarMenu
@@ -116,8 +116,8 @@ export function TopBar(p: {
       <button
         className="export-btn"
         onClick={p.onExport}
-        disabled={!p.inTauri || p.exporting !== null || !p.canEdit}
-        title="Render the timeline to MP4"
+        disabled={p.exporting !== null || !p.canEdit}
+        title="Export the timeline…"
       >
         {p.exporting !== null ? `Exporting ${Math.round(p.exporting * 100)}%` : "Export"}
         {p.exporting === null && <Kbd>MP4</Kbd>}
