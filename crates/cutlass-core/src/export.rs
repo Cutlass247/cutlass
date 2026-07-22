@@ -18,6 +18,11 @@ pub struct ClipFx {
     pub brightness: f64, // 0, range -1..1
     pub contrast: f64,   // 1
     pub saturation: f64, // 1
+    pub hue: f64,        // 0, degrees -180..180
+    pub blur: f64,       // 0, gaussian sigma
+    pub vignette: f64,   // 0, 0..1 strength
+    pub flip_h: f64,     // 0 or 1
+    pub flip_v: f64,     // 0 or 1
     pub scale: f64,      // 1
     pub rot: f64,        // degrees
     pub pos_x: f64,      // fraction of width
@@ -34,6 +39,11 @@ impl Default for ClipFx {
             brightness: 0.0,
             contrast: 1.0,
             saturation: 1.0,
+            hue: 0.0,
+            blur: 0.0,
+            vignette: 0.0,
+            flip_h: 0.0,
+            flip_v: 0.0,
             scale: 1.0,
             rot: 0.0,
             pos_x: 0.0,
@@ -68,6 +78,11 @@ impl ClipFx {
             "brightness" => self.brightness = v,
             "contrast" => self.contrast = v,
             "saturation" => self.saturation = v,
+            "hue" => self.hue = v,
+            "blur" => self.blur = v,
+            "vignette" => self.vignette = v,
+            "flip_h" => self.flip_h = v,
+            "flip_v" => self.flip_v = v,
             "scale" => self.scale = v,
             "rot" => self.rot = v,
             "pos_x" => self.pos_x = v,
@@ -99,6 +114,11 @@ impl ClipFx {
             brightness: g("brightness", d.brightness),
             contrast: g("contrast", d.contrast),
             saturation: g("saturation", d.saturation),
+            hue: g("hue", d.hue),
+            blur: g("blur", d.blur),
+            vignette: g("vignette", d.vignette),
+            flip_h: g("flip_h", d.flip_h),
+            flip_v: g("flip_v", d.flip_v),
             scale: g("scale", d.scale),
             rot: g("rot", d.rot),
             pos_x: g("pos_x", d.pos_x),
@@ -235,6 +255,25 @@ fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &
         sat = fx.saturation
     );
     let mut cur = format!("cf{k}");
+    // stylize: hue rotate, gaussian blur, mirror flips
+    let mut stylize = String::new();
+    if fx.hue != 0.0 {
+        stylize.push_str(&format!("hue=h={:.2},", fx.hue));
+    }
+    if fx.blur > 0.01 {
+        stylize.push_str(&format!("gblur=sigma={:.2},", fx.blur));
+    }
+    if fx.flip_h > 0.5 {
+        stylize.push_str("hflip,");
+    }
+    if fx.flip_v > 0.5 {
+        stylize.push_str("vflip,");
+    }
+    if !stylize.is_empty() {
+        let f = stylize.trim_end_matches(',');
+        s.push_str(&format!("[{cur}]{f}[st{k}];"));
+        cur = format!("st{k}");
+    }
     if fx.has_transform() {
         let (px, py) = (fx.pos_x * w as f64, fx.pos_y * h as f64);
         s.push_str(&format!("[{cur}]scale=iw*{sc}:ih*{sc}[sc{k}];", sc = fx.scale));
@@ -250,6 +289,12 @@ fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &
             s.push_str(&format!("[{cur}]rotate={rad:.5}:fillcolor=black[rt{k}];"));
             cur = format!("rt{k}");
         }
+    }
+    if fx.vignette > 0.01 {
+        // smaller aperture angle = darker, tighter corners
+        let ang = (0.9 - fx.vignette.clamp(0.0, 1.0) * 0.6).max(0.15);
+        s.push_str(&format!("[{cur}]vignette=angle={ang:.3}[vg{k}];"));
+        cur = format!("vg{k}");
     }
     if fx.fade_in > 0.0 || fx.fade_out > 0.0 {
         s.push_str(&format!("[{cur}]"));

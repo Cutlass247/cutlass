@@ -39,6 +39,7 @@ import {
   splitClip,
   sendPresence,
   setEffect,
+  setEffects,
   setKeyframe,
   setTitleText,
   setTransition,
@@ -434,6 +435,15 @@ export default function App() {
     });
   }, [videoLayers, playing, playFrame, hq, hqKey, layerStyle]);
 
+  // vignette is a monitor overlay (not a CSS filter) — driven by the
+  // topmost clip, honouring the selected clip's live drag draft
+  const monitorVignette = useMemo(() => {
+    const clip = underPlayhead?.clip;
+    if (!clip) return 0;
+    if (clip.id === selected && fxDraft.vignette !== undefined) return fxDraft.vignette;
+    return clip.fx?.vignette ?? 0;
+  }, [underPlayhead, selected, fxDraft]);
+
   const onFxPreview = useCallback(
     (key: string, v: number) => setFxDraft((d) => ({ ...d, [key]: v })),
     []
@@ -445,6 +455,20 @@ export default function App() {
         .then((snap) => {
           applyEdit(snap);
           setFxDraft({}); // drop the drag draft so real/keyframed values show
+        })
+        .catch((e) => setError(String(e)));
+    },
+    [selected, applyEdit]
+  );
+
+  // Effects tab: drop a Look / effect preset (a bundle of fx) on the clip
+  const onApplyEffect = useCallback(
+    (params: Record<string, number>) => {
+      if (!selected) return;
+      setEffects(selected, params)
+        .then((snap) => {
+          applyEdit(snap);
+          setFxDraft({});
         })
         .catch((e) => setError(String(e)));
     },
@@ -1113,6 +1137,8 @@ export default function App() {
             onImport={doImport}
             onTranscribe={doTranscribe}
             onMediaPointerDown={onMediaPointerDown}
+            hasSelection={selected !== null}
+            onApplyEffect={onApplyEffect}
             busy={busy !== null}
           />
         </div>
@@ -1120,6 +1146,7 @@ export default function App() {
 
         <Monitor
           layers={monitorLayers}
+          vignette={monitorVignette}
           titleOverlay={titleOverlay}
           caption={caption}
           playhead={playhead}

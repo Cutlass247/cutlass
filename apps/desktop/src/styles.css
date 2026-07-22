@@ -1532,3 +1532,91 @@ button {
   font-weight: 600;
   color: var(--muted);
 }
+
+/* ── monitor vignette overlay ───────────────────────────────────────── */
+.vignette-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 4px;
+  background: radial-gradient(ellipse at center, transparent 42%, rgba(0, 0, 0, 0.9) 100%);
+}
+
+/* ── effects tab library ────────────────────────────────────────────── */
+.fx-library {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+.fx-lib-hint {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.fx-lib-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.look-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.look-chip {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 9px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--speed), background var(--speed);
+}
+.look-chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--panel-3);
+}
+.look-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.effect-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.effect-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--speed);
+}
+.effect-row:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.effect-row:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.effect-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.effect-desc {
+  font-size: 11px;
+  color: var(--muted);
+}

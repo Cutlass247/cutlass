@@ -231,6 +231,10 @@ export function fxStyle(clip: Clip | null, playhead: number): React.CSSPropertie
   const brightness = 1 + v("brightness"); // additive → multiplicative approx
   const contrast = v("contrast");
   const saturation = v("saturation");
+  const hue = v("hue");
+  const blur = v("blur");
+  const flipX = v("flip_h") > 0.5 ? -1 : 1;
+  const flipY = v("flip_v") > 0.5 ? -1 : 1;
 
   const fi = fxValue(clip, "fade_in");
   const fo = fxValue(clip, "fade_out");
@@ -242,8 +246,8 @@ export function fxStyle(clip: Clip | null, playhead: number): React.CSSPropertie
     opacity = Math.min(opacity, Math.max(0, (clip.len - inClip) / fo));
 
   return {
-    transform: `translate(${px}%, ${py}%) scale(${scale}) rotate(${rot}deg)`,
-    filter: `brightness(${brightness}) contrast(${contrast}) saturate(${saturation})`,
+    transform: `translate(${px}%, ${py}%) scale(${scale}) scaleX(${flipX}) scaleY(${flipY}) rotate(${rot}deg)`,
+    filter: `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) hue-rotate(${hue}deg) blur(${blur}px)`,
     opacity,
   };
 }
