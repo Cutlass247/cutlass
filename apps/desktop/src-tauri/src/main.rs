@@ -36,6 +36,17 @@ struct AppState {
     /// pings the collab task after a local edit, when a session is live
     sync_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<SyncCmd>>>,
     room: Mutex<Option<String>>,
+    /// a .cutlass path the app was launched with (double-clicked file),
+    /// consumed once by the frontend on mount via `take_startup_file`
+    startup_file: Mutex<Option<String>>,
+}
+
+/// Pull the first `.cutlass` path out of a launch argv (skips the exe).
+fn cutlass_arg(argv: &[String]) -> Option<String> {
+    argv.iter()
+        .skip(1)
+        .find(|a| a.to_lowercase().ends_with(".cutlass"))
+        .cloned()
 }
 
 /// A video clip as the playback thread sees it (visible tracks only).
@@ -597,6 +608,13 @@ fn set_transition(
 fn save_project(path: String, state: State<AppState>) -> Result<(), String> {
     let bytes = state.project.lock().unwrap().save();
     std::fs::write(&path, bytes).map_err(err_str)
+}
+
+/// The .cutlass path the app was launched with (double-clicked file), if
+/// any. Returns it once then clears it — the frontend loads it on mount.
+#[tauri::command]
+fn take_startup_file(state: State<AppState>) -> Option<String> {
+    state.startup_file.lock().unwrap().take()
 }
 
 /// Load a .cutlass file and rebuild the media pool from the paths stored
@@ -1237,9 +1255,29 @@ async fn sync_task(
 }
 
 fn main() {
+    // A double-clicked .cutlass file arrives as a launch argument; stash it
+    // so the frontend can load it once the window is up.
+    let state = AppState::default();
+    if let Some(f) = cutlass_arg(&std::env::args().collect::<Vec<_>>()) {
+        *state.startup_file.lock().unwrap() = Some(f);
+    }
+
     tauri::Builder::default()
+        // single-instance MUST be the first plugin: a second launch (e.g.
+        // double-clicking another .cutlass) focuses this window and hands
+        // it the file instead of opening a whole new Cutlass.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            use tauri::{Emitter, Manager};
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_focus();
+                let _ = w.unminimize();
+            }
+            if let Some(f) = cutlass_arg(&argv) {
+                let _ = app.emit("open-file", f);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::default())
+        .manage(state)
         .setup(|app| {
             // CUTLASS_ROOM=<name> auto-joins a collab room at startup
             if let Ok(room) = std::env::var("CUTLASS_ROOM") {
@@ -1277,6 +1315,7 @@ fn main() {
             transcribe_media,
             razor_out,
             save_project,
+            take_startup_file,
             open_project,
             hydrate_media,
             join_session,
