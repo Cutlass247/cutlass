@@ -751,6 +751,21 @@ button {
   gap: 6px;
 }
 
+/* on/off param: a full-width switch row instead of the slider grid */
+.fx-row-toggle {
+  display: block;
+  padding: 1px 0;
+}
+.fx-row-toggle .switch {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+}
+.fx-row-toggle.active .switch-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .fx-kf-hint {
   float: right;
   font-size: 10px;
@@ -1781,6 +1796,17 @@ button {
 .effect-chip:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+.effect-chip.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel-2));
+}
+.effect-chip.on .effect-chip-name {
+  color: var(--accent);
+}
+.effect-chip.on .effect-chip-name::after {
+  content: " ✓";
+  font-weight: 700;
 }
 .effect-chip-name {
   font-size: 12px;

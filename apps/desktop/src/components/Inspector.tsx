@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Clip, FX_DEFAULTS, fxValue, fxValueAt, kfPoints, MediaItem, Word } from "../ipc";
-import { formatTC, mediaHue, Segmented } from "./ui";
+import { formatTC, mediaHue, Segmented, Switch } from "./ui";
 
 type Tab = "inspector" | "transcript";
 
@@ -11,6 +11,7 @@ interface FxParam {
   max: number;
   step: number;
   fmt?: (v: number) => string;
+  toggle?: boolean; // on/off param — render a switch, not a slider
 }
 
 const FX_GROUPS: { title: string; params: FxParam[] }[] = [
@@ -41,14 +42,14 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
       { key: "sharpen", label: "Sharpen", min: 0, max: 1, step: 0.05 },
       { key: "grain", label: "Film grain", min: 0, max: 1, step: 0.05 },
       { key: "vignette", label: "Vignette", min: 0, max: 1, step: 0.05 },
-      { key: "flip_h", label: "Mirror H", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
-      { key: "flip_v", label: "Flip V", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
+      { key: "flip_h", label: "Mirror H", min: 0, max: 1, step: 1, toggle: true },
+      { key: "flip_v", label: "Flip V", min: 0, max: 1, step: 1, toggle: true },
     ],
   },
   {
     title: "Green screen",
     params: [
-      { key: "chroma", label: "Key", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
+      { key: "chroma", label: "Key", min: 0, max: 1, step: 1, toggle: true },
       { key: "chroma_sim", label: "Similarity", min: 0.05, max: 0.8, step: 0.01 },
     ],
   },
@@ -58,7 +59,7 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
       { key: "fade_in", label: "Fade in", min: 0, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}s` },
       { key: "fade_out", label: "Fade out", min: 0, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}s` },
       { key: "volume", label: "Volume", min: 0, max: 2, step: 0.02 },
-      { key: "denoise", label: "Voice cleanup", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
+      { key: "denoise", label: "Voice cleanup", min: 0, max: 1, step: 1, toggle: true },
     ],
   },
 ];
@@ -199,6 +200,25 @@ function FxSlider({
           ✕
         </button>
       )}
+    </div>
+  );
+}
+
+/// On/off parameter row — a switch instead of a slider (Mirror, Flip,
+/// green-screen Key, Voice cleanup). Commits 0/1 immediately.
+function FxToggle({
+  param,
+  clip,
+  onCommit,
+}: {
+  param: FxParam;
+  clip: Clip;
+  onCommit: (key: string, v: number) => void;
+}) {
+  const on = fxValue(clip, param.key) > 0.5;
+  return (
+    <div className={`fx-row fx-row-toggle${on ? " active" : ""}`}>
+      <Switch label={param.label} checked={on} onChange={(v) => onCommit(param.key, v ? 1 : 0)} />
     </div>
   );
 }
@@ -414,18 +434,22 @@ function EffectControls(p: {
       {FX_GROUPS.map((g) => (
         <div className="fx-group" key={g.title}>
           <div className="fx-group-title">{g.title}</div>
-          {g.params.map((param) => (
-            <FxSlider
-              key={param.key}
-              param={param}
-              clip={p.clip}
-              clipTime={p.clipTime}
-              onPreview={p.onPreview}
-              onCommit={p.onCommit}
-              onSetKeyframe={p.onSetKeyframe}
-              onClearKeyframes={p.onClearKeyframes}
-            />
-          ))}
+          {g.params.map((param) =>
+            param.toggle ? (
+              <FxToggle key={param.key} param={param} clip={p.clip} onCommit={p.onCommit} />
+            ) : (
+              <FxSlider
+                key={param.key}
+                param={param}
+                clip={p.clip}
+                clipTime={p.clipTime}
+                onPreview={p.onPreview}
+                onCommit={p.onCommit}
+                onSetKeyframe={p.onSetKeyframe}
+                onClearKeyframes={p.onClearKeyframes}
+              />
+            )
+          )}
         </div>
       ))}
     </div>
