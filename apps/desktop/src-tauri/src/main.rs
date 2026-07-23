@@ -626,6 +626,40 @@ fn take_startup_file(state: State<AppState>) -> Option<String> {
     state.startup_file.lock().unwrap().take()
 }
 
+/// App preferences (e.g. auto-save) live in a small JSON file on disk so
+/// they survive restarts — WebView localStorage does not reliably persist.
+fn settings_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let dir = app.path().app_config_dir().map_err(err_str)?;
+    Ok(dir.join("settings.json"))
+}
+
+#[tauri::command]
+fn load_prefs(app: tauri::AppHandle) -> serde_json::Value {
+    settings_file(&app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+#[tauri::command]
+fn save_pref(app: tauri::AppHandle, key: String, value: serde_json::Value) -> Result<(), String> {
+    let path = settings_file(&app)?;
+    let mut obj = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or_else(|| json!({}));
+    if let Some(map) = obj.as_object_mut() {
+        map.insert(key, value);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(err_str)?;
+    }
+    let text = serde_json::to_string_pretty(&obj).map_err(err_str)?;
+    std::fs::write(&path, text).map_err(err_str)
+}
+
 /// Load a .cutlass file and rebuild the media pool from the paths stored
 /// in the document (scrub proxies come from cache when available).
 #[tauri::command]
@@ -1339,6 +1373,8 @@ fn main() {
             razor_out,
             save_project,
             take_startup_file,
+            load_prefs,
+            save_pref,
             open_project,
             hydrate_media,
             join_session,

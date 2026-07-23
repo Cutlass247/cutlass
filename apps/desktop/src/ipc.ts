@@ -683,6 +683,34 @@ export async function takeStartupFile(): Promise<string | null> {
   return invoke("take_startup_file");
 }
 
+// App preferences persist to a disk settings file (WebView localStorage is
+// not reliable across restarts); the browser mock falls back to localStorage.
+export async function loadPrefs(): Promise<Record<string, unknown>> {
+  if (!inTauri) {
+    try {
+      return JSON.parse(localStorage.getItem("cutlass-prefs") || "{}");
+    } catch {
+      return {};
+    }
+  }
+  return invoke("load_prefs");
+}
+
+export async function savePref(key: string, value: unknown): Promise<void> {
+  if (!inTauri) {
+    let obj: Record<string, unknown> = {};
+    try {
+      obj = JSON.parse(localStorage.getItem("cutlass-prefs") || "{}");
+    } catch {
+      obj = {};
+    }
+    obj[key] = value;
+    localStorage.setItem("cutlass-prefs", JSON.stringify(obj));
+    return;
+  }
+  await invoke("save_pref", { key, value });
+}
+
 /// Fires when the running app is asked to open a .cutlass file (a second
 /// double-click, routed here by single-instance). Payload is the path.
 export async function onOpenFile(cb: (path: string) => void): Promise<() => void> {
