@@ -97,6 +97,11 @@ export default function App() {
   const [project, setProject] = useState<ProjectSnapshot>({ name: "Untitled", clips: [] });
   const [media, setMedia] = useState<Record<string, MediaItem>>({});
   const [dirty, setDirty] = useState(false);
+  // the file this project is saved to (Save overwrites it; null → Save As)
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [autoSave, setAutoSave] = useState(
+    () => localStorage.getItem("cutlass-autosave") === "1"
+  );
   const [playhead, setPlayhead] = useState(0);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -725,6 +730,8 @@ export default function App() {
     try {
       const words = await transcribeMedia(mediaId);
       setTranscripts((t) => ({ ...t, [mediaId]: words }));
+      setDirty(true); // transcript is now stored in the doc → savable
+
     } catch (e) {
       setError(String(e));
     } finally {
@@ -822,30 +829,57 @@ export default function App() {
   }, [project, media]);
 
   // ── save / open / export / collab ───────────────────────────────────
-  const doSave = useCallback(async () => {
-    try {
-      const snap = await saveProject();
-      if (snap) {
-        setProject(snap); // picks up the new name → title stops saying Untitled
+  // Save to the current file when we have one; only prompt (Save As) for a
+  // never-saved project or an explicit Save As. `forcePrompt` forces the
+  // dialog even when a path exists.
+  const saveTo = useCallback(
+    async (forcePrompt: boolean) => {
+      const res = await saveProject(forcePrompt ? undefined : projectPath ?? undefined);
+      if (res) {
+        setProject(res.project); // picks up the new name → title stops saying Untitled
+        setProjectPath(res.path);
         setDirty(false);
       }
+      return !!res;
+    },
+    [projectPath]
+  );
+  const doSave = useCallback(async () => {
+    try {
+      await saveTo(false);
     } catch (e) {
       setError(String(e));
     }
-  }, []);
+  }, [saveTo]);
+  const doSaveAs = useCallback(async () => {
+    try {
+      await saveTo(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [saveTo]);
 
-  const applyOpened = useCallback((res: { project: ProjectSnapshot; media: MediaItem[] }) => {
-    setProject(res.project);
-    const map: Record<string, MediaItem> = {};
-    for (const m of res.media) map[m.id] = m;
-    setMedia(map);
-    setSelected(null);
-    setWordSel(null);
-    setTranscripts({});
-    setPlayhead(0);
-    setDirty(false);
-    setMarkers([]);
-  }, []);
+  const applyOpened = useCallback(
+    (res: {
+      project: ProjectSnapshot;
+      media: MediaItem[];
+      transcripts?: Record<string, Word[]>;
+      path: string;
+    }) => {
+      setProject(res.project);
+      const map: Record<string, MediaItem> = {};
+      for (const m of res.media) map[m.id] = m;
+      setMedia(map);
+      setSelected(null);
+      setWordSel(null);
+      setTranscripts(res.transcripts ?? {});
+      setPlayhead(0);
+      setDirty(false);
+      setMarkers([]);
+      setProjectPath(res.path);
+    },
+    []
+  );
 
   const doOpen = useCallback(
     async (knownPath?: string) => {
@@ -858,6 +892,19 @@ export default function App() {
     },
     [applyOpened]
   );
+
+  // Auto-save: when enabled and the project has a file + unsaved changes,
+  // write it back after a short idle (debounced so we don't save mid-edit).
+  useEffect(() => {
+    localStorage.setItem("cutlass-autosave", autoSave ? "1" : "0");
+  }, [autoSave]);
+  useEffect(() => {
+    if (!autoSave || !dirty || !projectPath) return;
+    const t = setTimeout(() => {
+      saveTo(false).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [autoSave, dirty, projectPath, project, saveTo]);
 
   // Load a project the app was launched with (double-clicked .cutlass), and
   // handle a second double-click routed here by single-instance.
@@ -972,7 +1019,7 @@ export default function App() {
         doRedo();
       } else if (e.ctrlKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        doSave();
+        e.shiftKey ? doSaveAs() : doSave();
       } else if (e.ctrlKey && e.key.toLowerCase() === "o") {
         e.preventDefault();
         doOpen();
@@ -1002,7 +1049,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected, doSave, doOpen, doUndo, doRedo, doDeleteSel, doSplit]);
+  }, [selected, doSave, doSaveAs, doOpen, doUndo, doRedo, doDeleteSel, doSplit]);
 
   // ── scrubbing + clip dragging (with snapping) ───────────────────────
   const capture = (e: React.PointerEvent) => {
@@ -1318,6 +1365,9 @@ export default function App() {
         onImport={doImport}
         onOpen={doOpen}
         onSave={doSave}
+        onSaveAs={doSaveAs}
+        autoSave={autoSave}
+        onToggleAutoSave={() => setAutoSave((v) => !v)}
         onExport={doExport}
         onUndo={doUndo}
         onRedo={doRedo}

@@ -14,6 +14,9 @@ export function TopBar(p: {
   onImport: () => void;
   onOpen: () => void;
   onSave: () => void;
+  onSaveAs: () => void;
+  autoSave: boolean;
+  onToggleAutoSave: () => void;
   onExport: () => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -38,6 +41,8 @@ export function TopBar(p: {
             { separator: true, label: "" },
             { label: "Open project…", hint: "Ctrl+O", onSelect: p.onOpen },
             { label: "Save project", hint: "Ctrl+S", onSelect: p.onSave },
+            { label: "Save project as…", hint: "Ctrl+Shift+S", onSelect: p.onSaveAs },
+            { label: "Auto-save", checked: p.autoSave, onSelect: p.onToggleAutoSave },
             { separator: true, label: "" },
             { label: "Export…", onSelect: p.onExport },
           ]}

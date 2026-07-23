@@ -668,11 +668,19 @@ async fn open_project(
     }
     drop(media_map);
 
+    // stored transcripts (media_id → [{text,start,end}]) so the words come
+    // back on reopen instead of forcing a re-transcribe
+    let transcripts: serde_json::Map<String, serde_json::Value> = project
+        .transcripts()
+        .into_iter()
+        .filter_map(|(id, j)| serde_json::from_str::<serde_json::Value>(&j).ok().map(|v| (id, v)))
+        .collect();
+
     let snap = project.snapshot();
     *state.project.lock().unwrap() = project;
     *state.history.lock().unwrap() = History::default(); // fresh doc, fresh history
     notify_sync(&state);
-    Ok(json!({ "project": snap, "media": media_out }))
+    Ok(json!({ "project": snap, "media": media_out, "transcripts": transcripts }))
 }
 
 /// Build thumbs/proxy for a media id that exists in the doc but not in
@@ -755,11 +763,17 @@ async fn transcribe_media(
         .ok_or_else(|| format!("unknown media {media_id}"))?;
     let model = whisper_model_path()?;
     // whisper runs seconds+ on CPU — off the UI thread
-    tauri::async_runtime::spawn_blocking(move || {
+    let words = tauri::async_runtime::spawn_blocking(move || {
         cutlass_engine::transcribe::transcribe(&path, &model.to_string_lossy()).map_err(err_str)
     })
     .await
-    .map_err(err_str)?
+    .map_err(err_str)??;
+    // persist into the doc so the transcript saves + syncs with the project
+    if let Ok(json) = serde_json::to_string(&words) {
+        let _ = state.project.lock().unwrap().set_transcript(&media_id, &json);
+        notify_sync(&state);
+    }
+    Ok(words)
 }
 
 /// Delete a source range from a clip (the "delete these words" edit).

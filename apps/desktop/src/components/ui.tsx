@@ -135,6 +135,7 @@ export interface MenuAction {
   disabled?: boolean;
   onSelect?: () => void;
   separator?: boolean;
+  checked?: boolean; // checkable item — shows a ✓ when true
 }
 
 export function MenuBarMenu({ title, items }: { title: string; items: MenuAction[] }) {
@@ -161,15 +162,21 @@ export function MenuBarMenu({ title, items }: { title: string; items: MenuAction
             ) : (
               <button
                 key={i}
-                role="menuitem"
-                className="menu-item"
+                role="menuitemcheckbox"
+                aria-checked={it.checked}
+                className={`menu-item${it.checked ? " checked" : ""}`}
                 disabled={it.disabled}
                 onClick={() => {
                   setOpen(false);
                   it.onSelect?.();
                 }}
               >
-                <span>{it.label}</span>
+                <span>
+                  {it.checked !== undefined && (
+                    <span className="menu-check">{it.checked ? "✓" : ""}</span>
+                  )}
+                  {it.label}
+                </span>
                 {it.hint && <Kbd>{it.hint}</Kbd>}
               </button>
             )

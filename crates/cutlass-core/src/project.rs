@@ -206,6 +206,40 @@ impl Project {
             .collect()
     }
 
+    /// Transcripts live in the doc (as a JSON string per media) so they
+    /// save and sync with the project — regenerated wholesale, never edited
+    /// word-by-word, so a last-writer-wins blob is fine.
+    fn transcripts_obj(&mut self) -> ObjId {
+        if let Ok(Some((_, id))) = self.doc.get(automerge::ROOT, "transcripts") {
+            return id;
+        }
+        self.doc
+            .put_object(automerge::ROOT, "transcripts", ObjType::Map)
+            .expect("create transcripts map")
+    }
+
+    /// Store a media's transcript (a JSON-serialized `[{text,start,end}]`).
+    pub fn set_transcript(&mut self, media_id: &str, words_json: &str) -> anyhow::Result<()> {
+        let obj = self.transcripts_obj();
+        self.doc.put(&obj, media_id, words_json)?;
+        Ok(())
+    }
+
+    /// (media_id, words_json) for every stored transcript.
+    pub fn transcripts(&mut self) -> Vec<(String, String)> {
+        let obj = self.transcripts_obj();
+        let ids: Vec<String> = self.doc.keys(&obj).collect();
+        ids.into_iter()
+            .filter_map(|id| match self.doc.get(&obj, &id).ok()?? {
+                (Value::Scalar(v), _) => match v.as_ref() {
+                    ScalarValue::Str(s) => Some((id, s.to_string())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn add_clip(&mut self, clip: &Clip) -> anyhow::Result<()> {
         let clips = self.clips_obj();
         let obj = self.doc.put_object(&clips, &clip.id, ObjType::Map)?;
@@ -1033,5 +1067,20 @@ mod tests {
         assert_eq!(snap["clips"].as_array().unwrap().len(), 2);
         assert_eq!(snap["clips"][0]["id"], "a1");
         assert_eq!(snap["clips"][0]["start"], 5.0);
+    }
+
+    #[test]
+    fn transcripts_survive_save_load() {
+        let mut a = Project::new("Talk");
+        a.set_transcript("m1", r#"[{"text":"hello","start":0.0,"end":0.4}]"#).unwrap();
+        a.set_transcript("m2", r#"[{"text":"world","start":1.0,"end":1.5}]"#).unwrap();
+        let mut b = Project::load(&a.save()).unwrap();
+        let mut t = b.transcripts();
+        t.sort();
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].0, "m1");
+        assert!(t[0].1.contains("hello"));
+        assert_eq!(t[1].0, "m2");
+        assert!(t[1].1.contains("world"));
     }
 }
