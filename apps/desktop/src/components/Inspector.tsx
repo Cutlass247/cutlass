@@ -46,6 +46,13 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
     ],
   },
   {
+    title: "Green screen",
+    params: [
+      { key: "chroma", label: "Key", min: 0, max: 1, step: 1, fmt: (v) => (v > 0.5 ? "on" : "off") },
+      { key: "chroma_sim", label: "Similarity", min: 0.05, max: 0.8, step: 0.01 },
+    ],
+  },
+  {
     title: "Fade & audio",
     params: [
       { key: "fade_in", label: "Fade in", min: 0, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}s` },

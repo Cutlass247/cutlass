@@ -15,6 +15,8 @@ export function MediaPanel(p: {
   hasSelection: boolean;
   onApplyEffect: (params: Record<string, number>) => void;
   onKenBurns: () => void;
+  captionsReady: boolean;
+  onGenerateCaptions: () => void;
   busy: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("media");
@@ -39,6 +41,25 @@ export function MediaPanel(p: {
             {p.hasSelection
               ? "Click to apply to the selected clip — fine-tune in the Inspector."
               : "Select a clip on the timeline to apply effects."}
+          </div>
+
+          <div className="fx-lib-section">
+            <div className="fx-lib-title">Captions</div>
+            <button
+              className="caption-btn"
+              disabled={!p.captionsReady}
+              title={
+                p.captionsReady
+                  ? "Create styled captions from the transcript"
+                  : "Transcribe a clip first (Media tab → Transcribe)"
+              }
+              onClick={p.onGenerateCaptions}
+            >
+              ✨ Generate captions from transcript
+            </button>
+            {!p.captionsReady && (
+              <div className="fx-lib-note">Transcribe a clip first to enable captions.</div>
+            )}
           </div>
 
           <div className="fx-lib-section">

@@ -481,6 +481,46 @@ fn set_title_text(
     with_undo(&state, |p| p.set_title_text(&id, &text).map_err(err_str))
 }
 
+#[derive(serde::Deserialize)]
+struct CaptionSpec {
+    text: String,
+    start: f64,
+    len: f64,
+}
+
+/// Drop a batch of caption clips (styled text clips on V2) from the
+/// transcript — one undo step. Each caption is a lower-third title with a
+/// background band, timed to its words.
+#[tauri::command]
+fn add_captions(
+    captions: Vec<CaptionSpec>,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    let base = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    with_undo(&state, |p| {
+        for (i, c) in captions.iter().enumerate() {
+            let mut fx = std::collections::BTreeMap::new();
+            fx.insert("pos_y".to_string(), 0.34); // lower third
+            fx.insert("font_size".to_string(), 46.0);
+            fx.insert("title_bg".to_string(), 0.55);
+            p.add_clip(&Clip {
+                id: format!("cap{:x}", base + i as u128),
+                name: "Caption".into(),
+                media: String::new(),
+                track: "V2".into(),
+                start: c.start,
+                len: c.len.max(0.3),
+                src_in: 0.0,
+                text: c.text.clone(),
+                fx,
+                kf: Default::default(),
+            })
+            .map_err(err_str)?;
+        }
+        Ok(())
+    })
+}
+
 /// Add/update a keyframe for a param at clip-relative time `t` (undoable).
 #[tauri::command]
 fn set_keyframe(
@@ -1173,6 +1213,7 @@ fn main() {
             reveal_file,
             cancel_export,
             set_effects,
+            add_captions,
             get_project,
             move_clip,
             trim_clip,
