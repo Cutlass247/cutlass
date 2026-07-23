@@ -295,23 +295,38 @@ fn clip_video_chain(
     } else {
         String::new()
     };
+    // Brightness/contrast on luma. NB: `eq` would be the obvious filter but
+    // it is GPL-only and absent from the LGPL ffmpeg we ship (shipping a GPL
+    // build would impose GPL terms on Cutlass). lutyuv is LGPL and does the
+    // same job: pivot contrast around mid-grey, then offset by brightness.
+    let bc = if (fx.brightness).abs() > 1e-9 || (fx.contrast - 1.0).abs() > 1e-9 {
+        format!(
+            ",lutyuv=y='clip((val-(maxval+1)/2)*{c:.4}+(maxval+1)/2+({b:.4})*maxval,minval,maxval)'",
+            c = fx.contrast,
+            b = fx.brightness
+        )
+    } else {
+        String::new()
+    };
     let mut s = format!(
         "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
          pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},{setpts},\
-         format=yuv420p,eq=brightness={b}:contrast={c}:saturation={sat}{cb}[cf{k}];",
-        b = fx.brightness,
-        c = fx.contrast,
-        sat = fx.saturation
+         format=yuv420p{bc}{cb}[cf{k}];",
     );
     let mut cur = format!("cf{k}");
-    // stylize: LUT, hue rotate, gaussian blur, mirror flips
+    // stylize: LUT, hue/saturation, gaussian blur, mirror flips
     let mut stylize = String::new();
     if !lut.is_empty() {
         // same path escaping drawtext uses for fontfile
         stylize.push_str(&format!("lut3d=file='{}',", ff_path(lut)));
     }
-    if fx.hue != 0.0 {
-        stylize.push_str(&format!("hue=h={:.2},", fx.hue));
+    // saturation rides the (LGPL) hue filter's `s` param — eq's job again
+    if fx.hue != 0.0 || (fx.saturation - 1.0).abs() > 1e-9 {
+        stylize.push_str(&format!(
+            "hue=h={:.2}:s={:.4},",
+            fx.hue,
+            fx.saturation.max(0.0)
+        ));
     }
     if fx.blur > 0.01 {
         stylize.push_str(&format!("gblur=sigma={:.2},", fx.blur));
@@ -435,10 +450,13 @@ impl ExportFormat {
         }
     }
     /// Video encoders to try in order (first that works wins).
+    /// NB: x264/x265 are GPL and absent from the LGPL ffmpeg we ship, so
+    /// H.264 falls back to libopenh264 (LGPL software) and H.265 relies on
+    /// hardware encoders.
     fn encoders(self) -> &'static [&'static str] {
         match self {
-            Self::Mp4H264 => &["h264_qsv", "libx264"],
-            Self::Mp4H265 => &["libx265"],
+            Self::Mp4H264 => &["h264_qsv", "h264_nvenc", "h264_amf", "libopenh264"],
+            Self::Mp4H265 => &["hevc_qsv", "hevc_nvenc", "hevc_mf"],
             Self::MovProres => &["prores_ks"],
             Self::WebmVp9 => &["libvpx-vp9"],
         }
@@ -484,25 +502,42 @@ impl Default for ExportSettings {
 
 /// The output-encoding args for a format/quality/encoder combination —
 /// everything after the filtergraph maps.
-fn output_args(format: ExportFormat, quality: Quality, encoder: &str) -> Vec<String> {
+/// Bits/sec target for encoders that take a bitrate rather than a quality
+/// factor (libopenh264, AMF). Scales with frame area; 1080p ≈ the base.
+fn target_bitrate(width: u32, height: u32, quality: Quality) -> String {
+    let base: f64 = match quality {
+        Quality::Low => 5_000_000.0,
+        Quality::Medium => 10_000_000.0,
+        Quality::High => 18_000_000.0,
+    };
+    let scale = (width as f64 * height as f64) / (1920.0 * 1080.0);
+    let bps = (base * scale.clamp(0.25, 4.0)).round() as u64;
+    format!("{bps}")
+}
+
+fn output_args(
+    format: ExportFormat,
+    quality: Quality,
+    encoder: &str,
+    width: u32,
+    height: u32,
+) -> Vec<String> {
     let s = |x: &str| x.to_string();
     let mut a = vec![s("-c:v"), s(encoder)];
     match format {
         ExportFormat::Mp4H264 => {
-            if encoder == "h264_qsv" {
-                let q = match quality {
-                    Quality::Low => 28,
-                    Quality::Medium => 23,
-                    Quality::High => 20,
-                };
-                a.extend([s("-global_quality"), q.to_string()]);
-            } else {
-                let q = match quality {
-                    Quality::Low => 28,
-                    Quality::Medium => 23,
-                    Quality::High => 18,
-                };
-                a.extend([s("-crf"), q.to_string(), s("-preset"), s("fast")]);
+            let q = match quality {
+                Quality::Low => 28,
+                Quality::Medium => 23,
+                Quality::High => 20,
+            };
+            match encoder {
+                "h264_qsv" => a.extend([s("-global_quality"), q.to_string()]),
+                "h264_nvenc" => a.extend([s("-rc"), s("vbr"), s("-cq"), q.to_string()]),
+                "h264_amf" => a.extend([s("-b:v"), target_bitrate(width, height, quality)]),
+                // libopenh264 (LGPL software fallback): bitrate-controlled,
+                // no crf/preset support
+                _ => a.extend([s("-b:v"), target_bitrate(width, height, quality)]),
             }
             a.extend([s("-pix_fmt"), s("yuv420p")]);
             a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
@@ -514,7 +549,11 @@ fn output_args(format: ExportFormat, quality: Quality, encoder: &str) -> Vec<Str
                 Quality::Medium => 26,
                 Quality::High => 22,
             };
-            a.extend([s("-crf"), q.to_string(), s("-preset"), s("fast")]);
+            match encoder {
+                "hevc_qsv" => a.extend([s("-global_quality"), q.to_string()]),
+                "hevc_nvenc" => a.extend([s("-rc"), s("vbr"), s("-cq"), q.to_string()]),
+                _ => a.extend([s("-b:v"), target_bitrate(width, height, quality)]),
+            }
             a.extend([s("-pix_fmt"), s("yuv420p")]);
             a.extend([s("-tag:v"), s("hvc1")]); // QuickTime-playable HEVC
             a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
@@ -799,7 +838,7 @@ fn run_export(
         filters.push_str(&format!("[{cur}]null[outv]"));
     }
 
-    let out_args = output_args(s.format, s.quality, encoder);
+    let out_args = output_args(s.format, s.quality, encoder, s.width, s.height);
     let mut child = cmd
         .args(["-filter_complex", &filters])
         .args(["-map", "[outv]", "-map", "[outa]"])
