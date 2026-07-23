@@ -34,6 +34,12 @@ pub fn transcribe(path: &str, model_path: &str) -> anyhow::Result<Vec<Word>> {
         .with_context(|| format!("load whisper model {model_path}"))?;
     let mut state = ctx.create_state().context("whisper state")?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    // whisper.cpp defaults to 4 threads; use (almost) all cores so a long
+    // clip transcribes far faster, leaving one core for the UI/playback.
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1).max(1))
+        .unwrap_or(4);
+    params.set_n_threads(threads as std::os::raw::c_int);
     params.set_language(Some("en"));
     params.set_token_timestamps(true);
     params.set_split_on_word(true);
