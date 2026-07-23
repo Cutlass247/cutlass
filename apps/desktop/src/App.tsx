@@ -161,11 +161,21 @@ export default function App() {
   const [vCount, setVCount] = useState(2);
   const [aCount, setACount] = useState(1);
   const tracks = useMemo(() => {
-    if (mode === "create") return ["V1"];
+    if (mode === "create") {
+      // Create is a simplified view, but it must still show the user's
+      // footage — otherwise a clip placed on V2 in Studio leaves Create
+      // showing an empty timeline while the shared playhead animates over
+      // it. Show the video track(s) that actually hold clips (usually just
+      // one); fall back to V1 for an empty project so there's a drop lane.
+      const vids = Array.from(
+        new Set(project.clips.map((c) => c.track).filter((t) => trackKind(t) === "video"))
+      ).sort((a, b) => trackIndex(b) - trackIndex(a));
+      return vids.length ? vids : ["V1"];
+    }
     const v = Array.from({ length: vCount }, (_, i) => `V${vCount - i}`);
     const a = Array.from({ length: aCount }, (_, i) => `A${i + 1}`);
     return [...v, ...a];
-  }, [mode, vCount, aCount]);
+  }, [mode, vCount, aCount, project.clips]);
   const addVideoTrack = useCallback(() => setVCount((v) => Math.min(MAX_TRACKS, v + 1)), []);
   const addAudioTrack = useCallback(() => setACount((a) => Math.min(MAX_TRACKS, a + 1)), []);
   const setTrack = useCallback(
