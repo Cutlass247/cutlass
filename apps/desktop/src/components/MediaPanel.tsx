@@ -66,6 +66,8 @@ export function MediaPanel(p: {
   onMediaPointerDown: (mediaId: string, e: React.PointerEvent) => void;
   hasSelection: boolean;
   onApplyEffect: (params: Record<string, number>) => void;
+  onToggleEffect: (params: Record<string, number>) => void;
+  effectActive: (params: Record<string, number>) => boolean;
   onKenBurns: () => void;
   captionsReady: boolean;
   onGenerateCaptions: () => void;
@@ -182,22 +184,26 @@ export function MediaPanel(p: {
             <div className="fx-lib-section" key={g.title}>
               <div className="fx-lib-title">{g.title}</div>
               <div className="effect-grid">
-                {g.items.map((e) => (
-                  <button
-                    key={e.name}
-                    className="effect-chip"
-                    title={e.desc}
-                    disabled={!p.hasSelection}
-                    onClick={() =>
-                      e.action === "kenburns"
-                        ? p.onKenBurns()
-                        : e.params && p.onApplyEffect(e.params)
-                    }
-                  >
-                    <span className="effect-chip-name">{e.name}</span>
-                    <span className="effect-chip-desc">{e.desc}</span>
-                  </button>
-                ))}
+                {g.items.map((e) => {
+                  const on = !e.action && !!e.params && p.effectActive(e.params);
+                  return (
+                    <button
+                      key={e.name}
+                      className={`effect-chip${on ? " on" : ""}`}
+                      title={e.desc}
+                      aria-pressed={on}
+                      disabled={!p.hasSelection}
+                      onClick={() =>
+                        e.action === "kenburns"
+                          ? p.onKenBurns()
+                          : e.params && p.onToggleEffect(e.params)
+                      }
+                    >
+                      <span className="effect-chip-name">{e.name}</span>
+                      <span className="effect-chip-desc">{e.desc}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ))}

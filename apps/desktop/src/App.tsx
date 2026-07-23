@@ -513,6 +513,36 @@ export default function App() {
     [selected, applyEdit]
   );
 
+  // Is this effect currently engaged on the selected clip? True when every
+  // distinguishing param sits on the preset's side of its default — so a
+  // tuned value (e.g. Blur nudged from 6 to 10) still reads as "on", and
+  // opposite presets (Warmer vs Cooler) stay mutually exclusive.
+  const effectActive = useCallback(
+    (params: Record<string, number>) => {
+      const fx = selectedClip?.fx ?? {};
+      return Object.entries(params).every(([k, v]) => {
+        const def = FX_DEFAULTS[k] ?? 0;
+        if (v === def) return true; // this param doesn't distinguish the effect
+        const cur = fx[k] ?? def;
+        return v > def ? cur > def + 1e-6 : cur < def - 1e-6;
+      });
+    },
+    [selectedClip]
+  );
+
+  // Click an effect chip: apply it, or — if it's already on — toggle it off
+  // by resetting its params to their defaults. No more undo-to-remove.
+  const onToggleEffect = useCallback(
+    (params: Record<string, number>) => {
+      if (!selected) return;
+      const next = effectActive(params)
+        ? Object.fromEntries(Object.keys(params).map((k) => [k, FX_DEFAULTS[k] ?? 0]))
+        : params;
+      onApplyEffect(next);
+    },
+    [selected, effectActive, onApplyEffect]
+  );
+
   // load (parse) any .cube LUT a clip references, once, for the GPU preview
   useEffect(() => {
     for (const c of project.clips) {
@@ -1299,6 +1329,8 @@ export default function App() {
             onMediaPointerDown={onMediaPointerDown}
             hasSelection={selected !== null}
             onApplyEffect={onApplyEffect}
+            onToggleEffect={onToggleEffect}
+            effectActive={effectActive}
             onKenBurns={onKenBurns}
             captionsReady={transcriptMedia !== null}
             onGenerateCaptions={onGenerateCaptions}
