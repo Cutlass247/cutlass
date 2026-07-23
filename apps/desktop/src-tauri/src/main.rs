@@ -677,8 +677,8 @@ async fn hydrate_media(
     Ok(out)
 }
 
-/// Find the whisper model: CUTLASS_WHISPER_MODEL env var, the installed
-/// location (whisper/ beside the exe, where the bundler puts it), or —
+/// Find the whisper model: CUTLASS_WHISPER_MODEL env var, then a few
+/// layouts beside the exe (the bundler drops the model there), then —
 /// in dev — walking up from the current dir to vendor/whisper/.
 fn whisper_model_path() -> Result<std::path::PathBuf, String> {
     if let Ok(p) = std::env::var("CUTLASS_WHISPER_MODEL") {
@@ -686,9 +686,17 @@ fn whisper_model_path() -> Result<std::path::PathBuf, String> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let installed = dir.join("whisper").join("ggml-base.en.bin");
-            if installed.exists() {
-                return Ok(installed);
+            // Try, in order: flat beside the exe (current bundling), the
+            // intended whisper/ subfolder, and the legacy layout where a
+            // trailing-slash resource map produced a *file* named "whisper".
+            for cand in [
+                dir.join("ggml-base.en.bin"),
+                dir.join("whisper").join("ggml-base.en.bin"),
+                dir.join("whisper"),
+            ] {
+                if cand.is_file() {
+                    return Ok(cand);
+                }
             }
         }
     }
@@ -699,7 +707,7 @@ fn whisper_model_path() -> Result<std::path::PathBuf, String> {
             return Ok(candidate);
         }
         if !dir.pop() {
-            return Err("whisper model not found (vendor/whisper/ggml-base.en.bin)".into());
+            return Err("whisper model not found (looked beside the app and in vendor/whisper/)".into());
         }
     }
 }
@@ -836,6 +844,14 @@ fn play(
             })
             .collect()
     };
+    // If nothing has playable audio at all (e.g. the only clip under way
+    // is retimed, so it's filtered out above), don't start the audio
+    // engine — an empty stream reports "ended" immediately and would stop
+    // playback. Returning false makes the UI run its silent local clock so
+    // the video thread keeps streaming to the end of the content.
+    if tracks.iter().all(|t| t.is_empty()) {
+        return false;
+    }
     match cutlass_engine::player::start(tracks, from_t) {
         Ok(handle) => {
             *state.playback.lock().unwrap() = Some(handle);
