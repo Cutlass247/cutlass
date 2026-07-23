@@ -1703,6 +1703,36 @@ button {
   opacity: 0.4;
   cursor: not-allowed;
 }
+.lut-applied {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+.lut-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lut-remove {
+  flex: none;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.lut-remove:hover {
+  color: var(--danger);
+}
 .effect-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

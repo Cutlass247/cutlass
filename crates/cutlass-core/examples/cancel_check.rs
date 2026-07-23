@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
     let a = std::env::args().nth(1).expect("usage: cancel_check <clip>");
     cutlass_core::media::ensure_ffmpeg()?;
     // 4K makes the encode slow enough to cancel mid-flight
-    let segs = vec![Segment::Clip { path: a, src_in: 0.0, len: 8.0, fx: ClipFx::default() }];
+    let segs = vec![Segment::Clip { path: a, src_in: 0.0, len: 8.0, fx: ClipFx::default(), lut: String::new() }];
     let out = std::env::temp_dir().join("cutlass_cancel_check.mp4");
 
     let cancel = Arc::new(AtomicBool::new(false));

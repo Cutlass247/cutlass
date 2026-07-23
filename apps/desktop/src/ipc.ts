@@ -15,6 +15,8 @@ export interface Clip {
   src_in: number;
   /// non-empty = a title (text) clip, no media.
   text?: string;
+  /// path to a .cube 3D LUT applied to this clip (empty = none)
+  lut?: string;
   fx?: Fx;
   /// param → (time-string → value); present params animate.
   kf?: Record<string, Record<string, number>>;
@@ -272,6 +274,66 @@ export async function setEffects(
   }
   return invoke<ProjectSnapshot>("set_effects", { id, params });
 }
+
+/// Set (or clear with "") the .cube LUT applied to a clip.
+export async function setLut(id: string, path: string): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip) clip.lut = path;
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("set_lut", { id, path });
+}
+
+/// Native picker for a .cube LUT file. Returns its path (mock returns a stub).
+export async function pickLut(): Promise<string | null> {
+  if (!inTauri) return "mock://look.cube";
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const f = await open({ multiple: false, filters: [{ name: "Cube LUT", extensions: ["cube"] }] });
+  return typeof f === "string" ? f : null;
+}
+
+/// Read a text file (the .cube contents) for the GPU preview.
+export async function readTextFile(path: string): Promise<string> {
+  if (!inTauri) return MOCK_CUBE;
+  return invoke<string>("read_text_file", { path });
+}
+
+export interface CubeLut {
+  size: number;
+  data: Float32Array; // size^3 * 3, red varies fastest
+}
+
+/// Parse a .cube 3D LUT. Returns null if malformed.
+export function parseCube(text: string): CubeLut | null {
+  let size = 0;
+  const data: number[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("LUT_3D_SIZE")) {
+      size = parseInt(line.split(/\s+/)[1], 10);
+      continue;
+    }
+    if (/^[A-Za-z_]/.test(line)) continue; // TITLE / DOMAIN_* / LUT_1D_SIZE
+    const p = line.split(/\s+/).map(Number);
+    if (p.length >= 3 && p.slice(0, 3).every((n) => !Number.isNaN(n))) data.push(p[0], p[1], p[2]);
+  }
+  if (!size || data.length !== size * size * size * 3) return null;
+  return { size, data: new Float32Array(data) };
+}
+
+// a tiny warm 2^3 LUT so the browser demo shows the preview path working
+const MOCK_CUBE = `LUT_3D_SIZE 2
+0 0 0
+1 0 0
+0 1 0
+1 1 0
+0 0 0.75
+1 0 0.75
+0 1 0.75
+1 1 0.75`;
 
 export interface CaptionSpec {
   text: string;

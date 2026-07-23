@@ -30,6 +30,9 @@ pub struct Clip {
     /// Style (font size, position, background) lives in fx.
     #[serde(default)]
     pub text: String,
+    /// Absolute path to a .cube 3D LUT applied to this clip (empty = none).
+    #[serde(default)]
+    pub lut: String,
     /// Effect Controls: sparse map of param → value (absent = default).
     /// BTreeMap keeps snapshot/equality deterministic. Keys: brightness,
     /// contrast, saturation, scale, rot, pos_x, pos_y, fade_in, fade_out,
@@ -209,6 +212,9 @@ impl Project {
         if !clip.text.is_empty() {
             self.doc.put(&obj, "text", clip.text.as_str())?;
         }
+        if !clip.lut.is_empty() {
+            self.doc.put(&obj, "lut", clip.lut.as_str())?;
+        }
         if !clip.fx.is_empty() {
             self.write_fx(&obj, &clip.fx)?;
         }
@@ -264,6 +270,17 @@ impl Project {
             .get(&clips, id)?
             .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?;
         self.doc.put(&obj, "text", text)?;
+        Ok(())
+    }
+
+    /// Set (or clear, with "") the .cube LUT path applied to a clip.
+    pub fn set_lut(&mut self, id: &str, path: &str) -> anyhow::Result<()> {
+        let clips = self.clips_obj();
+        let (_, obj) = self
+            .doc
+            .get(&clips, id)?
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?;
+        self.doc.put(&obj, "lut", path)?;
         Ok(())
     }
 
@@ -382,6 +399,7 @@ impl Project {
                 len: right_len,
                 src_in: to,
                 text: clip["text"].as_str().unwrap_or("").to_string(),
+                lut: clip["lut"].as_str().unwrap_or("").to_string(),
                 fx: fx_from_json(&clip), // split inherits the clip's effects
                 kf: Default::default(),  // keyframes drop on split (v1)
             })?;
@@ -431,6 +449,7 @@ impl Project {
             len: clip.len - rel,
             src_in: src_split,
             text: clip.text.clone(),
+            lut: clip.lut.clone(),
             fx: clip.fx.clone(),
             kf: BTreeMap::new(),
         })?;
@@ -545,6 +564,7 @@ impl Project {
             len: get_f64("len")?,
             src_in: get_f64("src_in")?,
             text: get_str("text").unwrap_or_default(),
+            lut: get_str("lut").unwrap_or_default(),
             fx,
             kf,
         })
@@ -589,6 +609,9 @@ impl Project {
                     self.doc.put(&obj, "src_in", t.src_in)?;
                     if c.text != t.text {
                         self.doc.put(&obj, "text", t.text.as_str())?;
+                    }
+                    if c.lut != t.lut {
+                        self.doc.put(&obj, "lut", t.lut.as_str())?;
                     }
                     if c.fx != t.fx {
                         self.write_fx(&obj, &t.fx)?;
@@ -686,6 +709,7 @@ mod tests {
             len: 4.0,
             src_in: 0.0,
             text: String::new(),
+            lut: String::new(),
             fx: BTreeMap::new(),
             kf: BTreeMap::new(),
         }

@@ -4,11 +4,16 @@ import {
   MediaItem,
   Presence,
   ProjectSnapshot,
+  CubeLut,
   Word,
   addCaptions,
   addClipFromMedia,
   addTitle,
   audioClock,
+  parseCube,
+  pickLut,
+  readTextFile,
+  setLut,
   cancelExport,
   clearKeyframes,
   currentRoom,
@@ -102,6 +107,9 @@ export default function App() {
       }
     }
   );
+  // parsed .cube LUTs, keyed by path, for the GPU preview
+  const [lutCache, setLutCache] = useState<Record<string, CubeLut | null>>({});
+  const lutLoading = useRef<Set<string>>(new Set());
   // a media-bin item being dragged toward the timeline (pointer-based, so
   // it works inside the Tauri webview where HTML5 drag events don't fire)
   const [mediaGhost, setMediaGhost] = useState<{ name: string; x: number; y: number } | null>(null);
@@ -446,9 +454,10 @@ export default function App() {
         style: layerStyle(l.clip),
         chroma: (draft.chroma ?? l.clip.fx?.chroma ?? 0) > 0.5,
         chromaSim: draft.chroma_sim ?? l.clip.fx?.chroma_sim ?? 0.3,
+        lut: l.clip.lut ? lutCache[l.clip.lut] ?? null : null,
       };
     });
-  }, [videoLayers, playing, playFrame, hq, hqKey, layerStyle, selected, fxDraft]);
+  }, [videoLayers, playing, playFrame, hq, hqKey, layerStyle, selected, fxDraft, lutCache]);
 
   // vignette is a monitor overlay (not a CSS filter) — driven by the
   // topmost clip, honouring the selected clip's live drag draft
@@ -490,6 +499,43 @@ export default function App() {
     },
     [selected, applyEdit]
   );
+
+  // load (parse) any .cube LUT a clip references, once, for the GPU preview
+  useEffect(() => {
+    for (const c of project.clips) {
+      const path = c.lut;
+      if (!path || lutLoading.current.has(path)) continue;
+      lutLoading.current.add(path);
+      readTextFile(path)
+        .then((txt) => setLutCache((m) => ({ ...m, [path]: parseCube(txt) })))
+        .catch(() => setLutCache((m) => ({ ...m, [path]: null })));
+    }
+  }, [project.clips]);
+
+  const onImportLut = useCallback(async () => {
+    if (!selected) return;
+    const path = await pickLut();
+    if (!path) return;
+    try {
+      applyEdit(await setLut(selected, path));
+      if (!lutLoading.current.has(path)) {
+        lutLoading.current.add(path);
+        readTextFile(path)
+          .then((txt) => setLutCache((m) => ({ ...m, [path]: parseCube(txt) })))
+          .catch(() => {});
+      }
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [selected, applyEdit]);
+  const onRemoveLut = useCallback(async () => {
+    if (!selected) return;
+    try {
+      applyEdit(await setLut(selected, ""));
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [selected, applyEdit]);
 
   // Custom Looks: save the selected clip's colour grade as a reusable Look
   const LOOK_KEYS = ["brightness", "contrast", "saturation", "temperature", "tint", "hue", "vignette"];
@@ -1235,6 +1281,9 @@ export default function App() {
             customLooks={customLooks}
             onSaveLook={onSaveLook}
             onDeleteLook={onDeleteLook}
+            selectedLut={selectedClip?.lut || ""}
+            onImportLut={onImportLut}
+            onRemoveLut={onRemoveLut}
             busy={busy !== null}
           />
         </div>

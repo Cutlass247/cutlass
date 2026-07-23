@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
     cutlass_core::media::ensure_ffmpeg()?;
 
     // base program (V1): 6s of clip A
-    let segments = vec![Segment::Clip { path: a.clone(), src_in: 0.0, len: 6.0, fx: ClipFx::default() }];
+    let segments = vec![Segment::Clip { path: a.clone(), src_in: 0.0, len: 6.0, fx: ClipFx::default(), lut: String::new() }];
 
     // V2: a scaled-down picture-in-picture of clip B over 2s..5s (video +
     // its audio). A1: an audio-only bed of clip B across the whole program

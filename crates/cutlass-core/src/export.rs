@@ -167,7 +167,7 @@ impl ClipFx {
 
 #[derive(Debug, Clone)]
 pub enum Segment {
-    Clip { path: String, src_in: f64, len: f64, fx: ClipFx },
+    Clip { path: String, src_in: f64, len: f64, fx: ClipFx, lut: String },
     Gap { len: f64 },
     /// A `dur`-second dissolve (or dip-to-black) from A's tail into B's
     /// head. Both windows are fitted then combined with xfade/acrossfade.
@@ -199,6 +199,7 @@ pub struct ExportClip {
     pub src_in: f64,
     pub path: String,
     pub fx: ClipFx,
+    pub lut: String, // .cube LUT path, empty = none
     pub trans_dur: f64, // 0 = hard cut
     pub trans_dip: bool,
     /// param → sorted (clip-relative time, value); empty = no animation.
@@ -267,7 +268,16 @@ fn title_font() -> String {
 
 /// Build a clip's fitted-frame video chain `[{vi}:v] → [v{k}]`:
 /// letterbox to frame, color-correct, optional transform, optional fades.
-fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &ClipFx) -> String {
+fn clip_video_chain(
+    vi: u32,
+    k: usize,
+    len: f64,
+    w: u32,
+    h: u32,
+    fps: u32,
+    fx: &ClipFx,
+    lut: &str,
+) -> String {
     // retime: source span was len*speed; /speed compresses it to len
     let setpts = if (fx.speed - 1.0).abs() < 1e-9 {
         "setpts=PTS-STARTPTS".to_string()
@@ -294,8 +304,12 @@ fn clip_video_chain(vi: u32, k: usize, len: f64, w: u32, h: u32, fps: u32, fx: &
         sat = fx.saturation
     );
     let mut cur = format!("cf{k}");
-    // stylize: hue rotate, gaussian blur, mirror flips
+    // stylize: LUT, hue rotate, gaussian blur, mirror flips
     let mut stylize = String::new();
+    if !lut.is_empty() {
+        // same path escaping drawtext uses for fontfile
+        stylize.push_str(&format!("lut3d=file='{}',", ff_path(lut)));
+    }
     if fx.hue != 0.0 {
         stylize.push_str(&format!("hue=h={:.2},", fx.hue));
     }
@@ -605,7 +619,7 @@ fn run_export(
 
     for (k, seg) in segments.iter().enumerate() {
         match seg {
-            Segment::Clip { path, src_in, len, fx } => {
+            Segment::Clip { path, src_in, len, fx, lut } => {
                 // input-level seek: ffmpeg decodes from the prior keyframe
                 // and discards up to the exact point — frame-accurate.
                 // With speed, consume `len*speed` of source (retimed to
@@ -615,7 +629,7 @@ fn run_export(
                 cmd.input(path.as_str());
                 let vi = input_idx;
                 input_idx += 1;
-                filters.push_str(&clip_video_chain(vi, k, *len, w, h, fps, fx));
+                filters.push_str(&clip_video_chain(vi, k, *len, w, h, fps, fx, lut));
                 if has_audio(path) {
                     filters.push_str(&clip_audio_chain(vi, k, *len, fx));
                 } else {
@@ -851,6 +865,7 @@ mod tests {
             src_in,
             path: "x.mp4".into(),
             fx: ClipFx::default(),
+            lut: String::new(),
             trans_dur,
             trans_dip: false,
             kf: BTreeMap::new(),
@@ -967,6 +982,7 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
                 src_in: c.src_in,
                 len: c.len,
                 fx: c.fx.clone(),
+                lut: c.lut.clone(),
             });
         } else {
             // sample the animation into piecewise-constant sub-segments
@@ -981,6 +997,7 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
                     src_in: c.src_in + rel * c.fx.speed, // source advances at speed
                     len: sub_len,
                     fx,
+                    lut: c.lut.clone(),
                 });
             }
         }
