@@ -66,6 +66,14 @@ pub fn waveform(path: &Path) -> Vec<f32> {
 }
 
 pub fn ensure_ffmpeg() -> anyhow::Result<()> {
+    // The app pins FFMPEG_BINARY to the ffmpeg it ships; when that's present
+    // there's nothing to fetch (and we must not pull a different build —
+    // ours is LGPL with the exact filters/encoders export targets).
+    if let Ok(p) = std::env::var("FFMPEG_BINARY") {
+        if Path::new(&p).is_file() {
+            return Ok(());
+        }
+    }
     ffmpeg_sidecar::download::auto_download()
         .map_err(|e| anyhow::anyhow!("ffmpeg download failed: {e}"))
 }

@@ -1312,6 +1312,18 @@ async fn sync_task(
 }
 
 fn main() {
+    // Use the ffmpeg we ship, not whatever happens to be on PATH. The
+    // bundled build is LGPL and has the exact filters/encoders the export
+    // pipeline targets; a stray system ffmpeg may lack them (e.g. no `eq`).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let ff = dir.join("ffmpeg.exe");
+            if ff.is_file() {
+                std::env::set_var("FFMPEG_BINARY", &ff);
+            }
+        }
+    }
+
     // A double-clicked .cutlass file arrives as a launch argument; stash it
     // so the frontend can load it once the window is up.
     let state = AppState::default();

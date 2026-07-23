@@ -45,6 +45,7 @@
       "../../../vendor/ffmpeg/bin/swresample-5.dll": "./",
       "../../../vendor/ffmpeg/bin/swscale-8.dll": "./",
       "../../../vendor/whisper/ggml-base.en.bin": "./",
+      "../../../vendor/ffmpeg/bin/ffmpeg.exe": "./",
       "../../../vendor/ffmpeg/LICENSE.txt": "./licenses/FFMPEG-LICENSE.txt"
     },
     "windows": {
