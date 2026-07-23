@@ -36,6 +36,8 @@ import {
   openProject,
   takeStartupFile,
   onOpenFile,
+  loadPrefs,
+  savePref,
   openUrl,
   pauseAudio,
   pickVideo,
@@ -99,9 +101,8 @@ export default function App() {
   const [dirty, setDirty] = useState(false);
   // the file this project is saved to (Save overwrites it; null → Save As)
   const [projectPath, setProjectPath] = useState<string | null>(null);
-  const [autoSave, setAutoSave] = useState(
-    () => localStorage.getItem("cutlass-autosave") === "1"
-  );
+  // auto-save preference, persisted to disk (loaded on mount below)
+  const [autoSave, setAutoSave] = useState(false);
   const [playhead, setPlayhead] = useState(0);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -893,11 +894,24 @@ export default function App() {
     [applyOpened]
   );
 
+  // Auto-save preference persists on disk — load it once on mount.
+  useEffect(() => {
+    loadPrefs()
+      .then((p) => {
+        if (p.autoSave === true) setAutoSave(true);
+      })
+      .catch(() => {});
+  }, []);
+  const toggleAutoSave = useCallback(() => {
+    setAutoSave((v) => {
+      const next = !v;
+      savePref("autoSave", next).catch(() => {});
+      return next;
+    });
+  }, []);
+
   // Auto-save: when enabled and the project has a file + unsaved changes,
   // write it back after a short idle (debounced so we don't save mid-edit).
-  useEffect(() => {
-    localStorage.setItem("cutlass-autosave", autoSave ? "1" : "0");
-  }, [autoSave]);
   useEffect(() => {
     if (!autoSave || !dirty || !projectPath) return;
     const t = setTimeout(() => {
@@ -1367,7 +1381,7 @@ export default function App() {
         onSave={doSave}
         onSaveAs={doSaveAs}
         autoSave={autoSave}
-        onToggleAutoSave={() => setAutoSave((v) => !v)}
+        onToggleAutoSave={toggleAutoSave}
         onExport={doExport}
         onUndo={doUndo}
         onRedo={doRedo}
