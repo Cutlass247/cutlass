@@ -140,6 +140,12 @@ impl Project {
         self.doc.save()
     }
 
+    /// Rename the project (shown in the title bar; e.g. set to the saved
+    /// file's name so it stops reading "Untitled" after Save As).
+    pub fn set_name(&mut self, name: &str) {
+        self.doc.put(automerge::ROOT, "name", name).expect("put name");
+    }
+
     fn clips_obj(&self) -> ObjId {
         let (_, id) = self
             .doc

@@ -621,19 +621,20 @@ export async function cutRanges(
 // mock "disk" for save/open in the browser
 let mockSaved: { project: ProjectSnapshot } | null = null;
 
-export async function saveProject(): Promise<boolean> {
+export async function saveProject(): Promise<ProjectSnapshot | null> {
   if (!inTauri) {
+    mockState.project.name = "My Project"; // simulate naming the saved file
     mockSaved = { project: structuredClone(mockState.project) };
-    return true;
+    return structuredClone(mockState.project);
   }
   const { save } = await import("@tauri-apps/plugin-dialog");
   const path = await save({
     filters: [{ name: "Cutlass project", extensions: ["cutlass"] }],
     defaultPath: "untitled.cutlass",
   });
-  if (!path) return false;
-  await invoke("save_project", { path });
-  return true;
+  if (!path) return null;
+  // backend renames the project after the file and returns the new snapshot
+  return invoke("save_project", { path });
 }
 
 export async function openProject(knownPath?: string): Promise<{

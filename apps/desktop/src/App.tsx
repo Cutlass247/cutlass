@@ -824,7 +824,11 @@ export default function App() {
   // ── save / open / export / collab ───────────────────────────────────
   const doSave = useCallback(async () => {
     try {
-      if (await saveProject()) setDirty(false);
+      const snap = await saveProject();
+      if (snap) {
+        setProject(snap); // picks up the new name → title stops saying Untitled
+        setDirty(false);
+      }
     } catch (e) {
       setError(String(e));
     }

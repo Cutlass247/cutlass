@@ -605,9 +605,18 @@ fn set_transition(
 }
 
 #[tauri::command]
-fn save_project(path: String, state: State<AppState>) -> Result<(), String> {
-    let bytes = state.project.lock().unwrap().save();
-    std::fs::write(&path, bytes).map_err(err_str)
+fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let mut project = state.project.lock().unwrap();
+    // name the project after the file so the title stops reading "Untitled"
+    if let Some(stem) = Path::new(&path).file_stem().and_then(|s| s.to_str()) {
+        project.set_name(stem);
+    }
+    let bytes = project.save();
+    std::fs::write(&path, bytes).map_err(err_str)?;
+    let snap = project.snapshot();
+    drop(project);
+    notify_sync(&state);
+    Ok(snap)
 }
 
 /// The .cutlass path the app was launched with (double-clicked file), if
