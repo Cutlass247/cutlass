@@ -34,6 +34,7 @@ import {
   onPresence,
   onProjectChanged,
   openProject,
+  openUrl,
   pauseAudio,
   pickVideo,
   playAudio,
@@ -120,6 +121,8 @@ export default function App() {
   const [transcribing, setTranscribing] = useState<string | null>(null);
   const [wordSel, setWordSel] = useState<{ media: string; a: number; b: number } | null>(null);
   const [room, setRoom] = useState<string | null>(null);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackText, setFeedbackText] = useState("");
   // export flow: settings dialog → progress modal (running → done | error)
   const [exportOpen, setExportOpen] = useState(false);
   const [exportDir, setExportDir] = useState("");
@@ -810,6 +813,17 @@ export default function App() {
     setExportOpen(true);
   }, []);
 
+  // Beta feedback → open the user's mail client with a prefilled report
+  const onSendFeedback = useCallback(() => {
+    const body = `${feedbackText}\n\n---\nCutlass 0.1.0 (beta) · ${navigator.userAgent}`;
+    const url = `mailto:isaiahaniemeka@gmail.com?subject=${encodeURIComponent(
+      "Cutlass beta feedback"
+    )}&body=${encodeURIComponent(body)}`;
+    openUrl(url);
+    setFeedbackOpen(false);
+    setFeedbackText("");
+  }, [feedbackText]);
+
   // dialog confirmed → run the render, driving the progress modal
   const runExport = useCallback(async (opts: ExportOptions) => {
     setExportOpen(false);
@@ -1249,6 +1263,7 @@ export default function App() {
           setPps((z) => clamp(z * (dir > 0 ? 1.25 : 0.8), PPS_MIN, PPS_MAX))
         }
         hasSelection={selected !== null}
+        onFeedback={() => setFeedbackOpen(true)}
       />
 
       {busy && <div className="notice">{busy}</div>}
@@ -1445,6 +1460,37 @@ export default function App() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {feedbackOpen && (
+        <div className="modal-overlay" onPointerDown={() => setFeedbackOpen(false)}>
+          <div className="modal" onPointerDown={(e) => e.stopPropagation()}>
+            <div className="modal-title">Send beta feedback</div>
+            <div className="modal-sub">
+              What worked, what broke, what you wish it did? Opens your mail app.
+            </div>
+            <textarea
+              className="feedback-text"
+              autoFocus
+              rows={5}
+              placeholder="Your feedback…"
+              value={feedbackText}
+              onChange={(e) => setFeedbackText(e.target.value)}
+            />
+            <div className="modal-actions">
+              <button className="ghost-btn" onClick={() => setFeedbackOpen(false)}>
+                Cancel
+              </button>
+              <button
+                className="primary-action"
+                disabled={!feedbackText.trim()}
+                onClick={onSendFeedback}
+              >
+                Send
+              </button>
+            </div>
           </div>
         </div>
       )}

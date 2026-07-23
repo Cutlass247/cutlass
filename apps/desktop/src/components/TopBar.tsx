@@ -23,6 +23,7 @@ export function TopBar(p: {
   onCollab: () => void;
   onZoom: (dir: 1 | -1) => void;
   hasSelection: boolean;
+  onFeedback: () => void;
 }) {
   return (
     <header className="topbar">
@@ -73,6 +74,14 @@ export function TopBar(p: {
               label: p.mode === "create" ? "Switch to Studio" : "Switch to Create",
               onSelect: () => p.onMode(p.mode === "create" ? "studio" : "create"),
             },
+          ]}
+        />
+        <MenuBarMenu
+          title="Help"
+          items={[
+            { label: "Send beta feedback…", onSelect: p.onFeedback },
+            { separator: true, label: "" },
+            { label: "Cutlass 0.1.0 (beta)", disabled: true, onSelect: () => {} },
           ]}
         />
       </nav>

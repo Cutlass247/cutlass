@@ -316,6 +316,25 @@ fn read_text_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(err_str)
 }
 
+/// Open a URL (or mailto:) in the OS default handler — used by feedback.
+#[tauri::command]
+fn open_url(url: String) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(&url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    }
+}
+
 /// Reveal a file in the OS file browser (selects it in its folder).
 #[tauri::command]
 fn reveal_file(path: String) {
@@ -1228,6 +1247,7 @@ fn main() {
             remove_track,
             reveal_file,
             read_text_file,
+            open_url,
             cancel_export,
             set_effects,
             set_lut,

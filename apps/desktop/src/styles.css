@@ -1477,6 +1477,29 @@ button {
   cursor: not-allowed;
 }
 
+.feedback-text {
+  width: 100%;
+  margin-top: 14px;
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 96px;
+}
+.feedback-text:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.feedback-text::placeholder {
+  color: var(--muted);
+}
+
 /* export-dialog fields */
 .ex-field {
   display: flex;
