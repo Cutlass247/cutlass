@@ -527,6 +527,19 @@ export async function defaultExportDir(): Promise<string> {
   }
 }
 
+/// Open a URL or mailto: in the OS default handler.
+export async function openUrl(url: string): Promise<void> {
+  if (!inTauri) {
+    window.open(url, "_blank");
+    return;
+  }
+  try {
+    await invoke("open_url", { url });
+  } catch {
+    /* best-effort */
+  }
+}
+
 /// Reveal the exported file in the OS file browser.
 export async function revealFile(path: string): Promise<void> {
   if (!inTauri) return;
