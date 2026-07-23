@@ -621,30 +621,42 @@ export async function cutRanges(
 // mock "disk" for save/open in the browser
 let mockSaved: { project: ProjectSnapshot } | null = null;
 
-export async function saveProject(): Promise<ProjectSnapshot | null> {
+// Save the project. With `knownPath` (a prior save/open location) it writes
+// there silently; otherwise it prompts (Save As). Returns the renamed
+// snapshot and the path used, so the caller can remember it.
+export async function saveProject(
+  knownPath?: string
+): Promise<{ project: ProjectSnapshot; path: string } | null> {
   if (!inTauri) {
     mockState.project.name = "My Project"; // simulate naming the saved file
     mockSaved = { project: structuredClone(mockState.project) };
-    return structuredClone(mockState.project);
+    return { project: structuredClone(mockState.project), path: "My Project.cutlass" };
   }
-  const { save } = await import("@tauri-apps/plugin-dialog");
-  const path = await save({
-    filters: [{ name: "Cutlass project", extensions: ["cutlass"] }],
-    defaultPath: "untitled.cutlass",
-  });
-  if (!path) return null;
+  let path = knownPath;
+  if (!path) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const picked = await save({
+      filters: [{ name: "Cutlass project", extensions: ["cutlass"] }],
+      defaultPath: "untitled.cutlass",
+    });
+    if (!picked) return null;
+    path = picked;
+  }
   // backend renames the project after the file and returns the new snapshot
-  return invoke("save_project", { path });
+  const project = await invoke<ProjectSnapshot>("save_project", { path });
+  return { project, path };
 }
 
 export async function openProject(knownPath?: string): Promise<{
   project: ProjectSnapshot;
   media: MediaItem[];
+  transcripts?: Record<string, Word[]>;
+  path: string;
 } | null> {
   if (!inTauri) {
     if (!mockSaved) return null;
     mockState.project = structuredClone(mockSaved.project);
-    return { project: structuredClone(mockSaved.project), media: [] };
+    return { project: structuredClone(mockSaved.project), media: [], path: "My Project.cutlass" };
   }
   let path = knownPath;
   if (!path) {
@@ -656,7 +668,12 @@ export async function openProject(knownPath?: string): Promise<{
     if (typeof picked !== "string") return null;
     path = picked;
   }
-  return invoke("open_project", { path });
+  const res = await invoke<{
+    project: ProjectSnapshot;
+    media: MediaItem[];
+    transcripts?: Record<string, Word[]>;
+  }>("open_project", { path });
+  return { ...res, path };
 }
 
 /// A .cutlass path the app was launched with (double-clicked file). Loaded

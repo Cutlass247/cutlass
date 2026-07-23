@@ -141,6 +141,17 @@ button {
   margin: 5px 8px;
 }
 
+.menu-check {
+  display: inline-block;
+  width: 14px;
+  margin-right: 2px;
+  color: var(--accent);
+  font-weight: 700;
+}
+.menu-item:hover:not(:disabled) .menu-check {
+  color: #fff;
+}
+
 .title-block {
   display: flex;
   align-items: baseline;
