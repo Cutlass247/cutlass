@@ -825,9 +825,6 @@ fn play(
                         cs.iter()
                             .filter(|c| c["track"].as_str() == Some(track.as_str()))
                             .filter(|c| c["text"].as_str().unwrap_or("").is_empty()) // titles are silent
-                            // retimed clips are silent in live playback (v1);
-                            // export renders their audio pitch-corrected
-                            .filter(|c| (c["fx"]["speed"].as_f64().unwrap_or(1.0) - 1.0).abs() < 0.01)
                             .filter_map(|c| {
                                 let m = media.get(c["media"].as_str()?)?;
                                 Some(cutlass_engine::player::AudioClip {
@@ -836,6 +833,7 @@ fn play(
                                     len: c["len"].as_f64()?,
                                     src_in: c["src_in"].as_f64()?,
                                     volume: c["fx"]["volume"].as_f64().unwrap_or(1.0),
+                                    speed: c["fx"]["speed"].as_f64().unwrap_or(1.0),
                                 })
                             })
                             .collect()
