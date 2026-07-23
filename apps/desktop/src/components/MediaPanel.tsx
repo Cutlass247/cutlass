@@ -73,6 +73,9 @@ export function MediaPanel(p: {
   customLooks: { name: string; params: Record<string, number> }[];
   onSaveLook: () => void;
   onDeleteLook: (name: string) => void;
+  selectedLut: string;
+  onImportLut: () => void;
+  onRemoveLut: () => void;
   busy: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("media");
@@ -150,6 +153,29 @@ export function MediaPanel(p: {
             >
               + Save current grade as Look
             </button>
+          </div>
+
+          <div className="fx-lib-section">
+            <div className="fx-lib-title">LUT</div>
+            {p.selectedLut ? (
+              <div className="lut-applied">
+                <span className="lut-name" title={p.selectedLut}>
+                  {p.selectedLut.split(/[\\/]/).pop()}
+                </span>
+                <button className="lut-remove" onClick={p.onRemoveLut} title="Remove LUT">
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <button
+                className="save-look-btn"
+                disabled={!p.hasSelection}
+                title="Load a .cube 3D LUT onto the selected clip"
+                onClick={p.onImportLut}
+              >
+                + Import LUT (.cube)
+              </button>
+            )}
           </div>
 
           {EFFECT_GROUPS.map((g) => (

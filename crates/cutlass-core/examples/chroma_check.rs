@@ -10,7 +10,7 @@ fn main() -> anyhow::Result<()> {
     let b = std::env::args().nth(2).expect("usage: chroma_check <base> <overlay>");
     cutlass_core::media::ensure_ffmpeg()?;
 
-    let segs = vec![Segment::Clip { path: a, src_in: 0.0, len: 3.0, fx: ClipFx::default() }];
+    let segs = vec![Segment::Clip { path: a, src_in: 0.0, len: 3.0, fx: ClipFx::default(), lut: String::new() }];
     let overlays = vec![Overlay {
         path: b,
         src_in: 0.0,

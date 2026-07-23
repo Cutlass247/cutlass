@@ -23,7 +23,7 @@ fn main() -> anyhow::Result<()> {
         denoise: 1.0,
         ..Default::default()
     };
-    let segs = vec![Segment::Clip { path: a, src_in: 0.0, len: 3.0, fx }];
+    let segs = vec![Segment::Clip { path: a, src_in: 0.0, len: 3.0, fx, lut: String::new() }];
     let out = std::env::temp_dir().join("cutlass_effects_check.mp4");
     let settings = ExportSettings { width: 640, height: 360, fps: 30, ..Default::default() };
 

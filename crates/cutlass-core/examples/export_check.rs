@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     // The dissolve shortens clip 1's tail by 1s (2.0 → 1.0) so the total
     // stays 1.0 + 1.0 + 2.0 + 1.5 + 2.5 = 8.0.
     let segments = vec![
-        Segment::Clip { path: a.clone(), src_in: 1.0, len: 1.0, fx: colored },
+        Segment::Clip { path: a.clone(), src_in: 1.0, len: 1.0, fx: colored, lut: String::new() },
         Segment::Transition {
             a_path: a.clone(),
             a_src: 2.0,
@@ -43,9 +43,9 @@ fn main() -> anyhow::Result<()> {
             dur: 1.0,
             dip: false,
         },
-        Segment::Clip { path: a.clone(), src_in: 0.0, len: 2.0, fx: ClipFx::default() },
+        Segment::Clip { path: a.clone(), src_in: 0.0, len: 2.0, fx: ClipFx::default(), lut: String::new() },
         Segment::Gap { len: 1.5 },
-        Segment::Clip { path: b, src_in: 0.5, len: 2.5, fx: transformed },
+        Segment::Clip { path: b, src_in: 0.5, len: 2.5, fx: transformed, lut: String::new() },
     ];
     // V2 overlay spanning the gap — must not change output duration
     let overlays = vec![Overlay {
@@ -107,6 +107,7 @@ fn main() -> anyhow::Result<()> {
         src_in: 1.0,
         path: a2,
         fx: ClipFx::default(),
+        lut: String::new(),
         trans_dur: 0.0,
         trans_dip: false,
         kf,

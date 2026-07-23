@@ -266,6 +266,7 @@ fn add_clip_from_media(
         len: dur,
         src_in: 0.0,
         text: String::new(),
+        lut: String::new(),
         fx: Default::default(),
         kf: Default::default(),
     };
@@ -307,6 +308,12 @@ fn remove_track(track: String, state: State<AppState>) -> Result<serde_json::Val
 #[tauri::command]
 fn get_project(state: State<AppState>) -> serde_json::Value {
     state.project.lock().unwrap().snapshot()
+}
+
+/// Read a small text file (used to load a .cube LUT for the GPU preview).
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(err_str)
 }
 
 /// Reveal a file in the OS file browser (selects it in its folder).
@@ -465,6 +472,7 @@ fn add_title(start: f64, state: State<AppState>) -> Result<serde_json::Value, St
             len: 4.0,
             src_in: 0.0,
             text: "Title".into(),
+            lut: String::new(),
             fx,
             kf: Default::default(),
         })
@@ -479,6 +487,12 @@ fn set_title_text(
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
     with_undo(&state, |p| p.set_title_text(&id, &text).map_err(err_str))
+}
+
+/// Set (or clear with "") the .cube LUT applied to a clip (undoable).
+#[tauri::command]
+fn set_lut(id: String, path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| p.set_lut(&id, &path).map_err(err_str))
 }
 
 #[derive(serde::Deserialize)]
@@ -512,6 +526,7 @@ fn add_captions(
                 len: c.len.max(0.3),
                 src_in: 0.0,
                 text: c.text.clone(),
+                lut: String::new(),
                 fx,
                 kf: Default::default(),
             })
@@ -978,6 +993,7 @@ async fn export_project(
                     src_in: c.src_in,
                     path: paths.get(&c.media)?.clone(),
                     fx: ClipFx::from_map(&c.fx),
+                    lut: c.lut.clone(),
                     trans_dur: c.fx.get("trans_dur").copied().unwrap_or(0.0),
                     trans_dip: c.fx.get("trans_dip").copied().unwrap_or(0.0) > 0.5,
                     kf: c
@@ -1211,8 +1227,10 @@ fn main() {
             add_clip_from_media,
             remove_track,
             reveal_file,
+            read_text_file,
             cancel_export,
             set_effects,
+            set_lut,
             add_captions,
             get_project,
             move_clip,

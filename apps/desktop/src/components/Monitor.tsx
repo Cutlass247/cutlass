@@ -1,5 +1,112 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
+import { CubeLut } from "../ipc";
 import { formatTC, IconButton } from "./ui";
+
+// Cache the compiled WebGL program + textures per GL context.
+type LutGl = {
+  prog: WebGLProgram;
+  uFrame: WebGLUniformLocation | null;
+  uLut: WebGLUniformLocation | null;
+  uSize: WebGLUniformLocation | null;
+  frameTex: WebGLTexture;
+  lutTex: WebGLTexture;
+};
+const glCache = new WeakMap<WebGL2RenderingContext, LutGl>();
+
+function lutBundle(gl: WebGL2RenderingContext): LutGl {
+  const cached = glCache.get(gl);
+  if (cached) return cached;
+  const vs = `#version 300 es
+in vec2 aPos; out vec2 vUv;
+void main(){ vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }`;
+  const fs = `#version 300 es
+precision highp float; precision highp sampler3D;
+uniform sampler2D uFrame; uniform sampler3D uLut; uniform float uSize;
+in vec2 vUv; out vec4 frag;
+void main(){
+  vec3 c = clamp(texture(uFrame, vUv).rgb, 0.0, 1.0);
+  vec3 lc = (c*(uSize-1.0)+0.5)/uSize;
+  frag = vec4(texture(uLut, lc).rgb, 1.0);
+}`;
+  const compile = (type: number, src: string) => {
+    const s = gl.createShader(type)!;
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    return s;
+  };
+  const prog = gl.createProgram()!;
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(prog, 0, "aPos");
+  gl.linkProgram(prog);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  const b: LutGl = {
+    prog,
+    uFrame: gl.getUniformLocation(prog, "uFrame"),
+    uLut: gl.getUniformLocation(prog, "uLut"),
+    uSize: gl.getUniformLocation(prog, "uSize"),
+    frameTex: gl.createTexture()!,
+    lutTex: gl.createTexture()!,
+  };
+  glCache.set(gl, b);
+  return b;
+}
+
+function renderLut(gl: WebGL2RenderingContext, img: HTMLImageElement, lut: CubeLut) {
+  const b = lutBundle(gl);
+  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.useProgram(b.prog);
+  // source frame (unit 0), flipped so it isn't upside-down
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, b.frameTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  gl.uniform1i(b.uFrame, 0);
+  // LUT as an RGB8 3D texture (unit 1)
+  const n = lut.size;
+  const rgb = new Uint8Array(n * n * n * 3);
+  for (let i = 0; i < rgb.length; i++) rgb[i] = Math.round(Math.min(1, Math.max(0, lut.data[i])) * 255);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_3D, b.lutTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+  gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB8, n, n, n, 0, gl.RGB, gl.UNSIGNED_BYTE, rgb);
+  gl.uniform1i(b.uLut, 1);
+  gl.uniform1f(b.uSize, n);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/// A monitor layer graded by a .cube 3D LUT on the GPU (WebGL2).
+function LutLayer(p: { src: string; lut: CubeLut; style?: React.CSSProperties }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const gl = canvas.getContext("webgl2");
+    if (!gl) return;
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      renderLut(gl, img, p.lut);
+    };
+    img.src = p.src;
+  }, [p.src, p.lut]);
+  return <canvas ref={ref} style={p.style} />;
+}
 
 /// A monitor layer with the green chroma-keyed to transparent on a canvas,
 /// so lower layers show through. Approximate preview; export is exact.
@@ -45,6 +152,7 @@ export function Monitor(p: {
     style?: React.CSSProperties;
     chroma?: boolean;
     chromaSim?: number;
+    lut?: CubeLut | null;
   }[];
   vignette?: number;
   grain?: number;
@@ -68,7 +176,9 @@ export function Monitor(p: {
         {p.layers.length ? (
           <div className="monitor-layers">
             {p.layers.map((l) =>
-              l.chroma ? (
+              l.lut ? (
+                <LutLayer key={l.key} src={l.src} lut={l.lut} style={l.style} />
+              ) : l.chroma ? (
                 <KeyedLayer key={l.key} src={l.src} sim={l.chromaSim ?? 0.3} style={l.style} />
               ) : (
                 <img key={l.key} src={l.src} alt="" draggable={false} style={l.style} />

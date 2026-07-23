@@ -8,7 +8,7 @@ use cutlass_core::media::probe_duration_s;
 fn main() -> anyhow::Result<()> {
     let a = std::env::args().nth(1).expect("usage: format_check <clip>");
     cutlass_core::media::ensure_ffmpeg()?;
-    let segs = vec![Segment::Clip { path: a, src_in: 0.0, len: 3.0, fx: ClipFx::default() }];
+    let segs = vec![Segment::Clip { path: a, src_in: 0.0, len: 3.0, fx: ClipFx::default(), lut: String::new() }];
 
     for (fmt, name) in [
         (ExportFormat::Mp4H264, "h264"),
