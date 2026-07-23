@@ -32,6 +32,11 @@ pub struct AudioClip {
     /// per-clip gain (Effect Controls); defaults to unity when absent.
     #[serde(default = "unity_gain")]
     pub volume: f64,
+    /// retime factor: source seconds consumed per timeline second (2 =
+    /// fast/high-pitched, 0.5 = slow/low-pitched). Live preview is a naive
+    /// resample (pitch follows speed); export is atempo pitch-corrected.
+    #[serde(default = "unity_gain")]
+    pub speed: f64,
 }
 
 fn unity_gain() -> f64 {
@@ -85,6 +90,7 @@ struct ActiveClip {
     dec: Option<AudioDecoder>, // None = clip has no decodable audio
     buf: std::collections::VecDeque<f32>,
     exhausted: bool,
+    frac: f64, // fractional source-frame read position (for retimed clips)
 }
 
 impl TrackReader {
@@ -128,10 +134,12 @@ impl TrackReader {
                 Some(idx) => {
                     let clip = self.clips[idx].clone();
                     let clip_end = clip.start + clip.len;
+                    let speed = clip.speed.max(0.01);
                     if self.active.as_ref().map(|a| a.idx) != Some(idx) {
+                        let src_t = clip.src_in + (self.t - clip.start) * speed;
                         let dec = AudioDecoder::open(&clip.path, self.rate)
                             .and_then(|mut d| {
-                                d.seek(self.t - clip.start + clip.src_in)?;
+                                d.seek(src_t)?;
                                 Ok(d)
                             })
                             .ok();
@@ -140,26 +148,49 @@ impl TrackReader {
                             dec,
                             buf: Default::default(),
                             exhausted: false,
+                            frac: 0.0,
                         });
                     }
                     let a = self.active.as_mut().unwrap();
                     let until_end = (((clip_end - self.t) * self.rate as f64).ceil() as usize).max(1);
                     let want = need_frames.min(until_end);
-                    if a.buf.len() < want * 2 && !a.exhausted {
+                    let gain = clip.volume as f32;
+                    // buffer enough source frames to yield `want` output frames
+                    // at this speed (1 source frame per output at 1×).
+                    let want_src = a.frac as usize + (want as f64 * speed).ceil() as usize + 1;
+                    while a.buf.len() / 2 <= want_src && !a.exhausted {
                         match a.dec.as_mut().map(|d| d.next_chunk()) {
                             Some(Ok(Some(chunk))) => a.buf.extend(chunk),
                             _ => a.exhausted = true,
                         }
                     }
-                    let avail = (a.buf.len() / 2).min(want);
-                    if avail > 0 {
-                        let gain = clip.volume as f32;
-                        for _ in 0..avail * 2 {
-                            out.push(a.buf.pop_front().unwrap_or(0.0) * gain);
+                    // resample by nearest source frame, stepping `speed` per
+                    // output frame (identity when speed == 1).
+                    let mut produced = 0;
+                    while produced < want {
+                        let sidx = a.frac as usize;
+                        if sidx * 2 + 1 < a.buf.len() {
+                            out.push(a.buf[sidx * 2] * gain);
+                            out.push(a.buf[sidx * 2 + 1] * gain);
+                        } else if a.exhausted {
+                            out.push(0.0); // source ran short: pad silence
+                            out.push(0.0);
+                        } else {
+                            break; // need more source; refill on the next pass
                         }
-                        self.t += avail as f64 / self.rate as f64;
-                    } else if a.exhausted {
-                        // source ran short: silence to the clip boundary
+                        a.frac += speed;
+                        produced += 1;
+                    }
+                    // drop fully-consumed source frames, keep the remainder
+                    let consumed = a.frac as usize;
+                    for _ in 0..(consumed * 2).min(a.buf.len()) {
+                        a.buf.pop_front();
+                    }
+                    a.frac -= consumed as f64;
+                    if produced > 0 {
+                        self.t += produced as f64 / self.rate as f64;
+                    } else {
+                        // safety: never spin — emit silence for the request
                         out.extend(std::iter::repeat(0.0f32).take(want * 2));
                         self.t += want as f64 / self.rate as f64;
                     }
