@@ -17,6 +17,7 @@ import {
   exactFrame,
   ExportOptions,
   exportProject,
+  FX_DEFAULTS,
   getProject,
   hydrateMedia,
   importMedia,
@@ -91,6 +92,16 @@ export default function App() {
   const [playhead, setPlayhead] = useState(0);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  // user-saved Looks (Effects tab), persisted in localStorage
+  const [customLooks, setCustomLooks] = useState<{ name: string; params: Record<string, number> }[]>(
+    () => {
+      try {
+        return JSON.parse(localStorage.getItem("cutlass-looks") || "[]");
+      } catch {
+        return [];
+      }
+    }
+  );
   // a media-bin item being dragged toward the timeline (pointer-based, so
   // it works inside the Tauri webview where HTML5 drag events don't fire)
   const [mediaGhost, setMediaGhost] = useState<{ name: string; x: number; y: number } | null>(null);
@@ -478,6 +489,26 @@ export default function App() {
         .catch((e) => setError(String(e)));
     },
     [selected, applyEdit]
+  );
+
+  // Custom Looks: save the selected clip's colour grade as a reusable Look
+  const LOOK_KEYS = ["brightness", "contrast", "saturation", "temperature", "tint", "hue", "vignette"];
+  const persistLooks = useCallback((looks: typeof customLooks) => {
+    setCustomLooks(looks);
+    localStorage.setItem("cutlass-looks", JSON.stringify(looks));
+  }, []);
+  const onSaveLook = useCallback(() => {
+    if (!selectedClip) return;
+    const params: Record<string, number> = {};
+    for (const k of LOOK_KEYS) params[k] = selectedClip.fx?.[k] ?? FX_DEFAULTS[k] ?? 0;
+    const name = window.prompt("Name this Look:", `My Look ${customLooks.length + 1}`);
+    if (!name) return;
+    persistLooks([...customLooks.filter((l) => l.name !== name), { name: name.trim(), params }]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClip, customLooks, persistLooks]);
+  const onDeleteLook = useCallback(
+    (name: string) => persistLooks(customLooks.filter((l) => l.name !== name)),
+    [customLooks, persistLooks]
   );
 
   // Ken Burns: a slow push-in via scale keyframes across the clip
@@ -1200,6 +1231,10 @@ export default function App() {
             onKenBurns={onKenBurns}
             captionsReady={transcriptMedia !== null}
             onGenerateCaptions={onGenerateCaptions}
+            frameSrc={underPlayhead ? thumbAt(underPlayhead.media, underPlayhead.srcT) : null}
+            customLooks={customLooks}
+            onSaveLook={onSaveLook}
+            onDeleteLook={onDeleteLook}
             busy={busy !== null}
           />
         </div>

@@ -1,7 +1,59 @@
 import { useState } from "react";
 import { MediaItem } from "../ipc";
-import { EFFECT_GROUPS, LOOKS } from "../effects";
-import { mediaHue, Segmented } from "./ui";
+import { EffectPreset, EFFECT_GROUPS, LOOKS } from "../effects";
+import { lookStyle, mediaHue, Segmented } from "./ui";
+
+/// A Look button. When a current frame is available it renders as a live
+/// thumbnail graded with the look, so you pick by eye.
+function LookChip(p: {
+  look: EffectPreset;
+  frameSrc: string | null;
+  disabled: boolean;
+  custom?: boolean;
+  onClick: () => void;
+  onDelete?: () => void;
+}) {
+  const params = p.look.params ?? {};
+  const vig = params.vignette ?? 0;
+  if (!p.frameSrc) {
+    return (
+      <button className="look-chip" title={p.look.desc} disabled={p.disabled} onClick={p.onClick}>
+        {p.look.name}
+        {p.custom && p.onDelete && (
+          <span
+            className="look-del"
+            onClick={(e) => {
+              e.stopPropagation();
+              p.onDelete!();
+            }}
+          >
+            ✕
+          </span>
+        )}
+      </button>
+    );
+  }
+  return (
+    <button className="look-chip preview" title={p.look.desc} disabled={p.disabled} onClick={p.onClick}>
+      <span className="look-thumb">
+        <img src={p.frameSrc} alt="" draggable={false} style={lookStyle(params)} />
+        {vig > 0.01 && <span className="look-vig" style={{ opacity: Math.min(1, vig) }} />}
+        <span className="look-name">{p.look.name}</span>
+      </span>
+      {p.custom && p.onDelete && (
+        <span
+          className="look-del"
+          onClick={(e) => {
+            e.stopPropagation();
+            p.onDelete!();
+          }}
+        >
+          ✕
+        </span>
+      )}
+    </button>
+  );
+}
 
 type Tab = "media" | "effects";
 
@@ -17,6 +69,10 @@ export function MediaPanel(p: {
   onKenBurns: () => void;
   captionsReady: boolean;
   onGenerateCaptions: () => void;
+  frameSrc: string | null;
+  customLooks: { name: string; params: Record<string, number> }[];
+  onSaveLook: () => void;
+  onDeleteLook: (name: string) => void;
   busy: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("media");
@@ -66,17 +122,34 @@ export function MediaPanel(p: {
             <div className="fx-lib-title">Looks</div>
             <div className="look-grid">
               {LOOKS.map((l) => (
-                <button
+                <LookChip
                   key={l.name}
-                  className="look-chip"
-                  title={l.desc}
+                  look={l}
+                  frameSrc={p.frameSrc}
                   disabled={!p.hasSelection}
                   onClick={() => l.params && p.onApplyEffect(l.params)}
-                >
-                  {l.name}
-                </button>
+                />
+              ))}
+              {p.customLooks.map((l) => (
+                <LookChip
+                  key={l.name}
+                  look={l}
+                  frameSrc={p.frameSrc}
+                  disabled={!p.hasSelection}
+                  custom
+                  onClick={() => p.onApplyEffect(l.params)}
+                  onDelete={() => p.onDeleteLook(l.name)}
+                />
               ))}
             </div>
+            <button
+              className="save-look-btn"
+              disabled={!p.hasSelection}
+              title="Save this clip's colour grade as a reusable Look"
+              onClick={p.onSaveLook}
+            >
+              + Save current grade as Look
+            </button>
           </div>
 
           {EFFECT_GROUPS.map((g) => (
