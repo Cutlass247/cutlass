@@ -34,6 +34,8 @@ import {
   onPresence,
   onProjectChanged,
   openProject,
+  takeStartupFile,
+  onOpenFile,
   openUrl,
   pauseAudio,
   pickVideo,
@@ -828,24 +830,44 @@ export default function App() {
     }
   }, []);
 
-  const doOpen = useCallback(async () => {
-    try {
-      const res = await openProject();
-      if (!res) return;
-      setProject(res.project);
-      const map: Record<string, MediaItem> = {};
-      for (const m of res.media) map[m.id] = m;
-      setMedia(map);
-      setSelected(null);
-      setWordSel(null);
-      setTranscripts({});
-      setPlayhead(0);
-      setDirty(false);
-      setMarkers([]);
-    } catch (e) {
-      setError(String(e));
-    }
+  const applyOpened = useCallback((res: { project: ProjectSnapshot; media: MediaItem[] }) => {
+    setProject(res.project);
+    const map: Record<string, MediaItem> = {};
+    for (const m of res.media) map[m.id] = m;
+    setMedia(map);
+    setSelected(null);
+    setWordSel(null);
+    setTranscripts({});
+    setPlayhead(0);
+    setDirty(false);
+    setMarkers([]);
   }, []);
+
+  const doOpen = useCallback(
+    async (knownPath?: string) => {
+      try {
+        const res = await openProject(knownPath);
+        if (res) applyOpened(res);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [applyOpened]
+  );
+
+  // Load a project the app was launched with (double-clicked .cutlass), and
+  // handle a second double-click routed here by single-instance.
+  useEffect(() => {
+    takeStartupFile()
+      .then((p) => {
+        if (p) doOpen(p);
+      })
+      .catch(() => {});
+    const un = onOpenFile((p) => doOpen(p));
+    return () => {
+      un.then((f) => f());
+    };
+  }, [doOpen]);
 
   // Export button / File menu → open the settings dialog
   const doExport = useCallback(() => {

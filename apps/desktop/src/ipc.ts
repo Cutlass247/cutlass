@@ -636,7 +636,7 @@ export async function saveProject(): Promise<boolean> {
   return true;
 }
 
-export async function openProject(): Promise<{
+export async function openProject(knownPath?: string): Promise<{
   project: ProjectSnapshot;
   media: MediaItem[];
 } | null> {
@@ -645,13 +645,33 @@ export async function openProject(): Promise<{
     mockState.project = structuredClone(mockSaved.project);
     return { project: structuredClone(mockSaved.project), media: [] };
   }
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const path = await open({
-    multiple: false,
-    filters: [{ name: "Cutlass project", extensions: ["cutlass"] }],
-  });
-  if (typeof path !== "string") return null;
+  let path = knownPath;
+  if (!path) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({
+      multiple: false,
+      filters: [{ name: "Cutlass project", extensions: ["cutlass"] }],
+    });
+    if (typeof picked !== "string") return null;
+    path = picked;
+  }
   return invoke("open_project", { path });
+}
+
+/// A .cutlass path the app was launched with (double-clicked file). Loaded
+/// once on mount; null in the browser or on a plain launch.
+export async function takeStartupFile(): Promise<string | null> {
+  if (!inTauri) return null;
+  return invoke("take_startup_file");
+}
+
+/// Fires when the running app is asked to open a .cutlass file (a second
+/// double-click, routed here by single-instance). Payload is the path.
+export async function onOpenFile(cb: (path: string) => void): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const un = await listen<string>("open-file", (e) => cb(e.payload));
+  return un;
 }
 
 /// Build thumbs for media that's in the project doc but not local yet.
