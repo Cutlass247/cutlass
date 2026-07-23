@@ -1,5 +1,35 @@
-import { ReactNode, useRef, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { formatTC, IconButton } from "./ui";
+
+/// A monitor layer with the green chroma-keyed to transparent on a canvas,
+/// so lower layers show through. Approximate preview; export is exact.
+function KeyedLayer(p: { src: string; sim: number; style?: React.CSSProperties }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const img = new Image();
+    img.onload = () => {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      ctx.drawImage(img, 0, 0);
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = data.data;
+      const t = 1.1 + (0.8 - Math.min(0.8, p.sim)); // higher sim = looser key
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i];
+        const g = d[i + 1];
+        const b = d[i + 2];
+        if (g > 70 && g > r * t && g > b * t) d[i + 3] = 0;
+      }
+      ctx.putImageData(data, 0, 0);
+    };
+    img.src = p.src;
+  }, [p.src, p.sim]);
+  return <canvas ref={ref} style={p.style} />;
+}
 
 export type Resolution = { label: string; w: number; h: number };
 export const RESOLUTIONS: Resolution[] = [
@@ -9,7 +39,13 @@ export const RESOLUTIONS: Resolution[] = [
 ];
 
 export function Monitor(p: {
-  layers: { key: string; src: string; style?: React.CSSProperties }[];
+  layers: {
+    key: string;
+    src: string;
+    style?: React.CSSProperties;
+    chroma?: boolean;
+    chromaSim?: number;
+  }[];
   vignette?: number;
   grain?: number;
   titleOverlay?: ReactNode;
@@ -31,9 +67,13 @@ export function Monitor(p: {
       <div className="monitor-frame" ref={frameRef}>
         {p.layers.length ? (
           <div className="monitor-layers">
-            {p.layers.map((l) => (
-              <img key={l.key} src={l.src} alt="" draggable={false} style={l.style} />
-            ))}
+            {p.layers.map((l) =>
+              l.chroma ? (
+                <KeyedLayer key={l.key} src={l.src} sim={l.chromaSim ?? 0.3} style={l.style} />
+              ) : (
+                <img key={l.key} src={l.src} alt="" draggable={false} style={l.style} />
+              )
+            )}
           </div>
         ) : (
           <div className="monitor-empty">No clip under the playhead</div>

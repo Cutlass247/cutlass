@@ -559,7 +559,8 @@ button {
   overflow: hidden;
 }
 
-.monitor-frame img {
+.monitor-frame img,
+.monitor-frame canvas {
   max-width: 94%;
   max-height: 92%;
   border-radius: 4px;
@@ -572,7 +573,8 @@ button {
   position: absolute;
   inset: 0;
 }
-.monitor-layers img {
+.monitor-layers img,
+.monitor-layers canvas {
   position: absolute;
   inset: 0;
   margin: auto;
@@ -1661,4 +1663,28 @@ button {
   font-size: 10px;
   color: var(--muted);
   line-height: 1.2;
+}
+.caption-btn {
+  width: 100%;
+  background: linear-gradient(135deg, var(--accent, #4a90ff), #6a5cff);
+  border: none;
+  color: #fff;
+  border-radius: 8px;
+  padding: 11px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.caption-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.caption-btn:disabled {
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.fx-lib-note {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
 }

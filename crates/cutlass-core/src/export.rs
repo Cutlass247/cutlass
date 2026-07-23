@@ -27,6 +27,8 @@ pub struct ClipFx {
     pub vignette: f64,    // 0, 0..1 strength
     pub flip_h: f64,      // 0 or 1
     pub flip_v: f64,      // 0 or 1
+    pub chroma: f64,      // 0 or 1 — green-screen key (overlay tracks)
+    pub chroma_sim: f64,  // 0.30 — key similarity
     pub denoise: f64,     // 0 or 1 — audio voice cleanup
     pub scale: f64,      // 1
     pub rot: f64,        // degrees
@@ -53,6 +55,8 @@ impl Default for ClipFx {
             vignette: 0.0,
             flip_h: 0.0,
             flip_v: 0.0,
+            chroma: 0.0,
+            chroma_sim: 0.30,
             denoise: 0.0,
             scale: 1.0,
             rot: 0.0,
@@ -97,6 +101,8 @@ impl ClipFx {
             "vignette" => self.vignette = v,
             "flip_h" => self.flip_h = v,
             "flip_v" => self.flip_v = v,
+            "chroma" => self.chroma = v,
+            "chroma_sim" => self.chroma_sim = v,
             "denoise" => self.denoise = v,
             "scale" => self.scale = v,
             "rot" => self.rot = v,
@@ -138,6 +144,8 @@ impl ClipFx {
             vignette: g("vignette", d.vignette),
             flip_h: g("flip_h", d.flip_h),
             flip_v: g("flip_v", d.flip_v),
+            chroma: g("chroma", d.chroma),
+            chroma_sim: g("chroma_sim", d.chroma_sim),
             denoise: g("denoise", d.denoise),
             scale: g("scale", d.scale),
             rot: g("rot", d.rot),
@@ -694,10 +702,23 @@ fn run_export(
         let (t0, t1) = (ov.start, ov.start + ov.len);
         // audio beds carry no picture; only higher video tracks composite
         if !ov.audio_only {
+            // green-screen key: alpha format + colorkey so the base shows
+            // through the keyed pixels
+            let (pix, key) = if ov.fx.chroma > 0.5 {
+                (
+                    "yuva420p",
+                    format!(
+                        ",colorkey=0x00D000:similarity={:.3}:blend=0.10",
+                        ov.fx.chroma_sim.clamp(0.01, 1.0)
+                    ),
+                )
+            } else {
+                ("yuv420p", String::new())
+            };
             filters.push_str(&format!(
                 "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
-                 pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format=yuv420p,\
-                 eq=brightness={b}:contrast={c}:saturation={sat},\
+                 pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format={pix},\
+                 eq=brightness={b}:contrast={c}:saturation={sat}{key},\
                  setpts=PTS-STARTPTS+{t0:.3}/TB[ov{j}];\
                  [{base}][ov{j}]overlay=eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
                 b = ov.fx.brightness,

@@ -78,6 +78,8 @@ export const FX_DEFAULTS: Record<string, number> = {
   vignette: 0,
   flip_h: 0,
   flip_v: 0,
+  chroma: 0,
+  chroma_sim: 0.3,
   denoise: 0,
   scale: 1,
   rot: 0,
@@ -269,6 +271,34 @@ export async function setEffects(
     return structuredClone(mockState.project);
   }
   return invoke<ProjectSnapshot>("set_effects", { id, params });
+}
+
+export interface CaptionSpec {
+  text: string;
+  start: number;
+  len: number;
+}
+
+/// Create a batch of styled caption clips (from the transcript) on V2.
+export async function addCaptions(captions: CaptionSpec[]): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    for (const c of captions) {
+      mockState.project.clips.push({
+        id: `mock-cap-${mockState.nextClip++}`,
+        name: "Caption",
+        media: "",
+        track: "V2",
+        start: c.start,
+        len: Math.max(0.3, c.len),
+        src_in: 0,
+        text: c.text,
+        fx: { pos_y: 0.34, font_size: 46, title_bg: 0.55 },
+      });
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("add_captions", { captions });
 }
 
 /// Add/update a keyframe for a param at clip-relative time (undoable).

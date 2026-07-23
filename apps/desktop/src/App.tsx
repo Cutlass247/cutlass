@@ -5,6 +5,7 @@ import {
   Presence,
   ProjectSnapshot,
   Word,
+  addCaptions,
   addClipFromMedia,
   addTitle,
   audioClock,
@@ -427,13 +428,16 @@ export default function App() {
       const top = i === videoLayers.length - 1;
       const live = playing && playFrame && top ? playFrame : null;
       const settled = top && hq && hq.key === hqKey ? hq.src : null;
+      const draft = l.clip.id === selected ? fxDraft : {};
       return {
         key: l.clip.id,
         src: live ?? settled ?? thumbAt(l.media, l.srcT),
         style: layerStyle(l.clip),
+        chroma: (draft.chroma ?? l.clip.fx?.chroma ?? 0) > 0.5,
+        chromaSim: draft.chroma_sim ?? l.clip.fx?.chroma_sim ?? 0.3,
       };
     });
-  }, [videoLayers, playing, playFrame, hq, hqKey, layerStyle]);
+  }, [videoLayers, playing, playFrame, hq, hqKey, layerStyle, selected, fxDraft]);
 
   // vignette is a monitor overlay (not a CSS filter) — driven by the
   // topmost clip, honouring the selected clip's live drag draft
@@ -1091,6 +1095,47 @@ export default function App() {
     [transcriptMedia, applyEdit]
   );
 
+  // Auto-captions: turn the transcript into styled caption clips on V2.
+  // Words are grouped into short lines and mapped from source time to
+  // timeline time (skipping any that were cut out).
+  const onGenerateCaptions = useCallback(async () => {
+    if (!transcriptMedia) return;
+    const ws = transcripts[transcriptMedia];
+    if (!ws || ws.length === 0) return;
+    const lines: { text: string; srcStart: number; srcEnd: number }[] = [];
+    let cur: Word[] = [];
+    const flush = () => {
+      if (cur.length === 0) return;
+      lines.push({
+        text: cur.map((w) => w.text.trim()).join(" ").replace(/\s+([.,!?])/g, "$1"),
+        srcStart: cur[0].start,
+        srcEnd: cur[cur.length - 1].end,
+      });
+      cur = [];
+    };
+    for (const w of ws) {
+      cur.push(w);
+      if (cur.length >= 6 || cur[cur.length - 1].end - cur[0].start >= 2.8) flush();
+    }
+    flush();
+    const specs = lines.flatMap((l) => {
+      const start = srcToTimeline(transcriptMedia, l.srcStart);
+      if (start === null) return [];
+      const end = srcToTimeline(transcriptMedia, Math.max(l.srcStart, l.srcEnd - 0.01));
+      const len = Math.max(0.4, (end ?? start + (l.srcEnd - l.srcStart)) - start);
+      return [{ text: l.text, start, len }];
+    });
+    if (specs.length === 0) {
+      setError("No transcript text falls within the timeline — nothing to caption.");
+      return;
+    }
+    try {
+      applyEdit(await addCaptions(specs));
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [transcriptMedia, transcripts, srcToTimeline, applyEdit]);
+
   const caption = useMemo(() => {
     if (!underPlayhead) return null;
     const w = transcripts[underPlayhead.media.id];
@@ -1153,6 +1198,8 @@ export default function App() {
             hasSelection={selected !== null}
             onApplyEffect={onApplyEffect}
             onKenBurns={onKenBurns}
+            captionsReady={transcriptMedia !== null}
+            onGenerateCaptions={onGenerateCaptions}
             busy={busy !== null}
           />
         </div>

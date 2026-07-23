@@ -61,6 +61,12 @@ export const EFFECT_GROUPS: EffectGroup[] = [
     ],
   },
   {
+    title: "Key",
+    items: [
+      { name: "Green screen", desc: "Key out green (use on V2+)", params: { chroma: 1, chroma_sim: 0.3 } },
+    ],
+  },
+  {
     title: "Audio",
     items: [{ name: "Voice cleanup", desc: "Reduce hiss & room noise", params: { denoise: 1 } }],
   },
