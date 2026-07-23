@@ -31,9 +31,12 @@ controversy factually with a link.
    closes.
 3. One click: *"✂ 14 filler words."* One click: *"✂ 6 silences."*
    Play the result.
-4. Open a second window in the same room. Drag a clip in one — it moves
+4. Effects tab → click **Cinematic**. *"That's the whole grade — one
+   click, previewing live."* (Optional: drop a .cube LUT, or **Generate
+   captions** and watch them appear on V2.)
+5. Open a second window in the same room. Drag a clip in one — it moves
    in the other, live cursors visible.
-5. Export. Hardware-encoded, done in seconds. *"No watermark. And the
+6. Export. Hardware-encoded, done in seconds. *"No watermark. And the
    terms fit on one page: your content is yours."*
 
 ## Objection handling
@@ -43,9 +46,10 @@ controversy factually with a link.
 - **"Is my footage uploaded for AI?"** No. Transcription is whisper.cpp
   running locally. Airplane mode works.
 - **"Premiere does more."** Yes — and it should, after 30 years. Cutlass
-  does the 80% that talking-head creators do daily, 10× faster, and does
-  two things Premiere can't do at all (edit-by-transcript natively,
-  live multiplayer).
+  does the 80% that talking-head creators do daily, 10× faster: transcript
+  editing, smart cuts, one-click Looks and LUT grading, chroma key,
+  auto-captions, titles, and keyframes. And it does two things Premiere
+  can't do at all (edit-by-transcript natively, live multiplayer).
 - **"Mac?"** Windows beta first; the stack (Rust/Tauri/wgpu) is
   cross-platform and macOS is next.
 
@@ -57,7 +61,14 @@ controversy factually with a link.
   feedback channel (Discord or email).
 - Ask each tester for one thing: a clip of their honest first 5 minutes.
 
+## Shipped since v0 (safe to demo/claim)
+
+- One-click Looks + .cube LUT grading (live preview), color controls,
+  sharpen/grain/vignette, chroma key, motion presets (punch-in, Ken
+  Burns), auto-captions, voice cleanup, transitions, titles, keyframes.
+- In-app beta feedback (Help → Send beta feedback).
+
 ## Not yet true (don't claim)
 
-- macOS/Linux builds, effects/transitions library, hosted collab relay
-  (rooms currently need a self-run relay), auto-updates, mobile.
+- macOS/Linux builds, hosted collab relay (rooms currently need a
+  self-run relay), auto-updates, mobile, background removal / masks.
