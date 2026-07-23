@@ -256,6 +256,15 @@ export function fxStyle(clip: Clip | null, playhead: number): React.CSSPropertie
   };
 }
 
+/// CSS grade for a bare fx-param bundle (used by the Effects-tab Look
+/// thumbnails to preview a look on the current frame).
+export function lookStyle(params: Record<string, number>): React.CSSProperties {
+  return fxStyle(
+    { fx: params, start: 0, len: 1e9, id: "", name: "", media: "", track: "", src_in: 0 } as Clip,
+    0
+  );
+}
+
 export function formatTC(t: number, fps = 30): string {
   const m = Math.floor(t / 60);
   const s = Math.floor(t % 60);
