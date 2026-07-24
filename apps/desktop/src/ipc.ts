@@ -107,6 +107,9 @@ export interface MediaItem {
   name: string;
   path: string;
   duration_s: number;
+  /// native source size; 0 when unknown. Used to warn about upscaling.
+  width?: number;
+  height?: number;
   scrub_fps: number;
   thumbs: string[]; // data URLs, in time order
   waveform: number[]; // normalized peaks, whole file (empty = no audio)
@@ -910,6 +913,8 @@ async function mockImport(path: string): Promise<ImportResult> {
     name,
     path,
     duration_s: duration,
+    width: 1920,
+    height: 1080,
     scrub_fps: fps,
     thumbs: mockThumbs(duration, fps, name),
     waveform: Array.from({ length: 600 }, (_, i) => {

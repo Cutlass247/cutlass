@@ -139,6 +139,8 @@ fn media_json(info: &MediaInfo) -> Result<serde_json::Value, String> {
         "name": info.name,
         "path": info.path,
         "duration_s": info.duration_s,
+        "width": info.width,
+        "height": info.height,
         "scrub_fps": info.scrub_fps,
         "thumbs": thumbs?,
         "waveform": info.waveform,
@@ -152,6 +154,8 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
     let mut eng = cutlass_engine::MediaEngine::open(&path_str)?;
     let duration_s = eng.duration_s();
     anyhow::ensure!(duration_s > 0.05, "no usable duration");
+    // native size — the export UI uses it to stop silent upscaling
+    let (src_w, src_h) = eng.dimensions();
     // Aim for ~480 proxy frames (dense on short clips, capped on long
     // ones so an hour is ~8s/frame instead of 15s), at most 10 fps.
     let scrub_fps = (480.0 / duration_s.max(0.1)).min(10.0);
@@ -209,6 +213,8 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
             .unwrap_or_else(|| "clip".into()),
         path: path_str.clone(),
         duration_s,
+        width: src_w,
+        height: src_h,
         scrub_fps,
         thumb_paths,
         waveform,

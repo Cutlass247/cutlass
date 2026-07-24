@@ -1538,6 +1538,13 @@ button {
   color: var(--muted);
   font-weight: 600;
 }
+/* upscale warning under the resolution picker */
+.ex-field > span.ex-warn {
+  color: var(--gold, #e8b339);
+  font-weight: 500;
+  font-size: 11px;
+  line-height: 1.45;
+}
 .ex-field select,
 .ex-field input {
   background: var(--panel-2);
