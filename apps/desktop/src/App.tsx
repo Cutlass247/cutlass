@@ -878,6 +878,10 @@ export default function App() {
       setDirty(false);
       setMarkers([]);
       setProjectPath(res.path);
+      // this project has a file, so honour the saved auto-save preference
+      loadPrefs()
+        .then((p) => setAutoSave(p.autoSave === true))
+        .catch(() => {});
     },
     []
   );
@@ -894,14 +898,10 @@ export default function App() {
     [applyOpened]
   );
 
-  // Auto-save preference persists on disk — load it once on mount.
-  useEffect(() => {
-    loadPrefs()
-      .then((p) => {
-        if (p.autoSave === true) setAutoSave(true);
-      })
-      .catch(() => {});
-  }, []);
+  // Auto-save starts OFF for a new untitled project — it has no file to
+  // write to, so showing it on would be a lie. The saved preference is
+  // applied when a project is opened (see applyOpened), which is the only
+  // time auto-save can actually do anything.
   const toggleAutoSave = useCallback(() => {
     setAutoSave((v) => {
       const next = !v;
