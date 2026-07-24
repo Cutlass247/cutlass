@@ -502,17 +502,36 @@ impl Default for ExportSettings {
 
 /// The output-encoding args for a format/quality/encoder combination —
 /// everything after the filtergraph maps.
-/// Bits/sec target for encoders that take a bitrate rather than a quality
-/// factor (libopenh264, AMF). Scales with frame area; 1080p ≈ the base.
-fn target_bitrate(width: u32, height: u32, quality: Quality) -> String {
+/// Bits/sec target, scaled from a 1080p30 base by frame area and frame
+/// rate. We drive every H.264/H.265 encoder by explicit bitrate: hardware
+/// encoders honour quality factors inconsistently (h264_qsv given
+/// `-global_quality 20` actually encodes at q≈23 and measured *worse* SSIM
+/// than a plain bitrate target), so a generous VBR target is both better
+/// looking and predictable across QSV/NVENC/AMF/openh264.
+fn target_bitrate_bps(width: u32, height: u32, fps: u32, quality: Quality, hevc: bool) -> u64 {
     let base: f64 = match quality {
         Quality::Low => 5_000_000.0,
-        Quality::Medium => 10_000_000.0,
-        Quality::High => 18_000_000.0,
+        Quality::Medium => 12_000_000.0,
+        Quality::High => 24_000_000.0,
     };
-    let scale = (width as f64 * height as f64) / (1920.0 * 1080.0);
-    let bps = (base * scale.clamp(0.25, 4.0)).round() as u64;
-    format!("{bps}")
+    let area = ((width as f64 * height as f64) / (1920.0 * 1080.0)).clamp(0.25, 4.0);
+    let rate = (fps.max(1) as f64 / 30.0).clamp(0.5, 2.0);
+    // HEVC is roughly twice as efficient for the same perceived quality
+    let codec = if hevc { 0.6 } else { 1.0 };
+    (base * area * rate * codec).round() as u64
+}
+
+/// `-b:v/-maxrate/-bufsize` VBR triple for the computed target.
+fn rate_args(width: u32, height: u32, fps: u32, quality: Quality, hevc: bool) -> Vec<String> {
+    let b = target_bitrate_bps(width, height, fps, quality, hevc);
+    vec![
+        "-b:v".into(),
+        b.to_string(),
+        "-maxrate".into(),
+        (b * 3 / 2).to_string(),
+        "-bufsize".into(),
+        (b * 2).to_string(),
+    ]
 }
 
 fn output_args(
@@ -521,38 +540,24 @@ fn output_args(
     encoder: &str,
     width: u32,
     height: u32,
+    fps: u32,
 ) -> Vec<String> {
     let s = |x: &str| x.to_string();
     let mut a = vec![s("-c:v"), s(encoder)];
     match format {
         ExportFormat::Mp4H264 => {
-            let q = match quality {
-                Quality::Low => 28,
-                Quality::Medium => 23,
-                Quality::High => 20,
-            };
-            match encoder {
-                "h264_qsv" => a.extend([s("-global_quality"), q.to_string()]),
-                "h264_nvenc" => a.extend([s("-rc"), s("vbr"), s("-cq"), q.to_string()]),
-                "h264_amf" => a.extend([s("-b:v"), target_bitrate(width, height, quality)]),
-                // libopenh264 (LGPL software fallback): bitrate-controlled,
-                // no crf/preset support
-                _ => a.extend([s("-b:v"), target_bitrate(width, height, quality)]),
+            a.extend(rate_args(width, height, fps, quality, false));
+            if encoder == "h264_nvenc" {
+                a.extend([s("-rc"), s("vbr")]);
             }
             a.extend([s("-pix_fmt"), s("yuv420p")]);
             a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
             a.extend([s("-movflags"), s("+faststart")]);
         }
         ExportFormat::Mp4H265 => {
-            let q = match quality {
-                Quality::Low => 30,
-                Quality::Medium => 26,
-                Quality::High => 22,
-            };
-            match encoder {
-                "hevc_qsv" => a.extend([s("-global_quality"), q.to_string()]),
-                "hevc_nvenc" => a.extend([s("-rc"), s("vbr"), s("-cq"), q.to_string()]),
-                _ => a.extend([s("-b:v"), target_bitrate(width, height, quality)]),
+            a.extend(rate_args(width, height, fps, quality, true));
+            if encoder == "hevc_nvenc" {
+                a.extend([s("-rc"), s("vbr")]);
             }
             a.extend([s("-pix_fmt"), s("yuv420p")]);
             a.extend([s("-tag:v"), s("hvc1")]); // QuickTime-playable HEVC
@@ -838,7 +843,7 @@ fn run_export(
         filters.push_str(&format!("[{cur}]null[outv]"));
     }
 
-    let out_args = output_args(s.format, s.quality, encoder, s.width, s.height);
+    let out_args = output_args(s.format, s.quality, encoder, s.width, s.height, s.fps);
     let mut child = cmd
         .args(["-filter_complex", &filters])
         .args(["-map", "[outv]", "-map", "[outa]"])
