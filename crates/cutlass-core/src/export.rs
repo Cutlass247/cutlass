@@ -308,8 +308,12 @@ fn clip_video_chain(
     } else {
         String::new()
     };
+    // out_range=tv pins the frames to limited (broadcast) range. Without it
+    // a full-range source reaches the encoder untagged and some encoders —
+    // h264_amf notably — silently convert full→limited, washing the image
+    // out (measured SSIM 0.977 vs 0.999) regardless of bitrate.
     let mut s = format!(
-        "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
+        "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,\
          pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},{setpts},\
          format=yuv420p{bc}{cb}[cf{k}];",
     );
@@ -521,6 +525,25 @@ fn target_bitrate_bps(width: u32, height: u32, fps: u32, quality: Quality, hevc:
     (base * area * rate * codec).round() as u64
 }
 
+/// Tag the output limited-range bt709 (standard HD delivery). The filter
+/// chain already pins the pixels to tv range; tagging it means players and
+/// encoders agree instead of guessing.
+fn color_tag_args() -> Vec<String> {
+    [
+        "-color_range",
+        "tv",
+        "-colorspace",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
+    ]
+    .iter()
+    .map(|x| x.to_string())
+    .collect()
+}
+
 /// `-b:v/-maxrate/-bufsize` VBR triple for the computed target.
 fn rate_args(width: u32, height: u32, fps: u32, quality: Quality, hevc: bool) -> Vec<String> {
     let b = target_bitrate_bps(width, height, fps, quality, hevc);
@@ -547,20 +570,28 @@ fn output_args(
     match format {
         ExportFormat::Mp4H264 => {
             a.extend(rate_args(width, height, fps, quality, false));
-            if encoder == "h264_nvenc" {
-                a.extend([s("-rc"), s("vbr")]);
+            match encoder {
+                "h264_nvenc" => a.extend([s("-rc"), s("vbr")]),
+                // AMF defaults to a speed preset and Main profile; ask for
+                // quality + High so it uses the better compression tools.
+                "h264_amf" => a.extend([s("-quality"), s("2"), s("-profile:v"), s("high")]),
+                _ => {}
             }
             a.extend([s("-pix_fmt"), s("yuv420p")]);
+            a.extend(color_tag_args());
             a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
             a.extend([s("-movflags"), s("+faststart")]);
         }
         ExportFormat::Mp4H265 => {
             a.extend(rate_args(width, height, fps, quality, true));
-            if encoder == "hevc_nvenc" {
-                a.extend([s("-rc"), s("vbr")]);
+            match encoder {
+                "hevc_nvenc" => a.extend([s("-rc"), s("vbr")]),
+                "hevc_amf" => a.extend([s("-quality"), s("2")]),
+                _ => {}
             }
             a.extend([s("-pix_fmt"), s("yuv420p")]);
             a.extend([s("-tag:v"), s("hvc1")]); // QuickTime-playable HEVC
+            a.extend(color_tag_args());
             a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
             a.extend([s("-movflags"), s("+faststart")]);
         }
