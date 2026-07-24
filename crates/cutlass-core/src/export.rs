@@ -553,9 +553,30 @@ fn color_tag_args() -> Vec<String> {
     .collect()
 }
 
-/// `-b:v/-maxrate/-bufsize` VBR triple for the computed target.
-fn rate_args(width: u32, height: u32, fps: u32, quality: Quality, hevc: bool) -> Vec<String> {
+/// `-b:v/-maxrate/-bufsize` VBR triple for the computed target. With
+/// `cbr`, pin min/max to the target too — a last resort for encoders that
+/// accept the bitrate and then emit a fraction of it.
+fn rate_args(
+    width: u32,
+    height: u32,
+    fps: u32,
+    quality: Quality,
+    hevc: bool,
+    cbr: bool,
+) -> Vec<String> {
     let b = target_bitrate_bps(width, height, fps, quality, hevc);
+    if cbr {
+        return vec![
+            "-b:v".into(),
+            b.to_string(),
+            "-minrate".into(),
+            b.to_string(),
+            "-maxrate".into(),
+            b.to_string(),
+            "-bufsize".into(),
+            b.to_string(),
+        ];
+    }
     vec![
         "-b:v".into(),
         b.to_string(),
@@ -573,17 +594,23 @@ fn output_args(
     width: u32,
     height: u32,
     fps: u32,
+    cbr: bool,
 ) -> Vec<String> {
     let s = |x: &str| x.to_string();
     let mut a = vec![s("-c:v"), s(encoder)];
     match format {
         ExportFormat::Mp4H264 => {
-            a.extend(rate_args(width, height, fps, quality, false));
+            a.extend(rate_args(width, height, fps, quality, false, cbr));
             match encoder {
-                "h264_nvenc" => a.extend([s("-rc"), s("vbr")]),
+                "h264_nvenc" => a.extend([s("-rc"), if cbr { s("cbr") } else { s("vbr") }]),
                 // AMF defaults to a speed preset and Main profile; ask for
                 // quality + High so it uses the better compression tools.
-                "h264_amf" => a.extend([s("-quality"), s("2"), s("-profile:v"), s("high")]),
+                "h264_amf" => {
+                    a.extend([s("-quality"), s("2"), s("-profile:v"), s("high")]);
+                    if cbr {
+                        a.extend([s("-rc"), s("cbr")]);
+                    }
+                }
                 _ => {}
             }
             a.extend([s("-pix_fmt"), s("yuv420p")]);
@@ -592,10 +619,15 @@ fn output_args(
             a.extend([s("-movflags"), s("+faststart")]);
         }
         ExportFormat::Mp4H265 => {
-            a.extend(rate_args(width, height, fps, quality, true));
+            a.extend(rate_args(width, height, fps, quality, true, cbr));
             match encoder {
-                "hevc_nvenc" => a.extend([s("-rc"), s("vbr")]),
-                "hevc_amf" => a.extend([s("-quality"), s("2")]),
+                "hevc_nvenc" => a.extend([s("-rc"), if cbr { s("cbr") } else { s("vbr") }]),
+                "hevc_amf" => {
+                    a.extend([s("-quality"), s("2")]);
+                    if cbr {
+                        a.extend([s("-rc"), s("cbr")]);
+                    }
+                }
                 _ => {}
             }
             a.extend([s("-pix_fmt"), s("yuv420p")]);
@@ -666,7 +698,23 @@ pub fn export(
     let encoders = settings.format.encoders();
     for (i, encoder) in encoders.iter().enumerate() {
         progress(0.0);
-        match run_export(segments, overlays, titles, out, settings, encoder, total, progress, cancel) {
+        let mut res = run_export(
+            segments, overlays, titles, out, settings, encoder, total, progress, cancel, false,
+        );
+        // If it accepted -b:v but emitted a fraction of it, retry the same
+        // encoder pinned to CBR, which obliges it to hit the rate. Hardware
+        // encoders honour -b:v inconsistently depending on driver/context,
+        // and for H.265 there is no software fallback to fall back to.
+        if !cancel.load(Ordering::Relaxed)
+            && res.as_ref().err().is_some_and(|e| e.to_string().contains("ignored the requested"))
+        {
+            eprintln!("{encoder} under-delivered; retrying pinned to CBR");
+            progress(0.0);
+            res = run_export(
+                segments, overlays, titles, out, settings, encoder, total, progress, cancel, true,
+            );
+        }
+        match res {
             Ok(()) => return Ok(encoder.to_string()),
             Err(e) => {
                 // a user cancel must not fall through to the next encoder
@@ -694,6 +742,7 @@ fn run_export(
     total: f64,
     progress: &mut dyn FnMut(f32),
     cancel: &std::sync::atomic::AtomicBool,
+    cbr: bool,
 ) -> anyhow::Result<()> {
     let (w, h, fps) = (s.width, s.height, s.fps);
     let mut cmd = FfmpegCommand::new();
@@ -883,7 +932,7 @@ fn run_export(
         filters.push_str(&format!("[{cur}]null[outv]"));
     }
 
-    let out_args = output_args(s.format, s.quality, encoder, s.width, s.height, s.fps);
+    let out_args = output_args(s.format, s.quality, encoder, s.width, s.height, s.fps, cbr);
     // CUTLASS_DEBUG_FFMPEG=1 dumps the graph + output args — the fastest way
     // to see what the export actually asked ffmpeg to do.
     if std::env::var("CUTLASS_DEBUG_FFMPEG").is_ok() {
