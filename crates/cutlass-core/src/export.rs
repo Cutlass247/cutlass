@@ -371,8 +371,12 @@ fn clip_video_chain(
         }
     }
     if fx.vignette > 0.01 {
-        // smaller aperture angle = darker, tighter corners
-        let ang = (0.9 - fx.vignette.clamp(0.0, 1.0) * 0.6).max(0.15);
+        // ffmpeg's `angle` IS the strength: 0 = none, larger = darker corners
+        // (its default PI/5 ≈ 0.63 is already pronounced). This used to be
+        // inverted — 0.2 strength produced 0.78, darker than the default,
+        // while 1.0 produced 0.30 — so exports came out far darker than the
+        // preview's 20%-opacity overlay.
+        let ang = fx.vignette.clamp(0.0, 1.0) * 0.9;
         s.push_str(&format!("[{cur}]vignette=angle={ang:.3}[vg{k}];"));
         cur = format!("vg{k}");
     }
