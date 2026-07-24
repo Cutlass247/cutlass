@@ -464,7 +464,8 @@ impl ExportFormat {
     fn encoders(self) -> &'static [&'static str] {
         match self {
             Self::Mp4H264 => &["h264_qsv", "h264_nvenc", "h264_amf", "libopenh264"],
-            Self::Mp4H265 => &["hevc_qsv", "hevc_nvenc", "hevc_mf"],
+            // hevc_amf was missing, so H.265 failed outright on AMD machines
+            Self::Mp4H265 => &["hevc_qsv", "hevc_nvenc", "hevc_amf", "hevc_mf"],
             Self::MovProres => &["prores_ks"],
             Self::WebmVp9 => &["libvpx-vp9"],
         }
@@ -517,10 +518,14 @@ impl Default for ExportSettings {
 /// than a plain bitrate target), so a generous VBR target is both better
 /// looking and predictable across QSV/NVENC/AMF/openh264.
 fn target_bitrate_bps(width: u32, height: u32, fps: u32, quality: Quality, hevc: bool) -> u64 {
+    // Generous targets on purpose: with x264/x265 unavailable (GPL) we lean
+    // on hardware encoders, which need noticeably more bits than x264 for
+    // the same look. Trading file size for quality is the right default for
+    // an editor's master export.
     let base: f64 = match quality {
-        Quality::Low => 5_000_000.0,
-        Quality::Medium => 12_000_000.0,
-        Quality::High => 24_000_000.0,
+        Quality::Low => 8_000_000.0,
+        Quality::Medium => 16_000_000.0,
+        Quality::High => 40_000_000.0,
     };
     let area = ((width as f64 * height as f64) / (1920.0 * 1080.0)).clamp(0.25, 4.0);
     let rate = (fps.max(1) as f64 / 30.0).clamp(0.5, 2.0);
