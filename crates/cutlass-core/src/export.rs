@@ -924,6 +924,25 @@ fn run_export(
             saw_error.unwrap_or_default()
         );
     }
+
+    // Some encoders accept -b:v and then silently emit a small fraction of
+    // it (driver/Media-Foundation dependent), which looks terrible even
+    // though ffmpeg reports success. Treat a wildly-under-target file as a
+    // failure so export() falls through to the next encoder.
+    if matches!(s.format, ExportFormat::Mp4H264 | ExportFormat::Mp4H265) {
+        let hevc = matches!(s.format, ExportFormat::Mp4H265);
+        let target = target_bitrate_bps(s.width, s.height, s.fps, s.quality, hevc);
+        if let Ok(meta) = std::fs::metadata(out) {
+            let actual = (meta.len() as f64 * 8.0 / total.max(0.1)) as u64;
+            if actual * 5 < target * 2 {
+                anyhow::bail!(
+                    "{encoder} ignored the requested bitrate ({} kbps of {} kbps)",
+                    actual / 1000,
+                    target / 1000
+                );
+            }
+        }
+    }
     progress(1.0);
     Ok(())
 }
