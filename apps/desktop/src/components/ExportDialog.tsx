@@ -4,7 +4,12 @@ import { RESOLUTIONS } from "./Monitor";
 
 const FORMATS = [
   { value: "mp4_h264", label: "MP4 · H.264 (universal)", ext: "mp4" },
-  { value: "mp4_h265", label: "MP4 · H.265 / HEVC (needs GPU support)", ext: "mp4" },
+  // H.265 is hidden for the beta: every HEVC encoder we can ship is
+  // hardware-backed (x265 is GPL), so it hard-fails on GPUs that encode
+  // H.264 but not HEVC. The platforms our users upload to re-encode
+  // anyway, so it buys them nothing. Backend support is still there —
+  // re-add this line to bring it back.
+  // { value: "mp4_h265", label: "MP4 · H.265 / HEVC", ext: "mp4" },
   { value: "mov_prores", label: "MOV · ProRes (master)", ext: "mov" },
   { value: "webm_vp9", label: "WebM · VP9 (web)", ext: "webm" },
 ];
@@ -27,7 +32,6 @@ const PRESETS: { name: string; def: PresetDef | null }[] = [
   { name: "YouTube 1080p", def: { format: "mp4_h264", res: "1080p", fps: 30, quality: "high" } },
   { name: "YouTube 4K", def: { format: "mp4_h264", res: "4K", fps: 30, quality: "high" } },
   { name: "Web — small", def: { format: "mp4_h264", res: "720p", fps: 30, quality: "medium" } },
-  { name: "HEVC 1080p", def: { format: "mp4_h265", res: "1080p", fps: 30, quality: "high" } },
   { name: "ProRes master", def: { format: "mov_prores", res: "1080p", fps: 30, quality: "high" } },
   { name: "WebM", def: { format: "webm_vp9", res: "1080p", fps: 30, quality: "medium" } },
   { name: "Custom", def: null },
