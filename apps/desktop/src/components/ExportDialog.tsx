@@ -4,7 +4,7 @@ import { RESOLUTIONS } from "./Monitor";
 
 const FORMATS = [
   { value: "mp4_h264", label: "MP4 · H.264 (universal)", ext: "mp4" },
-  { value: "mp4_h265", label: "MP4 · H.265 / HEVC (smaller)", ext: "mp4" },
+  { value: "mp4_h265", label: "MP4 · H.265 / HEVC (needs GPU support)", ext: "mp4" },
   { value: "mov_prores", label: "MOV · ProRes (master)", ext: "mov" },
   { value: "webm_vp9", label: "WebM · VP9 (web)", ext: "webm" },
 ];
