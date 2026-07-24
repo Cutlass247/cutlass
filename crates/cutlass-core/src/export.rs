@@ -723,6 +723,17 @@ pub fn export(
                 }
                 if i + 1 < encoders.len() {
                     eprintln!("{encoder} encode failed ({e:#}); trying {}", encoders[i + 1]);
+                } else if matches!(settings.format, ExportFormat::Mp4H265) {
+                    // Every HEVC encoder is hardware-backed here (x265 is GPL,
+                    // so there's no software fallback). Plenty of GPUs encode
+                    // H.264 but not HEVC — say so plainly instead of leaking
+                    // a driver error like MF_E_INVALIDTYPE.
+                    return Err(anyhow::anyhow!(
+                        "H.265 isn't available on this machine — no working HEVC \
+                         encoder was found (many GPUs support H.264 encoding but \
+                         not HEVC). Export as MP4 H.264 (universal) instead, which \
+                         plays everywhere. Details: {e:#}"
+                    ));
                 } else {
                     return Err(e);
                 }
