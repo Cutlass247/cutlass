@@ -875,6 +875,11 @@ fn run_export(
     }
 
     let out_args = output_args(s.format, s.quality, encoder, s.width, s.height, s.fps);
+    // CUTLASS_DEBUG_FFMPEG=1 dumps the graph + output args — the fastest way
+    // to see what the export actually asked ffmpeg to do.
+    if std::env::var("CUTLASS_DEBUG_FFMPEG").is_ok() {
+        eprintln!("--- filter_complex ---\n{filters}\n--- out_args ---\n{out_args:?}\n");
+    }
     let mut child = cmd
         .args(["-filter_complex", &filters])
         .args(["-map", "[outv]", "-map", "[outa]"])

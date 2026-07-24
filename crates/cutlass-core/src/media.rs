@@ -25,6 +25,9 @@ pub struct MediaInfo {
     pub name: String,
     pub path: String,
     pub duration_s: f64,
+    /// native source dimensions; 0 when unknown
+    pub width: u32,
+    pub height: u32,
     /// scrub-proxy sampling rate (frames per second of source time)
     pub scrub_fps: f64,
     /// scrub-proxy frames, in time order
@@ -93,6 +96,35 @@ pub fn probe_duration_s(path: &Path) -> anyhow::Result<f64> {
     duration.ok_or_else(|| anyhow::anyhow!("could not probe duration of {}", path.display()))
 }
 
+/// Native pixel dimensions of the first video stream, (0, 0) when unknown.
+/// The export UI uses this to stop people upscaling past their source —
+/// rendering 1080p footage at 4K measurably *lowers* quality and triples
+/// the file size.
+pub fn probe_dimensions(path: &Path) -> (u32, u32) {
+    let Ok(mut child) = FfmpegCommand::new()
+        .input(path.to_string_lossy())
+        .args(["-f", "null", "-t", "0.01", "-"])
+        .spawn()
+    else {
+        return (0, 0);
+    };
+    let mut dims = (0, 0);
+    if let Ok(events) = child.iter() {
+        for event in events {
+            if let ffmpeg_sidecar::event::FfmpegEvent::ParsedInputStream(s) = event {
+                if let ffmpeg_sidecar::event::StreamTypeSpecificData::Video(v) =
+                    &s.type_specific_data
+                {
+                    if dims == (0, 0) {
+                        dims = (v.width, v.height);
+                    }
+                }
+            }
+        }
+    }
+    dims
+}
+
 /// Generate (or reuse) the scrub proxy for `path`. Returns frame files in
 /// time order plus the sampling fps used.
 pub fn scrub_proxy(path: &Path, duration_s: f64) -> anyhow::Result<(Vec<PathBuf>, f64)> {
@@ -127,6 +159,7 @@ pub fn scrub_proxy(path: &Path, duration_s: f64) -> anyhow::Result<(Vec<PathBuf>
 
 pub fn import(path: &Path) -> anyhow::Result<MediaInfo> {
     let duration_s = probe_duration_s(path)?;
+    let (width, height) = probe_dimensions(path);
     let (thumb_paths, scrub_fps) = scrub_proxy(path, duration_s)?;
     let waveform = waveform(path);
     Ok(MediaInfo {
@@ -137,6 +170,8 @@ pub fn import(path: &Path) -> anyhow::Result<MediaInfo> {
             .unwrap_or_else(|| "clip".into()),
         path: path.to_string_lossy().to_string(),
         duration_s,
+        width,
+        height,
         scrub_fps,
         thumb_paths,
         waveform,

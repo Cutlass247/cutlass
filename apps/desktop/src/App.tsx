@@ -934,6 +934,17 @@ export default function App() {
     };
   }, [doOpen]);
 
+  // Tallest source actually on the timeline — the export dialog uses it to
+  // default the resolution and warn about upscaling.
+  const sourceHeight = useMemo(() => {
+    let h = 0;
+    for (const c of clips) {
+      const m = media[c.media];
+      if (m?.height) h = Math.max(h, m.height);
+    }
+    return h;
+  }, [clips, media]);
+
   // Export button / File menu → open the settings dialog
   const doExport = useCallback(() => {
     setError(null);
@@ -1533,6 +1544,7 @@ export default function App() {
       {exportOpen && (
         <ExportDialog
           initialDir={exportDir}
+          sourceHeight={sourceHeight}
           onCancel={() => setExportOpen(false)}
           onExport={runExport}
         />

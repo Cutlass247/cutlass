@@ -35,6 +35,9 @@ const PRESETS: { name: string; def: PresetDef | null }[] = [
 
 export function ExportDialog(p: {
   initialDir: string;
+  /// tallest source in the project (0 = unknown). Exporting above this
+  /// upscales, which measurably *lowers* quality and inflates the file.
+  sourceHeight?: number;
   onCancel: () => void;
   onExport: (opts: ExportOptions) => void;
 }) {
@@ -42,7 +45,14 @@ export function ExportDialog(p: {
   const [dir, setDir] = useState(p.initialDir);
   const [preset, setPreset] = useState("YouTube 1080p");
   const [format, setFormat] = useState("mp4_h264");
-  const [resLabel, setResLabel] = useState("1080p");
+  // default to the resolution that matches the footage, so the common path
+  // never silently upscales
+  const [resLabel, setResLabel] = useState(() => {
+    const sh = p.sourceHeight ?? 0;
+    if (!sh) return "1080p";
+    const fit = [...RESOLUTIONS].reverse().find((r) => r.h <= sh);
+    return (fit ?? RESOLUTIONS[0]).label;
+  });
   const [fps, setFps] = useState(30);
   const [quality, setQuality] = useState("high");
 
@@ -129,9 +139,17 @@ export function ExportDialog(p: {
               {RESOLUTIONS.map((r) => (
                 <option key={r.label} value={r.label}>
                   {r.label} ({r.w}×{r.h})
+                  {!!p.sourceHeight && r.h > p.sourceHeight ? " — upscaled" : ""}
                 </option>
               ))}
             </select>
+            {!!p.sourceHeight && res.h > p.sourceHeight && (
+              <span className="ex-warn">
+                ⚠ Your footage is {p.sourceHeight}p. Exporting at {res.h}p can’t add
+                detail — it looks softer and the file gets much bigger. {p.sourceHeight}p
+                is the sharper choice.
+              </span>
+            )}
           </label>
           <label className="ex-field">
             <span>Frame rate</span>
