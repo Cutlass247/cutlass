@@ -239,7 +239,11 @@ export default function App() {
     defaultExportDir().then((d) => d && setExportDir(d));
     const un = onProjectChanged((snap) => setProject(snap));
     const unExport = onExportProgress((p) =>
-      setExportModal((m) => (m && m.phase === "running" ? { ...m, progress: p } : m))
+      setExportModal((m) =>
+        // never let the bar run backwards: encoder fallbacks/retries restart
+        // ffmpeg's progress from 0, but to the user it's one export
+        m && m.phase === "running" ? { ...m, progress: Math.max(m.progress, p) } : m
+      )
     );
     const unFrame = onPlaybackFrame((_t, src) => setPlayFrame(src));
     const unPresence = onPresence((p) =>
