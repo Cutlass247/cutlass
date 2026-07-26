@@ -1,0 +1,7 @@
+# FFmpeg lives in-repo at vendor/ffmpeg. Resolve FFMPEG_DIR relative to this
+# repo (not an absolute machine path) and force it, so a stale FFMPEG_DIR in
+# the shell environment can't point the linker at an old location after the
+# project is moved. The app links against vendor/ffmpeg/lib at build time;
+# at runtime it uses the bundled ffmpeg.exe instead.
+[env]
+FFMPEG_DIR = { value = "vendor/ffmpeg", relative = true, force = true }
