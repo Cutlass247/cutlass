@@ -597,6 +597,11 @@ fn output_args(
     cbr: bool,
 ) -> Vec<String> {
     let s = |x: &str| x.to_string();
+    // AMD's AMF encoders honour -b:v only in CBR; their VBR modes emit a
+    // fraction of the target. Use CBR from the first pass so we don't encode
+    // once in VBR, reject it, and re-encode in CBR — that double pass doubled
+    // export time and made the progress bar fill then reset.
+    let cbr = cbr || encoder.ends_with("_amf");
     let mut a = vec![s("-c:v"), s(encoder)];
     match format {
         ExportFormat::Mp4H264 => {
