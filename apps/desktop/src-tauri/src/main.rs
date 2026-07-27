@@ -338,8 +338,12 @@ fn read_text_file(path: String) -> Result<String, String> {
 fn open_url(url: String) {
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("cmd")
-            .args(["/c", "start", "", &url])
+        // Hand the URL to the default protocol handler WITHOUT cmd.exe.
+        // `cmd /c start` mangles URLs: `&` splits the command and `%xx`
+        // percent-encoding is eaten as env-var expansion — which is why the
+        // mailto body arrived empty. rundll32 passes the URL through intact.
+        let _ = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url])
             .spawn();
     }
     #[cfg(target_os = "macos")]

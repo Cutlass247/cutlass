@@ -1039,7 +1039,11 @@ export default function App() {
   // ── keyboard ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.tagName === "INPUT") return;
+      // don't hijack keys while the user is typing in any text field —
+      // textareas (feedback, titles) and contenteditable, not just inputs
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable))
+        return;
       if (e.ctrlKey && e.key.toLowerCase() === "z") {
         e.preventDefault();
         e.shiftKey ? doRedo() : doUndo();
