@@ -1,0 +1,7 @@
+Date,Tester,Source,GPU,OS,Area,Severity,Report,Status,Fixed in,Notes
+2026-07-27,u/example_handle,Reddit,NVIDIA RTX 3060,Win11,Export,Minor,"EXAMPLE — delete this row. H.264 High export felt large (~250MB for 2 min).",New,,Expected at 40 Mbps; suggest Medium for uploads.
+2026-07-27,jane@example.com,In-app,AMD Radeon RX 6600,Win10,Transcribe,Major,"EXAMPLE — delete this row. Transcription took ~3 min for a 5 min clip.",Investigating,,AMD machine — check thread count / model.
+,,,,,,,,,,
+,,,,,,,,,,
+,,,,,,,,,,
+,,,,,,,,,,

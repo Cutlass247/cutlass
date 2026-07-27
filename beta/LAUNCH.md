@@ -46,7 +46,12 @@ Testers *will* ask about the "Windows protected your PC" warning. Get ahead of i
 ## 4. Close the loop
 
 - Watch **Help → Send beta feedback** emails.
-- Keep a simple running list of reports + which GPU they came from.
+- Log every report in **`feedback-tracker.csv`** (open in Excel, or import into Google Sheets via *File → Import → Upload*). Columns: Date, Tester, Source, GPU, OS, Area, Severity, Report, Status, Fixed in, Notes. Delete the two EXAMPLE rows once you start.
+  - **Source:** Reddit / In-app / DM / Email
+  - **Area:** Import / Transcribe / Edit / Effects / Export / Save-Open / UI / Perf / Feature / Other
+  - **Severity:** Blocker / Major / Minor / Nice-to-have
+  - **Status:** New / Investigating / Fixing / Fixed / Won't fix / Need info
+  - **Always fill GPU** — it's the single most useful field (our worst bugs were GPU-specific). Sort by GPU to spot patterns like "3 AMD users hit the same thing."
 - Ship fixes, cut a new `v0.1.x-beta` release (same steps, new tag), tell testers.
 - When a batch of testers gets through import → edit → grade → export cleanly on their own hardware, you're ready to widen (public landing page, Reddit/X/Product Hunt — the drafts in `marketing/PITCH.md`).
 
