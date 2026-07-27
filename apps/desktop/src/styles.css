@@ -456,6 +456,7 @@ button {
 }
 
 .bin-item {
+  position: relative;
   display: flex;
   gap: 10px;
   padding: 8px;
@@ -464,6 +465,33 @@ button {
   border: 1px solid transparent;
   transition: border-color var(--speed);
   cursor: grab;
+}
+/* remove-from-project ✕ — appears on hover, top-right of the bin item */
+.bin-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--danger) 16%, var(--panel-3));
+  color: var(--danger);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--speed);
+  z-index: 2;
+}
+.bin-item:hover .bin-remove {
+  opacity: 1;
+}
+.bin-remove:hover {
+  background: var(--danger);
+  color: #fff;
 }
 .bin-item:active {
   cursor: grabbing;

@@ -47,6 +47,7 @@ import {
   razorOut,
   redoEdit,
   removeClip,
+  removeMedia,
   removeTrack,
   revealFile,
   saveProject,
@@ -135,6 +136,12 @@ export default function App() {
   const [feedbackText, setFeedbackText] = useState("");
   // shown when the user closes the window with unsaved changes
   const [quitPromptOpen, setQuitPromptOpen] = useState(false);
+  // confirm removing a media item that's used by timeline clips
+  const [removeMediaAsk, setRemoveMediaAsk] = useState<{
+    id: string;
+    name: string;
+    clips: number;
+  } | null>(null);
   // export flow: settings dialog → progress modal (running → done | error)
   const [exportOpen, setExportOpen] = useState(false);
   const [exportDir, setExportDir] = useState("");
@@ -1048,6 +1055,45 @@ export default function App() {
     [selected, applyEdit]
   );
 
+  // remove media from the project (drops it + any clips that use it)
+  const doRemoveMedia = useCallback(
+    async (mediaId: string) => {
+      const selUsesIt =
+        !!selected && project.clips.some((c) => c.id === selected && c.media === mediaId);
+      try {
+        const snap = await removeMedia(mediaId);
+        setProject(snap);
+        setMedia((m) => {
+          const n = { ...m };
+          delete n[mediaId];
+          return n;
+        });
+        setTranscripts((t) => {
+          const n = { ...t };
+          delete n[mediaId];
+          return n;
+        });
+        if (selUsesIt) setSelected(null);
+        setDirty(true);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [selected, project]
+  );
+  // clicking a bin item's ✕ — confirm first if it's on the timeline
+  const onRemoveMedia = useCallback(
+    (mediaId: string) => {
+      const clips = project.clips.filter((c) => c.media === mediaId).length;
+      if (clips > 0) {
+        setRemoveMediaAsk({ id: mediaId, name: media[mediaId]?.name ?? "this media", clips });
+      } else {
+        doRemoveMedia(mediaId);
+      }
+    },
+    [project, media, doRemoveMedia]
+  );
+
   // blade: split the clip at the playhead (selected clip if the playhead
   // is inside it, else the topmost clip under the playhead)
   const doSplit = useCallback(() => {
@@ -1469,6 +1515,7 @@ export default function App() {
             onImport={doImport}
             onTranscribe={doTranscribe}
             onMediaPointerDown={onMediaPointerDown}
+            onRemoveMedia={onRemoveMedia}
             hasSelection={selected !== null}
             onApplyEffect={onApplyEffect}
             onToggleEffect={onToggleEffect}
@@ -1696,6 +1743,34 @@ export default function App() {
               </button>
               <button className="primary-action" onClick={onQuitSave}>
                 Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {removeMediaAsk && (
+        <div className="modal-overlay" onPointerDown={() => setRemoveMediaAsk(null)}>
+          <div className="modal" onPointerDown={(e) => e.stopPropagation()}>
+            <div className="modal-title">Remove media?</div>
+            <div className="modal-sub">
+              “{removeMediaAsk.name}” is used by {removeMediaAsk.clips}{" "}
+              {removeMediaAsk.clips === 1 ? "clip" : "clips"} on the timeline. Removing it will
+              delete {removeMediaAsk.clips === 1 ? "that clip" : "those clips"} too.
+            </div>
+            <div className="modal-actions">
+              <button className="ghost-btn" onClick={() => setRemoveMediaAsk(null)}>
+                Cancel
+              </button>
+              <button
+                className="ghost-btn danger"
+                onClick={() => {
+                  const id = removeMediaAsk.id;
+                  setRemoveMediaAsk(null);
+                  doRemoveMedia(id);
+                }}
+              >
+                Remove
               </button>
             </div>
           </div>

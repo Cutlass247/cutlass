@@ -417,6 +417,21 @@ fn remove_clip(
     })
 }
 
+/// Remove a media item from the project — drops it from the pool and
+/// removes any clips that use it (and its transcript). Not undoable, like
+/// import; the UI confirms first when clips would be removed.
+#[tauri::command]
+fn remove_media(media_id: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let snap = {
+        let mut p = state.project.lock().unwrap();
+        p.remove_media(&media_id).map_err(err_str)?;
+        p.snapshot()
+    };
+    state.media.lock().unwrap().remove(&media_id);
+    notify_sync(&state);
+    Ok(snap)
+}
+
 #[tauri::command]
 fn undo(state: State<AppState>) -> Result<serde_json::Value, String> {
     let entry = state.history.lock().unwrap().undo.pop();
@@ -1411,6 +1426,7 @@ fn main() {
             move_clip,
             trim_clip,
             remove_clip,
+            remove_media,
             exact_frame,
             play,
             pause,

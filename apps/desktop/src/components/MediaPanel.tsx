@@ -64,6 +64,7 @@ export function MediaPanel(p: {
   onImport: () => void;
   onTranscribe: (id: string) => void;
   onMediaPointerDown: (mediaId: string, e: React.PointerEvent) => void;
+  onRemoveMedia: (mediaId: string) => void;
   hasSelection: boolean;
   onApplyEffect: (params: Record<string, number>) => void;
   onToggleEffect: (params: Record<string, number>) => void;
@@ -236,6 +237,17 @@ export function MediaPanel(p: {
                 title="Drag onto a timeline track to place it"
                 onPointerDown={(e) => p.onMediaPointerDown(m.id, e)}
               >
+                <button
+                  className="bin-remove"
+                  title="Remove from project"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    p.onRemoveMedia(m.id);
+                  }}
+                >
+                  ✕
+                </button>
                 <div
                   className="bin-thumb"
                   style={{ borderColor: `hsl(${mediaHue(m.id)} 60% 45%)` }}
