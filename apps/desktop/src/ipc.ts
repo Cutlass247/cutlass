@@ -723,6 +723,21 @@ export async function onOpenFile(cb: (path: string) => void): Promise<() => void
   return un;
 }
 
+/// Fires when the user tries to close the window (the OS close is
+/// intercepted). The app decides whether to quit or prompt to save.
+export async function onCloseRequested(cb: () => void): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  const un = await listen("close-requested", () => cb());
+  return un;
+}
+
+/// Actually close the window (after the save-on-quit choice is made).
+export async function forceClose(): Promise<void> {
+  if (!inTauri) return;
+  await invoke("force_close");
+}
+
 /// Build thumbs for media that's in the project doc but not local yet.
 export async function hydrateMedia(mediaId: string): Promise<MediaItem | null> {
   if (!inTauri) return null;
