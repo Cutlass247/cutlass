@@ -142,9 +142,6 @@ button {
 }
 
 .menu-check {
-  display: inline-block;
-  width: 14px;
-  margin-right: 2px;
   color: var(--accent);
   font-weight: 700;
 }
@@ -1484,6 +1481,13 @@ button {
 .ghost-btn.small {
   padding: 6px 10px;
   font-size: 12px;
+}
+.ghost-btn.danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+.ghost-btn.danger:hover {
+  border-color: var(--danger);
 }
 
 .primary-action {

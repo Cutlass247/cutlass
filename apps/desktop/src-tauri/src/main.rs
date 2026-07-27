@@ -636,6 +636,13 @@ fn take_startup_file(state: State<AppState>) -> Option<String> {
     state.startup_file.lock().unwrap().take()
 }
 
+/// Actually close the window — called by the frontend after the user
+/// answers the save-on-quit prompt (the OS close is otherwise intercepted).
+#[tauri::command]
+fn force_close(window: tauri::WebviewWindow) {
+    let _ = window.destroy();
+}
+
 /// App preferences (e.g. auto-save) live in a small JSON file on disk so
 /// they survive restarts — WebView localStorage does not reliably persist.
 fn settings_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -1358,9 +1365,23 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .setup(|app| {
+            use tauri::{Emitter, Manager};
+            // Intercept the window close so unsaved work isn't lost: always
+            // prevent the OS close and hand it to the frontend, which quits
+            // immediately when clean or shows a save prompt when dirty (then
+            // calls `force_close`).
+            if let Some(win) = app.get_webview_window("main") {
+                let w = win.clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = w.emit("close-requested", ());
+                    }
+                });
+            }
+
             // CUTLASS_ROOM=<name> auto-joins a collab room at startup
             if let Ok(room) = std::env::var("CUTLASS_ROOM") {
-                use tauri::Manager;
                 let handle = app.handle().clone();
                 let state = app.state::<AppState>();
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SyncCmd>();
@@ -1395,6 +1416,7 @@ fn main() {
             razor_out,
             save_project,
             take_startup_file,
+            force_close,
             load_prefs,
             save_pref,
             open_project,

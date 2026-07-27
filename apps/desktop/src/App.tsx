@@ -36,6 +36,8 @@ import {
   openProject,
   takeStartupFile,
   onOpenFile,
+  onCloseRequested,
+  forceClose,
   loadPrefs,
   savePref,
   openUrl,
@@ -131,6 +133,8 @@ export default function App() {
   const [room, setRoom] = useState<string | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState("");
+  // shown when the user closes the window with unsaved changes
+  const [quitPromptOpen, setQuitPromptOpen] = useState(false);
   // export flow: settings dialog → progress modal (running → done | error)
   const [exportOpen, setExportOpen] = useState(false);
   const [exportDir, setExportDir] = useState("");
@@ -311,6 +315,11 @@ export default function App() {
   useEffect(() => {
     playingRef.current = playing;
   }, [playing]);
+  // mirror of `dirty` for the window-close handler (avoids a stale closure)
+  const dirtyRef = useRef(dirty);
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
   // latest tracks / zoom / media for the pointer-drag drop closure
   const tracksRef = useRef(tracks);
   useEffect(() => {
@@ -863,6 +872,30 @@ export default function App() {
       setError(String(e));
     }
   }, [saveTo]);
+
+  // ── save-on-close guard ─────────────────────────────────────────────
+  // The window close is intercepted natively; quit straight away when there
+  // are no unsaved changes, otherwise prompt Save / Don't save / Cancel.
+  useEffect(() => {
+    const un = onCloseRequested(() => {
+      if (dirtyRef.current) setQuitPromptOpen(true);
+      else forceClose();
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+  const onQuitSave = useCallback(async () => {
+    try {
+      const saved = await saveTo(false); // may prompt for a location first time
+      if (saved) forceClose();
+      else setQuitPromptOpen(false); // save was cancelled → stay in the app
+    } catch (e) {
+      setError(String(e));
+      setQuitPromptOpen(false);
+    }
+  }, [saveTo]);
+  const onQuitDiscard = useCallback(() => forceClose(), []);
 
   const applyOpened = useCallback(
     (res: {
@@ -1641,6 +1674,28 @@ export default function App() {
                 onClick={onSendFeedback}
               >
                 Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {quitPromptOpen && (
+        <div className="modal-overlay" onPointerDown={() => setQuitPromptOpen(false)}>
+          <div className="modal" onPointerDown={(e) => e.stopPropagation()}>
+            <div className="modal-title">Save changes before closing?</div>
+            <div className="modal-sub">
+              You have unsaved changes in “{project.name}”. Save them before Cutlass closes?
+            </div>
+            <div className="modal-actions">
+              <button className="ghost-btn" onClick={() => setQuitPromptOpen(false)}>
+                Cancel
+              </button>
+              <button className="ghost-btn danger" onClick={onQuitDiscard}>
+                Don’t save
+              </button>
+              <button className="primary-action" onClick={onQuitSave}>
+                Save
               </button>
             </div>
           </div>

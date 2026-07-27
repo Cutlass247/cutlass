@@ -171,13 +171,12 @@ export function MenuBarMenu({ title, items }: { title: string; items: MenuAction
                   it.onSelect?.();
                 }}
               >
-                <span>
-                  {it.checked !== undefined && (
-                    <span className="menu-check">{it.checked ? "✓" : ""}</span>
-                  )}
-                  {it.label}
-                </span>
-                {it.hint && <Kbd>{it.hint}</Kbd>}
+                <span>{it.label}</span>
+                {it.checked !== undefined ? (
+                  <span className="menu-check">{it.checked ? "✓" : ""}</span>
+                ) : it.hint ? (
+                  <Kbd>{it.hint}</Kbd>
+                ) : null}
               </button>
             )
           )}
