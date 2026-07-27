@@ -173,10 +173,13 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
     };
 
     if thumb_paths.is_empty() {
-        if interval > 1.5 {
-            // Long clip: SEEK to each thumbnail time (keyframe-fast). One
-            // sequential decode of an hour would be minutes; ~480 seeks
-            // is seconds.
+        // Sequential decode gives smooth, exact-time thumbs but its cost
+        // scales with clip length — past ~1 min it's slow on real footage.
+        // Longer clips SEEK to each thumbnail instead (fast at any length;
+        // thumbs snap to keyframes, which is fine for a scrub preview).
+        if duration_s > 60.0 {
+            // SEEK to each thumbnail time (keyframe-fast). One sequential
+            // decode of an hour would be minutes; ~480 seeks is seconds.
             let n = (duration_s * scrub_fps).ceil() as u32;
             for i in 1..=n {
                 let t = (i - 1) as f64 * interval;
