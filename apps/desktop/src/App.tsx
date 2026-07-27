@@ -958,7 +958,7 @@ export default function App() {
   // Beta feedback → open the user's mail client with a prefilled report
   const onSendFeedback = useCallback(() => {
     const body = `${feedbackText}\n\n---\nCutlass 0.1.0 (beta) · ${navigator.userAgent}`;
-    const url = `mailto:isaiahaniemeka@gmail.com?subject=${encodeURIComponent(
+    const url = `mailto:cutlass.beta@gmail.com?subject=${encodeURIComponent(
       "Cutlass beta feedback"
     )}&body=${encodeURIComponent(body)}`;
     openUrl(url);

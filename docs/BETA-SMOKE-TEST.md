@@ -92,7 +92,7 @@ those can't reach.
     mid-way. → It stops promptly, returns to the editor cleanly, and **no partial
     file** is left behind.
 25. 🔴 **Feedback** — **Help → Send beta feedback…**, type a line, **Send**. → Your
-    mail client opens a new message to `isaiahaniemeka@gmail.com`, subject
+    mail client opens a new message to `cutlass.beta@gmail.com`, subject
     "Cutlass beta feedback", with your text + version/OS footer prefilled. (Send is
     disabled until you type something.)
 
