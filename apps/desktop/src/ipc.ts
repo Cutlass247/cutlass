@@ -247,6 +247,18 @@ export async function removeClip(id: string, ripple: boolean): Promise<ProjectSn
   return invoke<ProjectSnapshot>("remove_clip", { id, ripple });
 }
 
+/// Remove a media item from the project — also removes any clips that use
+/// it. Returns the updated project.
+export async function removeMedia(mediaId: string): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    delete mockState.media[mediaId];
+    mockState.project.clips = mockState.project.clips.filter((c) => c.media !== mediaId);
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("remove_media", { mediaId });
+}
+
 /// Set one Effect Controls parameter on a clip (undoable).
 export async function setEffect(
   id: string,

@@ -377,6 +377,33 @@ impl Project {
         Ok(())
     }
 
+    /// Remove a media item from the pool, along with every clip that uses
+    /// it and its stored transcript. Returns how many clips were removed.
+    pub fn remove_media(&mut self, media_id: &str) -> anyhow::Result<usize> {
+        let clips = self.clips_obj();
+        let ids: Vec<String> = self.doc.keys(&clips).collect();
+        let mut victims: Vec<String> = Vec::new();
+        for cid in ids {
+            let Some((_, obj)) = self.doc.get(&clips, &cid)? else { continue };
+            if let Some((Value::Scalar(v), _)) = self.doc.get(&obj, "media")? {
+                if let ScalarValue::Str(s) = v.as_ref() {
+                    if s.as_str() == media_id {
+                        victims.push(cid);
+                    }
+                }
+            }
+        }
+        let removed = victims.len();
+        for cid in &victims {
+            self.doc.delete(&clips, cid)?;
+        }
+        let media = self.media_obj();
+        let _ = self.doc.delete(&media, media_id);
+        let tr = self.transcripts_obj();
+        let _ = self.doc.delete(&tr, media_id);
+        Ok(removed)
+    }
+
     /// Trim = (start, len, src_in) written together so a trim merges as a
     /// unit. Left-edge trims change all three; right-edge trims only len.
     pub fn trim_clip(
@@ -1082,5 +1109,30 @@ mod tests {
         assert!(t[0].1.contains("hello"));
         assert_eq!(t[1].0, "m2");
         assert!(t[1].1.contains("world"));
+    }
+
+    #[test]
+    fn remove_media_drops_its_clips() {
+        let mut p = Project::new("T");
+        p.set_media("m1", "a.mp4", "/a.mp4", 10.0).unwrap();
+        p.set_media("m2", "b.mp4", "/b.mp4", 10.0).unwrap();
+        p.set_transcript("m1", "[]").unwrap();
+        let mut c1 = demo_clip("c1", "V1", 0.0);
+        c1.media = "m1".into();
+        let mut c2 = demo_clip("c2", "V1", 5.0);
+        c2.media = "m2".into();
+        p.add_clip(&c1).unwrap();
+        p.add_clip(&c2).unwrap();
+
+        let removed = p.remove_media("m1").unwrap();
+        assert_eq!(removed, 1, "the one clip using m1 should be removed");
+        let snap = p.snapshot();
+        let clips = snap["clips"].as_array().unwrap();
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0]["id"], "c2", "the m2 clip survives");
+        let ids: Vec<String> = p.media_entries().into_iter().map(|(id, ..)| id).collect();
+        assert!(!ids.contains(&"m1".to_string()), "m1 gone from the pool");
+        assert!(ids.contains(&"m2".to_string()), "m2 remains");
+        assert!(p.transcripts().iter().all(|(id, _)| id != "m1"), "m1 transcript gone");
     }
 }
