@@ -217,7 +217,14 @@ export function Timeline(p: {
                   <span style={{ background: peer.color }}>{peer.name}</span>
                 </div>
               ))}
-              <div className="playhead" style={{ left: p.playhead * p.pps }} />
+              <div className="playhead" style={{ left: p.playhead * p.pps }}>
+                <div
+                  className="playhead-head"
+                  title="Drag to move the playhead"
+                  onPointerDown={p.onRulerPointerDown}
+                  onPointerMove={p.onRulerPointerMove}
+                />
+              </div>
             </div>
           </div>
         </div>

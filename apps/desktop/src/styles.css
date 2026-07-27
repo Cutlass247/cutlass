@@ -1371,13 +1371,31 @@ button {
   z-index: 6;
 }
 
-.playhead::before {
+/* grabbable handle at the top of the playhead — drag it to scrub. The
+   line itself stays pointer-events:none so it never blocks clips. */
+.playhead-head {
+  position: absolute;
+  top: 0;
+  left: -8px;
+  width: 18px;
+  height: 16px;
+  background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 55%, 50% 100%, 0 55%);
+  pointer-events: auto;
+  cursor: ew-resize;
+  z-index: 7;
+}
+.playhead-head:hover {
+  filter: brightness(1.2);
+}
+/* invisible wider grab zone below the knob so it's easy to catch */
+.playhead-head::after {
   content: "";
   position: absolute;
   top: 0;
-  left: -5px;
-  border: 6px solid transparent;
-  border-top-color: var(--accent);
+  left: -6px;
+  right: -6px;
+  height: 30px;
 }
 
 .peer-playhead {
