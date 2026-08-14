@@ -1,71 +1,61 @@
-# Cutlass ⚔️
+<div align="center">
+
+# Cutlass
 
 **Cut sharper. Own everything.**
 
-Cutlass is a video editor built to take on Premiere Pro, DaVinci Resolve, Final Cut Pro, and CapCut by refusing each of their fatal flaws:
+A video editor where your transcript is your timeline — delete the words, and the video cuts itself. Grade it in one click. Everything runs on your machine: nothing uploaded, nothing watermarked, nothing claimed.
 
-| Competitor's flaw | Cutlass answer |
-|---|---|
-| Premiere: crashes, subscription fatigue | Rust core, sandboxed plugins, one-time purchase option |
-| Resolve: steep learning curve, hardware hog | Progressive-disclosure UI, proxy-first pipeline for laptops |
-| Final Cut: Mac-only, no collaboration | Cross-platform (wgpu), CRDT-native multiplayer |
-| CapCut: rights grabs, watermarks, paywalls | One-page ToS — your content is yours; free tier, no watermark |
+### [⬇ Download for Windows](../../releases/latest) · v0.1.0 (beta)
 
-## The five product wedges
+</div>
 
-1. **Local-first performance, cloud-native collaboration** — native GPU engine + Google-Docs-style multiplayer editing.
-2. **Progressive disclosure UI** — CapCut-simple *Create* mode and full *Studio* mode over one shared project format. You graduate, you don't migrate.
-3. **AI as copilot, not autopilot** — transcript editing, auto-cuts, captions, multicam sync, all as accept/reject suggestions on the timeline.
-4. **Radical ownership** — open, documented project format; no rights grabs, ever.
-5. **Pricing that respects users** — generous free tier, no watermarks, one-time purchase alongside optional cloud subscription.
+---
 
-## Architecture (short version)
+## What it does
 
-- **Core engine:** Rust
-- **GPU render graph:** wgpu (Vulkan / Metal / DX12)
-- **Decode/encode:** FFmpeg + hardware acceleration (NVDEC / VideoToolbox / QSV)
-- **Desktop shell:** Tauri 2, UI in React + TypeScript, timeline on canvas/WebGL
-- **Project model:** Automerge CRDT — multiplayer, offline-first, undo/redo and history for free
-- **Local AI:** whisper.cpp / ONNX Runtime
-- **Plugins:** sandboxed WASM
+- **Edit by talking.** Cutlass transcribes your footage on-device. Delete a sentence in the transcript and the video cuts with it — frame-accurate, rippled shut, undoable.
+- **Kill the ums in one click.** Filler words and dead-air silences are found automatically. Two clicks and they're gone.
+- **Grade in one click.** One-click Looks (Cinematic, Warm, Noir, and more) preview live on your footage. Drop in a `.cube` LUT, pull green screen, punch in, or dial color by hand.
+- **Captions from your transcript.** One button drops burned-in captions, timed to your speech.
+- **Fast, native export.** Hardware-accelerated H.264, plus ProRes and WebM.
 
-Full detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+## The pledge
 
-## De-risking spikes
+- **Your content is yours.** Cutlass claims no license, ever, to anything you make.
+- **On-device by default.** Transcription and editing never upload your footage — airplane mode works.
+- **No watermarks. No subscription required. No lock-in.** Your project file is open and documented.
 
-The two bets the company rests on, proven before anything else is built:
+## Install
 
-| Spike | Question it answers | Status |
-|---|---|---|
-| [`spikes/crdt-timeline`](spikes/crdt-timeline) | Can a video timeline be a CRDT? What are sane merge semantics for concurrent edits? | ✅ GO — 7/7 scenarios converge |
-| [`spikes/media-engine`](spikes/media-engine) | Can we decode + scrub 4K H.264 at 60fps in Rust/wgpu on a mid-range machine? | ✅ GO — 236 fps sw / 141 fps hw decode; in-process libav required |
+1. Download **Cutlass_0.1.0_x64-setup.exe** from the [latest release](../../releases/latest).
+2. Run it. Windows SmartScreen will likely say *"Windows protected your PC"* — that's because this beta isn't code-signed yet, not because anything's wrong. Click **More info → Run anyway**.
+3. Launch **Cutlass** from the Start menu.
 
-## Current state — alpha feature-complete
+## First 90 seconds
 
-- `crates/cutlass-core` — CRDT project model (Automerge, deterministic
-  bootstrap so any two projects can merge), trim/ripple/razor ops,
-  export pipeline (QSV hw encode + x264 fallback, V2 compositing + amix)
-- `crates/cutlass-engine` — in-process libav: 261 fps 4K decode, 6.2 ms
-  proxy seeks, one-pass proxy sampling, audio decode/mixing (per-track
-  readers, audio clock owns transport), on-device whisper transcription
-  ([FINDINGS](crates/cutlass-engine/FINDINGS.md))
-- `crates/cutlass-sync-server` — collab relay: rooms, Automerge sync,
-  presence side-channel (`cargo run -p cutlass-sync-server`)
-- `apps/desktop` — Tauri 2 pro NLE shell: menu bar, media browser,
-  program monitor (transport, safe margins, resolution → export),
-  inspector, multi-track timeline (lock/mute/hide, snapping, markers,
-  zoom, colored clips, waveforms, filmstrips), transcript editing with
-  one-click filler/silence cuts + live captions, collab-safe undo/redo,
-  Create/Studio modes, .cutlass save/open, live multiplayer + presence
-  cursors, NSIS installer (`npm run tauri build`)
-- `site/` + `marketing/` — landing page and beta pitch drafts
+1. **+ Import** a talking-head clip. Words appear in the **Transcript** tab on their own.
+2. Click a word to jump there; select a sentence and cut it — the video cuts with it.
+3. One click each: **remove filler words**, **remove silences**.
+4. **Effects** tab → click a **Look** (try Cinematic). Grade previews live.
+5. **Export** → **MP4 · H.264**. Done.
 
-Dev setup (Windows): Rust MSVC + LLVM (`LIBCLANG_PATH`) + BtbN FFmpeg
-lgpl-shared in `vendor/ffmpeg` (`FFMPEG_DIR`, `bin` on PATH). Run with
-`npm run tauri dev` from `apps/desktop`.
+## What to know (beta)
 
-## v1 scope (ruthless)
+- **Windows 10/11, 64-bit.** macOS and Linux are on the roadmap.
+- **Export at your source resolution.** Exporting 1080p footage at 4K just makes it softer and bigger — the app now defaults to your footage's resolution and warns if you go higher.
+- **H.264 works on every machine.** ProRes (master) and WebM are also available. (H.265 is hidden for now — it depends on specific GPU support.)
+- This is an **early beta**. Expect rough edges, and please tell us about them.
 
-Great cutting · captions · transcript editing · color presets · multiplayer.
-Curated codecs done perfectly: H.264, HEVC, ProRes, AV1.
-**Not** in v1: node compositing (no Fusion clone), full DAW (no Fairlight clone), codec long-tail.
+## Tell us what breaks
+
+- In the app: **Help → Send beta feedback** (opens your email with version + system info prefilled).
+- Or just reply to the invite that sent you here.
+
+The single most useful thing you can send: **a short clip of your honest first five minutes** — where it clicked, where it didn't.
+
+---
+
+<div align="center">
+<sub>Cutlass · Windows beta · Your content is yours.</sub>
+</div>
