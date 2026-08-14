@@ -91,6 +91,29 @@ export const FX_DEFAULTS: Record<string, number> = {
   fade_out: 0,
   volume: 1,
   speed: 1,
+  // censor boxes (up to 3): 0 off / 1 blur / 2 pixelate / 3 solid; x/y = box
+  // centre, w/h = box size (fraction of frame), str = 0..1 strength.
+  censor: 0,
+  censor_x: 0.5,
+  censor_y: 0.5,
+  censor_w: 0.25,
+  censor_h: 0.25,
+  censor_str: 0.4,
+  censor_color: 0,
+  censor2: 0,
+  censor2_x: 0.5,
+  censor2_y: 0.5,
+  censor2_w: 0.25,
+  censor2_h: 0.25,
+  censor2_str: 0.4,
+  censor2_color: 0,
+  censor3: 0,
+  censor3_x: 0.5,
+  censor3_y: 0.5,
+  censor3_w: 0.25,
+  censor3_h: 0.25,
+  censor3_str: 0.4,
+  censor3_color: 0,
 };
 
 export function fxValue(clip: Clip, key: string): number {
@@ -413,6 +436,39 @@ export async function clearKeyframes(id: string, param: string): Promise<Project
   return invoke<ProjectSnapshot>("clear_keyframes", { id, param });
 }
 
+/// Motion-track a censor box across its clip. Writes position keyframes for
+/// `${prefix}_x` / `${prefix}_y` (replacing any prior track) and returns the
+/// updated project. Runs offline template matching in the backend.
+export async function trackCensor(
+  id: string,
+  prefix: string,
+  cx: number,
+  cy: number,
+  bw: number,
+  bh: number,
+  anchor: number
+): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 700)); // simulate the tracking pass
+    return mockTrackCensor(id, prefix, cx, cy);
+  }
+  return invoke<ProjectSnapshot>("track_censor", { id, prefix, cx, cy, bw, bh, anchor });
+}
+
+/// Fully clear a censor box (style, geometry, strength, colour, keyframes) so
+/// re-adding the slot gives a clean default box.
+export async function resetCensor(id: string, prefix: string): Promise<ProjectSnapshot> {
+  if (!inTauri) return mockResetCensor(id, prefix);
+  return invoke<ProjectSnapshot>("reset_censor", { id, prefix });
+}
+
+/// Subscribe to motion-tracking progress (0..1). No-op in the browser mock.
+export async function onTrackProgress(cb: (p: number) => void): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<number>("track-progress", (e) => cb(e.payload));
+}
+
 /// Add a title clip on V2 at `start` (default lower-third style).
 export async function addTitle(start: number): Promise<ProjectSnapshot> {
   if (!inTauri) {
@@ -492,6 +548,9 @@ export interface ExportOptions {
   fps: number;
   format: string; // mp4_h264 | mp4_h265 | mov_prores | webm_vp9
   quality: string; // low | medium | high
+  reframe?: string; // letterbox | fill | blur — how a non-matching source fills the frame
+  reframe_x?: number; // 0..1 pan for fill (0.5 = centred)
+  reframe_y?: number;
 }
 
 let mockExportCancelled = false;
@@ -506,8 +565,13 @@ export async function exportProject(opts: ExportOptions): Promise<string> {
     }
     return "mock (h264)";
   }
-  const { path, width, height, fps, format, quality } = opts;
-  return invoke<string>("export_project", { path, width, height, fps, format, quality });
+  const { path, width, height, fps, format, quality, reframe, reframe_x, reframe_y } = opts;
+  return invoke<string>("export_project", {
+    path, width, height, fps, format, quality,
+    reframe: reframe ?? "letterbox",
+    reframe_x: reframe_x ?? 0.5,
+    reframe_y: reframe_y ?? 0.5,
+  });
 }
 
 /// Cancel the in-flight export (kills the ffmpeg render).
@@ -973,6 +1037,51 @@ function mockAddClipFromMedia(
     src_in: 0,
   });
   return { project: structuredClone(mockState.project), clipId };
+}
+
+// Synthetic "tracker" for the browser mock: wander the box around its
+// current centre so the follow behaviour is visible without a real file.
+function mockResetCensor(id: string, prefix: string): ProjectSnapshot {
+  mockCheckpoint();
+  const clip = mockState.project.clips.find((c) => c.id === id);
+  if (clip) {
+    if (clip.kf) {
+      const kf = { ...clip.kf };
+      delete kf[`${prefix}_x`];
+      delete kf[`${prefix}_y`];
+      clip.kf = kf;
+    }
+    clip.fx = {
+      ...(clip.fx ?? {}),
+      [prefix]: 0,
+      [`${prefix}_x`]: 0.5,
+      [`${prefix}_y`]: 0.5,
+      [`${prefix}_w`]: 0.25,
+      [`${prefix}_h`]: 0.25,
+      [`${prefix}_str`]: 0.4,
+      [`${prefix}_color`]: 0,
+    };
+  }
+  return structuredClone(mockState.project);
+}
+
+function mockTrackCensor(id: string, prefix: string, cx: number, cy: number): ProjectSnapshot {
+  mockCheckpoint();
+  const clip = mockState.project.clips.find((c) => c.id === id);
+  if (clip) {
+    const clampP = (v: number) => Math.min(0.95, Math.max(0.05, v));
+    const kx: Record<string, number> = {};
+    const ky: Record<string, number> = {};
+    const n = Math.max(4, Math.round(clip.len * 8));
+    for (let i = 0; i <= n; i++) {
+      const t = (i / n) * clip.len;
+      const p = i / n;
+      kx[t.toFixed(3)] = clampP(cx + 0.18 * Math.sin(p * Math.PI * 3));
+      ky[t.toFixed(3)] = clampP(cy + 0.1 * Math.sin(p * Math.PI * 5));
+    }
+    clip.kf = { ...(clip.kf ?? {}), [`${prefix}_x`]: kx, [`${prefix}_y`]: ky };
+  }
+  return structuredClone(mockState.project);
 }
 
 function mockRemoveTrack(track: string): ProjectSnapshot {

@@ -616,6 +616,93 @@ fn clear_keyframes(
     with_undo(&state, |p| p.clear_keyframes(&id, &param).map_err(err_str))
 }
 
+/// Motion-track a censor box across the clip and write position keyframes
+/// (`{prefix}_x` / `{prefix}_y`, e.g. "censor2_x") so it follows the subject.
+/// Offline template matching; replaces any prior track for that box.
+#[tauri::command]
+async fn track_censor(
+    id: String,
+    prefix: String,
+    // the box exactly as placed by the user (normalised), and the clip-relative
+    // time (`anchor`) it was placed at — the tracker locks onto that spot there
+    cx: f64,
+    cy: f64,
+    bw: f64,
+    bh: f64,
+    anchor: f64,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use tauri::Emitter;
+    // Read just the source path + timing under a brief lock.
+    let (path, src_in, len) = {
+        let project = state.project.lock().unwrap();
+        let clips = project.clips_state();
+        let clip = clips
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| "clip not found".to_string())?;
+        let path = state
+            .media
+            .lock()
+            .unwrap()
+            .get(&clip.media)
+            .map(|m| m.path.clone())
+            .ok_or_else(|| "source media not available".to_string())?;
+        (path, clip.src_in, clip.len)
+    };
+
+    // Tracking (ffmpeg extract + template matching) is seconds of CPU — run it
+    // on a blocking thread so the UI stays responsive, emitting progress.
+    let app2 = app.clone();
+    let kfs = tauri::async_runtime::spawn_blocking(move || {
+        let mut prog = |p: f32| {
+            let _ = app2.emit("track-progress", p);
+        };
+        cutlass_core::track::track_region(&path, src_in, len, cx, cy, bw, bh, anchor, &mut prog)
+            .map_err(err_str)
+    })
+    .await
+    .map_err(err_str)??;
+
+    with_undo(&state, |p| {
+        let (px, py) = (format!("{prefix}_x"), format!("{prefix}_y"));
+        p.clear_keyframes(&id, &px).map_err(err_str)?;
+        p.clear_keyframes(&id, &py).map_err(err_str)?;
+        for (t, x, y) in &kfs {
+            p.set_keyframe(&id, &px, *t, *x).map_err(err_str)?;
+            p.set_keyframe(&id, &py, *t, *y).map_err(err_str)?;
+        }
+        Ok(())
+    })
+}
+
+/// Fully clear a censor box — its style, geometry, strength, colour, and any
+/// tracked keyframes — so re-adding that slot gives a clean default box.
+#[tauri::command]
+fn reset_censor(
+    id: String,
+    prefix: String,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| {
+        p.clear_keyframes(&id, &format!("{prefix}_x")).map_err(err_str)?;
+        p.clear_keyframes(&id, &format!("{prefix}_y")).map_err(err_str)?;
+        for (k, v) in [
+            (prefix.clone(), 0.0),
+            (format!("{prefix}_x"), 0.5),
+            (format!("{prefix}_y"), 0.5),
+            (format!("{prefix}_w"), 0.25),
+            (format!("{prefix}_h"), 0.25),
+            (format!("{prefix}_str"), 0.4),
+            (format!("{prefix}_color"), 0.0),
+        ] {
+            p.set_effect(&id, &k, v).map_err(err_str)?;
+        }
+        Ok(())
+    })
+}
+
 /// Set (or clear, dur=0) a transition INTO a clip from its left neighbor.
 /// Both params in one undoable edit.
 #[tauri::command]
@@ -1088,6 +1175,9 @@ async fn export_project(
     fps: Option<u32>,
     format: Option<String>,
     quality: Option<String>,
+    reframe: Option<String>,
+    reframe_x: Option<f64>,
+    reframe_y: Option<f64>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -1198,6 +1288,9 @@ async fn export_project(
         fps: fps.unwrap_or(30),
         format: cutlass_core::export::ExportFormat::parse(format.as_deref().unwrap_or("mp4_h264")),
         quality: cutlass_core::export::Quality::parse(quality.as_deref().unwrap_or("medium")),
+        reframe: cutlass_core::export::Reframe::parse(reframe.as_deref().unwrap_or("letterbox")),
+        reframe_x: reframe_x.unwrap_or(0.5),
+        reframe_y: reframe_y.unwrap_or(0.5),
     };
     // cancel handle: cancel_export flips this; the render loop kills ffmpeg
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1452,6 +1545,8 @@ fn main() {
             set_transition,
             set_keyframe,
             clear_keyframes,
+            track_censor,
+            reset_censor,
             add_title,
             set_title_text
         ])
