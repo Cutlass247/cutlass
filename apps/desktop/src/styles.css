@@ -399,6 +399,7 @@ button {
   gap: 10px;
   padding: 10px;
   min-width: 0;
+  min-height: 0;
   flex: 1;
   overflow-y: auto;
 }
@@ -619,6 +620,243 @@ button {
 .monitor-empty {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Create mode: preview the footage reframed to the chosen output shape.
+   The foreground is the actual frame (cover or contain); a blurred copy
+   fills the letterbox gaps when "Blur bg" is chosen. */
+.create-stage {
+  position: relative;
+  max-width: 94%;
+  max-height: 92%;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: var(--shadow);
+}
+.create-stage .cs-bg,
+.create-stage .cs-fg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+  max-width: none;
+  max-height: none;
+}
+.create-stage .cs-bg {
+  object-fit: cover;
+  filter: blur(24px) brightness(0.72);
+  transform: scale(1.1);
+}
+
+/* ── Create tab: clip maker (sits above the media bin) ─────────────── */
+.clip-format {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.cf-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.cf-formats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.cf-fmt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+.cf-fmt:hover {
+  border-color: #3a3a3a;
+  color: var(--text);
+}
+.cf-fmt.on {
+  border-color: var(--blue);
+  background: rgba(74, 144, 255, 0.08);
+  color: var(--text);
+}
+.cf-shape-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+}
+.cf-shape {
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  border-radius: 3px;
+  background: linear-gradient(135deg, #3a4252, #2a2f3a);
+  border: 1px solid #444b57;
+}
+.cf-fmt.on .cf-shape {
+  background: linear-gradient(135deg, #5a9bff, #3f7ae0);
+  border-color: var(--blue);
+}
+.cf-fmt-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.cf-fmt-sub {
+  font-size: 9px;
+  line-height: 1.15;
+  text-align: center;
+  opacity: 0.8;
+}
+.cf-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.cf-lbl {
+  font-size: 12px;
+  color: var(--muted);
+}
+.cf-pan {
+  flex: 1;
+  max-width: 150px;
+}
+.cf-captions,
+.cf-export {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+}
+.cf-captions {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.cf-captions:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: #cfe0ff;
+}
+.cf-export {
+  border: none;
+  color: #fff;
+  background: linear-gradient(180deg, #5a9bff, var(--blue));
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset, 0 4px 14px rgba(74, 144, 255, 0.25);
+}
+.cf-export:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+.cf-captions:disabled,
+.cf-export:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* auto-split: one long clip → a list of short-ready segments */
+.cf-split {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.cf-split-btn {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.cf-split-btn:hover {
+  border-color: var(--blue);
+  color: #cfe0ff;
+}
+.cf-split-hint {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.cf-shorts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.cf-short {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.cf-short:hover {
+  border-color: #3a3a3a;
+}
+.cf-short.on {
+  border-color: var(--blue);
+  background: rgba(74, 144, 255, 0.1);
+}
+.cf-short-n {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel-3);
+}
+.cf-short.on .cf-short-n {
+  color: #fff;
+  background: var(--blue);
+}
+.cf-short-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.cf-short-label {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cf-short-time {
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .safe {
@@ -1676,6 +1914,135 @@ button {
   mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: 130px 130px;
+}
+
+/* ── censor / blur region overlay ────────────────────────────────────── */
+/* the stage matches the displayed video's aspect box so % coords == the
+   export's fractional geometry; only the box itself takes pointer events */
+.censor-stage {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  max-width: 94%;
+  max-height: 92%;
+  pointer-events: none;
+  z-index: 4;
+}
+.censor-box {
+  position: absolute;
+  border: 1.5px solid var(--accent);
+  outline: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: 2px;
+  cursor: move;
+  pointer-events: auto;
+}
+.censor-fill {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.censor-fill.solid {
+  background: #000;
+}
+.censor-handle {
+  position: absolute;
+  right: -7px;
+  bottom: -7px;
+  width: 15px;
+  height: 15px;
+  background: var(--accent);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  cursor: nwse-resize;
+  pointer-events: auto;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+/* box number badge (matches "Box N" in the Inspector) */
+.censor-num {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 0 5px;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+/* Inspector: one panel per censor box */
+.censor-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+.censor-slot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.censor-slot-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.censor-remove {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.censor-remove:hover {
+  background: var(--danger);
+  color: #fff;
+}
+.censor-color-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.censor-color-row span {
+  font-size: 12px;
+  color: var(--muted);
+}
+.censor-color-row input[type="color"] {
+  width: 46px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-3);
+  cursor: pointer;
+}
+.censor-track-btn {
+  width: 100%;
+  background: color-mix(in srgb, var(--accent) 15%, var(--panel-2));
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 7px;
+  padding: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.censor-track-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 26%, var(--panel-2));
+}
+.censor-track-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 /* ── effects tab library ────────────────────────────────────────────── */

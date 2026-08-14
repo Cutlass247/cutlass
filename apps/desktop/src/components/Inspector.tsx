@@ -421,6 +421,113 @@ function RetimeControl(p: {
   );
 }
 
+/// Censor regions — up to 3 rectangular blur / pixelate / solid boxes per
+/// clip. Each box's position/size are ordinary keyframeable fx params
+/// (censor_x, censor2_x, censor3_x …), so ◆ on Position X/Y tracks a moving
+/// subject. Boxes are placed by dragging in the Monitor.
+const CENSOR_STYLES = [
+  { value: "blur", label: "Blur", n: 1 },
+  { value: "pixel", label: "Pixelate", n: 2 },
+  { value: "solid", label: "Solid", n: 3 },
+];
+const CENSOR_SLOTS = ["censor", "censor2", "censor3"];
+const intToHex = (n: number) => "#" + Math.max(0, Math.min(0xffffff, Math.round(n))).toString(16).padStart(6, "0");
+const hexToInt = (h: string) => parseInt(h.replace(/^#/, ""), 16) || 0;
+
+function censorSliders(prefix: string): FxParam[] {
+  return [
+    { key: `${prefix}_str`, label: "Strength", min: 0, max: 1, step: 0.02 },
+    { key: `${prefix}_x`, label: "Position X", min: 0, max: 1, step: 0.005 },
+    { key: `${prefix}_y`, label: "Position Y", min: 0, max: 1, step: 0.005 },
+    { key: `${prefix}_w`, label: "Width", min: 0.02, max: 1, step: 0.005 },
+    { key: `${prefix}_h`, label: "Height", min: 0.02, max: 1, step: 0.005 },
+  ];
+}
+
+function CensorSection(p: {
+  clip: Clip;
+  clipTime: number;
+  onPreview: (key: string, v: number) => void;
+  onCommit: (key: string, v: number) => void;
+  onSetKeyframe: (key: string, t: number, v: number) => void;
+  onClearKeyframes: (key: string) => void;
+  onTrackCensor: (prefix: string) => void;
+  onRemoveCensor: (prefix: string) => void;
+  tracking: string | null;
+  trackProgress: number;
+}) {
+  const active = CENSOR_SLOTS.filter((pre) => Math.round(fxValue(p.clip, pre)) > 0);
+  const firstInactive = CENSOR_SLOTS.find((pre) => Math.round(fxValue(p.clip, pre)) === 0);
+  return (
+    <div className="fx-group">
+      <div className="fx-group-title">Censor / blur</div>
+      <div className="transcript-hint">
+        {active.length === 0
+          ? "Blur, pixelate, or black out a region — add a box, then drag it in the preview."
+          : "Drag a box in the preview to place it. ◆ Position X / Y to keyframe it and follow a moving subject."}
+      </div>
+      {active.map((prefix) => {
+        const style = Math.round(fxValue(p.clip, prefix));
+        const cur = CENSOR_STYLES.find((s) => s.n === style)?.value ?? "blur";
+        const sliders =
+          style === 3 ? censorSliders(prefix).filter((s) => !s.key.endsWith("_str")) : censorSliders(prefix);
+        return (
+          <div className="censor-slot" key={prefix}>
+            <div className="censor-slot-head">
+              <span className="censor-slot-name">Box {CENSOR_SLOTS.indexOf(prefix) + 1}</span>
+              <button className="censor-remove" title="Remove this box" onClick={() => p.onRemoveCensor(prefix)}>
+                ✕
+              </button>
+            </div>
+            <Segmented
+              options={CENSOR_STYLES.map((s) => ({ value: s.value, label: s.label }))}
+              value={cur}
+              onChange={(v) => p.onCommit(prefix, CENSOR_STYLES.find((s) => s.value === v)?.n ?? 1)}
+            />
+            {style === 3 && (
+              <label className="censor-color-row">
+                <span>Colour</span>
+                <input
+                  type="color"
+                  value={intToHex(fxValue(p.clip, `${prefix}_color`))}
+                  onChange={(e) => p.onCommit(`${prefix}_color`, hexToInt(e.target.value))}
+                />
+              </label>
+            )}
+            {sliders.map((param) => (
+              <FxSlider
+                key={param.key}
+                param={param}
+                clip={p.clip}
+                clipTime={p.clipTime}
+                onPreview={p.onPreview}
+                onCommit={p.onCommit}
+                onSetKeyframe={p.onSetKeyframe}
+                onClearKeyframes={p.onClearKeyframes}
+              />
+            ))}
+            <button
+              className="censor-track-btn"
+              disabled={p.tracking !== null}
+              title="Auto-follow a moving subject — writes position keyframes for this box"
+              onClick={() => p.onTrackCensor(prefix)}
+            >
+              {p.tracking === prefix
+                ? `Tracking ${Math.round(p.trackProgress * 100)}%…`
+                : "⦿ Track motion"}
+            </button>
+          </div>
+        );
+      })}
+      {firstInactive && (
+        <button className="save-look-btn" onClick={() => p.onCommit(firstInactive, 1)}>
+          + Add censor box
+        </button>
+      )}
+    </div>
+  );
+}
+
 function EffectControls(p: {
   clip: Clip;
   clipTime: number;
@@ -428,9 +535,25 @@ function EffectControls(p: {
   onCommit: (key: string, v: number) => void;
   onSetKeyframe: (key: string, t: number, v: number) => void;
   onClearKeyframes: (key: string) => void;
+  onTrackCensor: (prefix: string) => void;
+  onRemoveCensor: (prefix: string) => void;
+  tracking: string | null;
+  trackProgress: number;
 }) {
   return (
     <div className="fx-panel">
+      <CensorSection
+        clip={p.clip}
+        clipTime={p.clipTime}
+        onPreview={p.onPreview}
+        onCommit={p.onCommit}
+        onSetKeyframe={p.onSetKeyframe}
+        onClearKeyframes={p.onClearKeyframes}
+        onTrackCensor={p.onTrackCensor}
+        onRemoveCensor={p.onRemoveCensor}
+        tracking={p.tracking}
+        trackProgress={p.trackProgress}
+      />
       {FX_GROUPS.map((g) => (
         <div className="fx-group" key={g.title}>
           <div className="fx-group-title">{g.title}</div>
@@ -494,6 +617,10 @@ export function Inspector(p: {
   clipTime: number;
   onSetKeyframe: (key: string, t: number, v: number) => void;
   onClearKeyframes: (key: string) => void;
+  onTrackCensor: (prefix: string) => void;
+  onRemoveCensor: (prefix: string) => void;
+  tracking: string | null;
+  trackProgress: number;
   hasLeftNeighbor: boolean;
   onSetTransition: (dur: number, dip: boolean) => void;
   onSetTitleText: (text: string) => void;
@@ -607,6 +734,10 @@ export function Inspector(p: {
                     onCommit={p.onFxCommit}
                     onSetKeyframe={p.onSetKeyframe}
                     onClearKeyframes={p.onClearKeyframes}
+                    onTrackCensor={p.onTrackCensor}
+                    onRemoveCensor={p.onRemoveCensor}
+                    tracking={p.tracking}
+                    trackProgress={p.trackProgress}
                   />
                 </>
               )}

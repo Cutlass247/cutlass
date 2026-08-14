@@ -11,6 +11,50 @@ use std::path::Path;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 
+/// One censor region: blur / pixelate / black-box a rectangle. style is
+/// 0 off / 1 blur / 2 pixelate / 3 solid; x/y = normalised centre, w/h =
+/// normalised size, strength = 0..1. Up to 3 per clip, each keyframeable.
+#[derive(Debug, Clone)]
+pub struct CensorSlot {
+    pub style: f64,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub strength: f64,
+    pub color: f64, // packed 0xRRGGBB for the solid box (0 = black)
+}
+
+impl Default for CensorSlot {
+    fn default() -> Self {
+        Self { style: 0.0, x: 0.5, y: 0.5, w: 0.25, h: 0.25, strength: 0.4, color: 0.0 }
+    }
+}
+
+/// Map a flat fx key ("censor", "censor2_x", "censor3_str", …) to the slot
+/// index (0..3) and which field it addresses.
+fn parse_censor(key: &str) -> Option<(usize, char)> {
+    let rest = key.strip_prefix("censor")?;
+    let (idx, tail) = match rest.strip_prefix('2') {
+        Some(t) => (1, t),
+        None => match rest.strip_prefix('3') {
+            Some(t) => (2, t),
+            None => (0, rest),
+        },
+    };
+    let field = match tail {
+        "" => 's',
+        "_x" => 'x',
+        "_y" => 'y',
+        "_w" => 'w',
+        "_h" => 'h',
+        "_str" => 'r',
+        "_color" => 'c',
+        _ => return None,
+    };
+    Some((idx, field))
+}
+
 /// Per-clip Effect Controls resolved to identity-defaulted numbers. The
 /// same vocabulary the preview (CSS) and playback (gain) speak.
 #[derive(Debug, Clone)]
@@ -38,6 +82,9 @@ pub struct ClipFx {
     pub fade_out: f64,   // seconds
     pub volume: f64,     // 1
     pub speed: f64,      // 1 (2 = 2× faster, 0.5 = slow-mo)
+    // up to 3 censor regions. Each field is keyframeable (censor_x,
+    // censor2_x, censor3_x …) so a box can follow a moving subject.
+    pub censor: [CensorSlot; 3],
 }
 
 impl Default for ClipFx {
@@ -66,6 +113,7 @@ impl Default for ClipFx {
             fade_out: 0.0,
             volume: 1.0,
             speed: 1.0,
+            censor: [CensorSlot::default(), CensorSlot::default(), CensorSlot::default()],
         }
     }
 }
@@ -112,7 +160,21 @@ impl ClipFx {
             "fade_in" => self.fade_in = v,
             "fade_out" => self.fade_out = v,
             "volume" => self.volume = v,
-            _ => {}
+            _ => {
+                if let Some((i, f)) = parse_censor(key) {
+                    let s = &mut self.censor[i];
+                    match f {
+                        's' => s.style = v,
+                        'x' => s.x = v,
+                        'y' => s.y = v,
+                        'w' => s.w = v,
+                        'h' => s.h = v,
+                        'r' => s.strength = v,
+                        'c' => s.color = v,
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 
@@ -157,6 +219,18 @@ impl ClipFx {
             speed: {
                 let s = g("speed", d.speed);
                 if s > 0.05 { s } else { 1.0 }
+            },
+            censor: {
+                let slot = |p: &str| CensorSlot {
+                    style: g(p, 0.0),
+                    x: g(&format!("{p}_x"), 0.5),
+                    y: g(&format!("{p}_y"), 0.5),
+                    w: g(&format!("{p}_w"), 0.25),
+                    h: g(&format!("{p}_h"), 0.25),
+                    strength: g(&format!("{p}_str"), 0.4),
+                    color: g(&format!("{p}_color"), 0.0),
+                };
+                [slot("censor"), slot("censor2"), slot("censor3")]
             },
         }
     }
@@ -268,6 +342,50 @@ fn title_font() -> String {
 
 /// Build a clip's fitted-frame video chain `[{vi}:v] → [v{k}]`:
 /// letterbox to frame, color-correct, optional transform, optional fades.
+/// One censor region's filter chain: split the frame, crop the region,
+/// blur / pixelate / black it, and overlay it back exactly in place. Returns
+/// the appended filter string and the new `cur` label, or None when off.
+/// LGPL-safe filters only (crop, gblur, scale-mosaic, drawbox, overlay).
+fn censor_chain(k: usize, slot: usize, c: &CensorSlot, w: u32, h: u32, cur: &str) -> Option<(String, String)> {
+    let cen = c.style.round() as i32;
+    if !(1..=3).contains(&cen) || c.w <= 0.01 || c.h <= 0.01 {
+        return None;
+    }
+    let iw = w as i64;
+    let ih = h as i64;
+    let cw = ((c.w.clamp(0.02, 1.0) * w as f64) as i64 & !1).clamp(2, iw);
+    let ch = ((c.h.clamp(0.02, 1.0) * h as f64) as i64 & !1).clamp(2, ih);
+    let cx = (((c.x.clamp(0.0, 1.0) * w as f64 - cw as f64 / 2.0) as i64).clamp(0, iw - cw)) & !1;
+    let cy = (((c.y.clamp(0.0, 1.0) * h as f64 - ch as f64 / 2.0) as i64).clamp(0, ih - ch)) & !1;
+    let st = c.strength.clamp(0.0, 1.0);
+    let out = format!("cs{k}_{slot}");
+    let f = match cen {
+        3 => {
+            let rgb = (c.color.round() as i64).clamp(0, 0xFF_FFFF);
+            format!("[{cur}]drawbox=x={cx}:y={cy}:w={cw}:h={ch}:color=0x{rgb:06X}:t=fill[{out}];")
+        }
+        2 => {
+            let block = (4.0 + st * 36.0) as i64;
+            let dw = (cw / block).max(1);
+            let dh = (ch / block).max(1);
+            format!(
+                "[{cur}]split=2[cb{k}_{slot}][cc{k}_{slot}];\
+                 [cc{k}_{slot}]crop={cw}:{ch}:{cx}:{cy},scale={dw}:{dh}:flags=neighbor,scale={cw}:{ch}:flags=neighbor[cp{k}_{slot}];\
+                 [cb{k}_{slot}][cp{k}_{slot}]overlay={cx}:{cy}[{out}];"
+            )
+        }
+        _ => {
+            let sigma = 6.0 + st * 54.0;
+            format!(
+                "[{cur}]split=2[cb{k}_{slot}][cc{k}_{slot}];\
+                 [cc{k}_{slot}]crop={cw}:{ch}:{cx}:{cy},gblur=sigma={sigma:.1}[cp{k}_{slot}];\
+                 [cb{k}_{slot}][cp{k}_{slot}]overlay={cx}:{cy}[{out}];"
+            )
+        }
+    };
+    Some((f, out))
+}
+
 fn clip_video_chain(
     vi: u32,
     k: usize,
@@ -277,6 +395,9 @@ fn clip_video_chain(
     fps: u32,
     fx: &ClipFx,
     lut: &str,
+    reframe: Reframe,
+    rx: f64,
+    ry: f64,
 ) -> String {
     // retime: source span was len*speed; /speed compresses it to len
     let setpts = if (fx.speed - 1.0).abs() < 1e-9 {
@@ -312,11 +433,30 @@ fn clip_video_chain(
     // a full-range source reaches the encoder untagged and some encoders —
     // h264_amf notably — silently convert full→limited, washing the image
     // out (measured SSIM 0.977 vs 0.999) regardless of bitrate.
-    let mut s = format!(
-        "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,\
-         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},{setpts},\
-         format=yuv420p{bc}{cb}[cf{k}];",
-    );
+    // reframe: how the source fills a differently-shaped output (e.g. a 16:9
+    // clip in a 9:16 Short). LGPL-safe filters only (scale/crop/gblur/overlay).
+    let rx = rx.clamp(0.0, 1.0);
+    let ry = ry.clamp(0.0, 1.0);
+    let mut s = match reframe {
+        Reframe::Letterbox => format!(
+            "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,\
+             pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},{setpts},\
+             format=yuv420p{bc}{cb}[cf{k}];",
+        ),
+        Reframe::Fill => format!(
+            "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=increase:out_range=tv,\
+             crop={w}:{h}:(iw-{w})*{rx:.4}:(ih-{h})*{ry:.4},fps={fps},{setpts},\
+             format=yuv420p{bc}{cb}[cf{k}];",
+        ),
+        Reframe::Blur => format!(
+            "[{vi}:v]split=2[rb{k}][rf{k}];\
+             [rb{k}]scale={w}:{h}:force_original_aspect_ratio=increase:out_range=tv,\
+             crop={w}:{h},gblur=sigma=24,colorchannelmixer=rr=0.72:gg=0.72:bb=0.72[rbg{k}];\
+             [rf{k}]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv[rff{k}];\
+             [rbg{k}][rff{k}]overlay=(W-w)/2:(H-h)/2,fps={fps},{setpts},\
+             format=yuv420p{bc}{cb}[cf{k}];",
+        ),
+    };
     let mut cur = format!("cf{k}");
     // stylize: LUT, hue/saturation, gaussian blur, mirror flips
     let mut stylize = String::new();
@@ -379,6 +519,13 @@ fn clip_video_chain(
         let ang = fx.vignette.clamp(0.0, 1.0) * 0.9;
         s.push_str(&format!("[{cur}]vignette=angle={ang:.3}[vg{k}];"));
         cur = format!("vg{k}");
+    }
+    // censor: up to 3 rectangular regions, applied in order over the frame.
+    for (slot, c) in fx.censor.iter().enumerate() {
+        if let Some((f, out)) = censor_chain(k, slot, c, w, h, &cur) {
+            s.push_str(&f);
+            cur = out;
+        }
     }
     if fx.fade_in > 0.0 || fx.fade_out > 0.0 {
         s.push_str(&format!("[{cur}]"));
@@ -495,6 +642,39 @@ pub struct ExportSettings {
     pub fps: u32,
     pub format: ExportFormat,
     pub quality: Quality,
+    /// how a source that doesn't match the output aspect fills the frame
+    pub reframe: Reframe,
+    /// pan for Fill mode: 0..1 in each axis (0.5 = centred)
+    pub reframe_x: f64,
+    pub reframe_y: f64,
+}
+
+/// How a clip fills the output frame when its aspect differs (e.g. a 16:9
+/// source in a 9:16 Short).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Reframe {
+    /// fit inside with black bars (the classic letterbox)
+    Letterbox,
+    /// zoom to cover the frame, cropping the overflow (native vertical look)
+    Fill,
+    /// fit centred over a blurred, zoomed copy of itself (no crop, no bars)
+    Blur,
+}
+
+impl Default for Reframe {
+    fn default() -> Self {
+        Reframe::Letterbox
+    }
+}
+
+impl Reframe {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "fill" => Reframe::Fill,
+            "blur" => Reframe::Blur,
+            _ => Reframe::Letterbox,
+        }
+    }
 }
 
 impl Default for ExportSettings {
@@ -505,6 +685,9 @@ impl Default for ExportSettings {
             fps: 30,
             format: ExportFormat::Mp4H264,
             quality: Quality::Medium,
+            reframe: Reframe::Letterbox,
+            reframe_x: 0.5,
+            reframe_y: 0.5,
         }
     }
 }
@@ -778,7 +961,10 @@ fn run_export(
                 cmd.input(path.as_str());
                 let vi = input_idx;
                 input_idx += 1;
-                filters.push_str(&clip_video_chain(vi, k, *len, w, h, fps, fx, lut));
+                filters.push_str(&clip_video_chain(
+                    vi, k, *len, w, h, fps, fx, lut,
+                    s.reframe, s.reframe_x, s.reframe_y,
+                ));
                 if has_audio(path) {
                     filters.push_str(&clip_audio_chain(vi, k, *len, fx));
                 } else {
@@ -1043,6 +1229,70 @@ mod tests {
             trans_dip: false,
             kf: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn censor_emits_region_filters() {
+        let (w, h, fps) = (1920u32, 1080u32, 30u32);
+        let mut fx = ClipFx::default();
+        fx.censor[0].style = 1.0; // blur
+        let blur = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Letterbox, 0.5, 0.5);
+        assert!(blur.contains("crop="), "blur crops the region");
+        assert!(blur.contains("gblur=sigma"), "blur uses gblur");
+        assert!(blur.contains("overlay="), "blur composites back");
+
+        fx.censor[0].style = 2.0; // pixelate → neighbor scale mosaic
+        let pix = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Letterbox, 0.5, 0.5);
+        assert!(pix.contains("flags=neighbor"), "pixelate uses neighbor scale");
+
+        fx.censor[0].style = 3.0; // solid box, custom colour
+        fx.censor[0].color = 0xFF8800 as f64;
+        let solid = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Letterbox, 0.5, 0.5);
+        assert!(solid.contains("drawbox="), "solid fills a box");
+        assert!(solid.contains("color=0xFF8800"), "solid honours the picked colour");
+
+        // off → no censor filters
+        let off = clip_video_chain(0, 0, 4.0, w, h, fps, &ClipFx::default(), "", Reframe::Letterbox, 0.5, 0.5);
+        assert!(!off.contains("drawbox=") && !off.contains("crop="));
+    }
+
+    #[test]
+    fn reframe_fill_and_blur_emit_filters() {
+        let (w, h, fps) = (1080u32, 1920u32, 30u32); // vertical (9:16) target
+        let fx = ClipFx::default();
+        let letter = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Letterbox, 0.5, 0.5);
+        assert!(letter.contains("pad=1080:1920"), "letterbox pads to bars");
+        let fill = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Fill, 0.5, 0.5);
+        assert!(
+            fill.contains("force_original_aspect_ratio=increase") && fill.contains("crop=1080:1920"),
+            "fill scales to cover then crops"
+        );
+        assert!(!fill.contains("pad="), "fill leaves no bars");
+        let blur = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Blur, 0.5, 0.5);
+        assert!(blur.contains("gblur=sigma") && blur.contains("overlay="), "blur bg + fit overlay");
+    }
+
+    #[test]
+    fn multiple_censor_boxes_chain_independently() {
+        let (w, h, fps) = (1920u32, 1080u32, 30u32);
+        let mut fx = ClipFx::default();
+        fx.censor[0].style = 1.0; // blur
+        fx.censor[1].style = 3.0; // solid
+        fx.censor[2].style = 2.0; // pixelate
+        let chain = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Letterbox, 0.5, 0.5);
+        // three distinct region outputs, threaded in order
+        assert!(chain.contains("[cs0_0]"), "slot 0 output present");
+        assert!(chain.contains("[cs0_1]"), "slot 1 output present");
+        assert!(chain.contains("[cs0_2]"), "slot 2 output present");
+        assert!(chain.contains("drawbox="), "solid box (slot 1)");
+        assert!(chain.contains("gblur=sigma"), "blur (slot 0)");
+        assert!(chain.contains("flags=neighbor"), "pixelate (slot 2)");
+        // from_map round-trips the numbered keys
+        let m: BTreeMap<String, f64> =
+            [("censor2".to_string(), 3.0), ("censor2_x".to_string(), 0.8)].into_iter().collect();
+        let fx2 = ClipFx::from_map(&m);
+        assert_eq!(fx2.censor[1].style, 3.0);
+        assert!((fx2.censor[1].x - 0.8).abs() < 1e-9);
     }
 
     #[test]

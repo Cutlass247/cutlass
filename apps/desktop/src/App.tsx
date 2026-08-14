@@ -23,6 +23,9 @@ import {
   ExportOptions,
   exportProject,
   FX_DEFAULTS,
+  fxValueAt,
+  kfPoints,
+  pickExportDir,
   getProject,
   hydrateMedia,
   importMedia,
@@ -30,6 +33,7 @@ import {
   joinSession,
   moveClip,
   onExportProgress,
+  onTrackProgress,
   onPlaybackFrame,
   onPresence,
   onProjectChanged,
@@ -58,6 +62,8 @@ import {
   setKeyframe,
   setTitleText,
   setTransition,
+  trackCensor,
+  resetCensor,
   trackIndex,
   trackKind,
   transcribeMedia,
@@ -66,7 +72,8 @@ import {
 } from "./ipc";
 import { Mode, TopBar } from "./components/TopBar";
 import { MediaPanel } from "./components/MediaPanel";
-import { Monitor, RESOLUTIONS, Resolution } from "./components/Monitor";
+import { Monitor, RESOLUTIONS, Resolution, CensorItem } from "./components/Monitor";
+import { ClipFormat, CLIP_FORMATS, ClipFormatDef, ShortSeg } from "./components/ClipFormat";
 import { Inspector } from "./components/Inspector";
 import { ExportDialog } from "./components/ExportDialog";
 import { PPS_MAX, PPS_MIN, TRACK_H, Timeline, TrackCtl } from "./components/Timeline";
@@ -125,6 +132,9 @@ export default function App() {
   // a media-bin item being dragged toward the timeline (pointer-based, so
   // it works inside the Tauri webview where HTML5 drag events don't fire)
   const [mediaGhost, setMediaGhost] = useState<{ name: string; x: number; y: number } | null>(null);
+  // which censor box (prefix) is currently being motion-tracked, if any
+  const [tracking, setTracking] = useState<string | null>(null);
+  const [trackProgress, setTrackProgress] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -165,6 +175,17 @@ export default function App() {
   const [leftW, setLeftW] = useState(268);
   const [rightW, setRightW] = useState(316);
   const [tlH, setTlH] = useState(280);
+
+  // ── Create-tab clip maker ───────────────────────────────────────────
+  // Output shape + how footage fills it; drives the monitor preview and export.
+  const [clipFormat, setClipFormat] = useState<ClipFormatDef>(CLIP_FORMATS[0]);
+  const [clipReframe, setClipReframe] = useState<"fill" | "blur">("fill");
+  const [clipReframeX, setClipReframeX] = useState(0.5);
+  // media id awaiting caption generation once its transcript lands
+  const [wantCaptions, setWantCaptions] = useState<string | null>(null);
+  // auto-split: candidate shorts (source-time ranges) + which one is loaded
+  const [shorts, setShorts] = useState<ShortSeg[]>([]);
+  const [activeShort, setActiveShort] = useState<number | null>(null);
 
   const lanesRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -256,6 +277,7 @@ export default function App() {
         m && m.phase === "running" ? { ...m, progress: Math.max(m.progress, p) } : m
       )
     );
+    const unTrack = onTrackProgress((p) => setTrackProgress(p));
     const unFrame = onPlaybackFrame((_t, src) => setPlayFrame(src));
     const unPresence = onPresence((p) =>
       setPeers((prev) => ({ ...prev, [p.id]: { ...p, ts: Date.now() } }))
@@ -272,6 +294,7 @@ export default function App() {
     return () => {
       un.then((f) => f());
       unExport.then((f) => f());
+      unTrack.then((f) => f());
       unFrame.then((f) => f());
       unPresence.then((f) => f());
       clearInterval(prune);
@@ -686,6 +709,101 @@ export default function App() {
     [selected, applyEdit]
   );
 
+  // Censor box shown in the Monitor for the selected clip when it's under
+  // the playhead. Position/size are keyframe-aware (fxValueAt), so the box
+  // sits where the animation puts it; the live drag draft wins while dragging.
+  const monitorCensors = useMemo((): CensorItem[] => {
+    if (!selectedClip || selectedClip.text) return [];
+    const onScreen =
+      playhead >= selectedClip.start && playhead < selectedClip.start + selectedClip.len;
+    if (!onScreen) return [];
+    const prefixes = ["censor", "censor2", "censor3"];
+    const out: CensorItem[] = [];
+    prefixes.forEach((pre, slot) => {
+      const style = Math.round(fxDraft[pre] ?? selectedClip.fx?.[pre] ?? 0);
+      if (style <= 0) return;
+      const at = (suf: string) => {
+        const key = pre + suf;
+        return fxDraft[key] ?? fxValueAt(selectedClip, key, clipTime);
+      };
+      out.push({ slot, style, x: at("_x"), y: at("_y"), w: at("_w"), h: at("_h"), str: at("_str"), color: at("_color") });
+    });
+    return out;
+  }, [selectedClip, fxDraft, playhead, clipTime]);
+
+  // Drag/resize a box from the Monitor. Preview merges into the fx draft; on
+  // commit each param writes a keyframe at the playhead if it's already
+  // keyframed (so dragging refines the track) otherwise the base value.
+  const onCensor = useCallback(
+    (slot: number, partial: Partial<{ x: number; y: number; w: number; h: number }>, commit: boolean) => {
+      if (!selected || !selectedClip) return;
+      const pre = ["censor", "censor2", "censor3"][slot] ?? "censor";
+      const keyMap: Record<string, string> = {
+        x: `${pre}_x`,
+        y: `${pre}_y`,
+        w: `${pre}_w`,
+        h: `${pre}_h`,
+      };
+      const fxPartial: Record<string, number> = {};
+      for (const [k, v] of Object.entries(partial)) fxPartial[keyMap[k]] = v as number;
+      if (!commit) {
+        setFxDraft((d) => ({ ...d, ...fxPartial }));
+        return;
+      }
+      const base: Record<string, number> = {};
+      const kfWrites: [string, number][] = [];
+      for (const [pk, v] of Object.entries(fxPartial)) {
+        if (kfPoints(selectedClip, pk).length > 0) kfWrites.push([pk, v]);
+        else base[pk] = v;
+      }
+      const run = async () => {
+        let snap: ProjectSnapshot | null = null;
+        if (Object.keys(base).length) snap = await setEffects(selected, base);
+        for (const [pk, v] of kfWrites) snap = await setKeyframe(selected, pk, clipTime, v);
+        if (snap) applyEdit(snap);
+        setFxDraft({});
+      };
+      run().catch((e) => setError(String(e)));
+    },
+    [selected, selectedClip, clipTime, applyEdit]
+  );
+
+  // Remove a censor box: fully clear the slot (params + tracked keyframes) so
+  // re-adding it gives a fresh default box, not the one just removed.
+  const onRemoveCensor = useCallback(
+    (prefix: string) => {
+      if (!selected) return;
+      resetCensor(selected, prefix)
+        .then((snap) => {
+          applyEdit(snap);
+          setFxDraft({});
+        })
+        .catch((e) => setError(String(e)));
+    },
+    [selected, applyEdit]
+  );
+
+  // Motion-track a censor box: the backend follows the patch and writes
+  // position keyframes; we just apply the returned project.
+  const onTrackCensor = useCallback(
+    (prefix: string) => {
+      if (!selected || !selectedClip) return;
+      // the box exactly as the user placed it, at the current playhead frame
+      const box = (suf: string) =>
+        fxDraft[`${prefix}${suf}`] ?? fxValueAt(selectedClip, `${prefix}${suf}`, clipTime);
+      setTracking(prefix);
+      setTrackProgress(0);
+      trackCensor(selected, prefix, box("_x"), box("_y"), box("_w"), box("_h"), clipTime)
+        .then((snap) => {
+          applyEdit(snap);
+          setFxDraft({});
+        })
+        .catch((e) => setError(String(e)))
+        .finally(() => setTracking(null));
+    },
+    [selected, selectedClip, clipTime, fxDraft, applyEdit]
+  );
+
   const onAddTitle = useCallback(() => {
     addTitle(playheadRef.current)
       .then((snap) => {
@@ -769,9 +887,9 @@ export default function App() {
       const res = await importMedia(path);
       setMedia((m) => ({ ...m, [res.media.id]: res.media }));
       applyEdit(res.project);
-      // The clip always waits in the bin; you drag it onto a track when
-      // you want it. Create mode still auto-transcribes for the workflow.
-      if (mode === "create") doTranscribe(res.media.id);
+      // The clip waits in the bin; drag it onto a track when you want it.
+      // Captions are opt-in in Create mode (the "Add captions" button), so
+      // import stays fast and transcription only runs when asked.
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1026,6 +1144,28 @@ export default function App() {
     cancelExport();
     setExportModal((m) => (m && m.phase === "running" ? { ...m, cancelling: true } : m));
   }, []);
+
+  // Create-tab one-click export: render straight to the chosen shape (with
+  // the Fill/Blur reframe) — no settings dialog, just pick a folder and go.
+  const exportClip = useCallback(async () => {
+    setError(null);
+    const dir = (await pickExportDir()) ?? exportDir;
+    if (!dir) return;
+    const sep = dir.includes("\\") ? "\\" : "/";
+    const stamp = new Date().toISOString().slice(0, 10);
+    const path = `${dir}${dir.endsWith(sep) ? "" : sep}cutlass-${clipFormat.id}-${stamp}.mp4`;
+    await runExport({
+      path,
+      width: clipFormat.w,
+      height: clipFormat.h,
+      fps: 30,
+      format: "mp4_h264",
+      quality: "high",
+      reframe: clipReframe,
+      reframe_x: clipReframeX,
+      reframe_y: 0.5,
+    });
+  }, [clipFormat, clipReframe, clipReframeX, exportDir, runExport]);
 
   const doCollab = useCallback(async () => {
     const name = window.prompt("Room name (share it with your collaborator):", "cutlass-demo");
@@ -1414,9 +1554,12 @@ export default function App() {
   // Auto-captions: turn the transcript into styled caption clips on V2.
   // Words are grouped into short lines and mapped from source time to
   // timeline time (skipping any that were cut out).
-  const onGenerateCaptions = useCallback(async () => {
-    if (!transcriptMedia) return;
-    const ws = transcripts[transcriptMedia];
+  const onGenerateCaptions = useCallback(async (mediaOverride?: string) => {
+    // MediaPanel wires this as a bare click handler, so guard against an
+    // event object arriving where a media id is expected.
+    const mid = typeof mediaOverride === "string" ? mediaOverride : transcriptMedia;
+    if (!mid) return;
+    const ws = transcripts[mid];
     if (!ws || ws.length === 0) return;
     const lines: { text: string; srcStart: number; srcEnd: number }[] = [];
     let cur: Word[] = [];
@@ -1435,9 +1578,9 @@ export default function App() {
     }
     flush();
     const specs = lines.flatMap((l) => {
-      const start = srcToTimeline(transcriptMedia, l.srcStart);
+      const start = srcToTimeline(mid, l.srcStart);
       if (start === null) return [];
-      const end = srcToTimeline(transcriptMedia, Math.max(l.srcStart, l.srcEnd - 0.01));
+      const end = srcToTimeline(mid, Math.max(l.srcStart, l.srcEnd - 0.01));
       const len = Math.max(0.4, (end ?? start + (l.srcEnd - l.srcStart)) - start);
       return [{ text: l.text, start, len }];
     });
@@ -1452,6 +1595,28 @@ export default function App() {
     }
   }, [transcriptMedia, transcripts, srcToTimeline, applyEdit]);
 
+  // Create-tab "Add captions": one button that transcribes on-device (if
+  // needed) then turns the transcript into caption clips. The two steps are
+  // chained through `wantCaptions` because the transcript lands in state
+  // asynchronously — the effect below fires once it arrives.
+  const onAddCaptions = useCallback(() => {
+    const clip = project.clips.find((c) => c.media && !c.text);
+    if (!clip) return;
+    if (transcripts[clip.media]) {
+      onGenerateCaptions(clip.media);
+      return;
+    }
+    setWantCaptions(clip.media);
+    doTranscribe(clip.media);
+  }, [project.clips, transcripts, onGenerateCaptions, doTranscribe]);
+
+  useEffect(() => {
+    if (wantCaptions && transcripts[wantCaptions]) {
+      onGenerateCaptions(wantCaptions);
+      setWantCaptions(null);
+    }
+  }, [wantCaptions, transcripts, onGenerateCaptions]);
+
   const caption = useMemo(() => {
     if (!underPlayhead) return null;
     const w = transcripts[underPlayhead.media.id];
@@ -1459,6 +1624,84 @@ export default function App() {
     const srcT = underPlayhead.srcT;
     return w.find((x) => srcT >= x.start && srcT < x.end)?.text ?? null;
   }, [underPlayhead, transcripts]);
+
+  // the first real footage clip on the timeline — what the Create clip maker acts on
+  const createClip = useMemo(
+    () => project.clips.find((c) => c.media && !c.text) ?? null,
+    [project.clips]
+  );
+  // how long the create clip's source media is (0 = unknown)
+  const createDur = createClip ? media[createClip.media]?.duration_s ?? 0 : 0;
+
+  // Auto-split: break the long clip into short-ready segments. If it's been
+  // transcribed we cut on sentence boundaries near a target length; otherwise
+  // we fall back to even time chunks. Each segment is a source-time range.
+  const onSplitShorts = useCallback(() => {
+    if (!createClip) return;
+    const dur = media[createClip.media]?.duration_s || createClip.src_in + createClip.len;
+    const ws = transcripts[createClip.media];
+    const TARGET = 45,
+      MIN = 15,
+      MAX = 75;
+    const segs: ShortSeg[] = [];
+    if (ws && ws.length) {
+      let segStart = ws[0].start;
+      let startIdx = 0;
+      let i = 0;
+      while (i < ws.length) {
+        const w = ws[i];
+        const elapsed = w.end - segStart;
+        const nextGap = i + 1 < ws.length ? ws[i + 1].start - w.end : 999;
+        const endsSentence = /[.!?]["')]?$/.test(w.text.trim());
+        const atEnd = i === ws.length - 1;
+        if (atEnd || (elapsed >= TARGET && (endsSentence || nextGap > 0.45)) || elapsed >= MAX) {
+          const label = ws
+            .slice(startIdx, i + 1)
+            .map((x) => x.text.trim())
+            .join(" ")
+            .replace(/\s+([.,!?])/g, "$1")
+            .slice(0, 64);
+          const seg = { start: segStart, end: w.end, label: label || `Clip ${segs.length + 1}` };
+          // a too-short tail folds into the previous segment
+          if (seg.end - seg.start < MIN && segs.length) segs[segs.length - 1].end = seg.end;
+          else segs.push(seg);
+          segStart = i + 1 < ws.length ? ws[i + 1].start : w.end;
+          startIdx = i + 1;
+        }
+        i++;
+      }
+    } else if (dur > 0) {
+      for (let t = 0; t < dur - 1; t += TARGET) {
+        segs.push({ start: t, end: Math.min(dur, t + TARGET), label: `Segment ${segs.length + 1}` });
+      }
+    }
+    setShorts(segs);
+    setActiveShort(null);
+  }, [createClip, media, transcripts]);
+
+  // Load a chosen short: retrim the timeline clip to that source range, so the
+  // whole timeline *is* that short and the normal Export renders just it.
+  const onPickShort = useCallback(
+    (i: number) => {
+      if (!createClip) return;
+      const s = shorts[i];
+      if (!s) return;
+      trimClip(createClip.id, 0, s.end - s.start, s.start)
+        .then(applyEdit)
+        .then(() => setPlayhead(0))
+        .catch((e) => setError(String(e)));
+      setActiveShort(i);
+    },
+    [createClip, shorts, applyEdit]
+  );
+
+  // stale shorts belong to whatever clip was loaded before — drop them when
+  // the source media changes (or the clip goes away)
+  const createMediaId = createClip?.media ?? null;
+  useEffect(() => {
+    setShorts([]);
+    setActiveShort(null);
+  }, [createMediaId]);
 
   // ── layout ──────────────────────────────────────────────────────────
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -1507,7 +1750,28 @@ export default function App() {
       <main className="workspace">
         {/* the media bin is where imports land — shown in both modes so
             there's always something to drag onto the timeline */}
-        <div style={{ width: leftW, display: "flex", minWidth: 0 }}>
+        <div style={{ width: leftW, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          {mode === "create" && (
+            <ClipFormat
+              format={clipFormat}
+              onFormat={setClipFormat}
+              reframe={clipReframe}
+              onReframe={setClipReframe}
+              reframeX={clipReframeX}
+              onReframeX={setClipReframeX}
+              hasClip={createClip !== null}
+              captionsReady={project.clips.some((c) => c.text)}
+              transcribing={transcribing !== null}
+              onAddCaptions={onAddCaptions}
+              exporting={exportModal?.phase === "running"}
+              onExport={exportClip}
+              canSplit={createClip !== null && createDur > 75}
+              shorts={shorts}
+              activeShort={activeShort}
+              onSplit={onSplitShorts}
+              onPickShort={onPickShort}
+            />
+          )}
           <MediaPanel
             media={Object.values(media)}
             transcripts={transcripts}
@@ -1539,6 +1803,13 @@ export default function App() {
           layers={monitorLayers}
           vignette={monitorOverlay.vignette}
           grain={monitorOverlay.grain}
+          censors={monitorCensors}
+          onCensor={onCensor}
+          format={
+            mode === "create"
+              ? { w: clipFormat.w, h: clipFormat.h, reframe: clipReframe, rx: clipReframeX }
+              : null
+          }
           titleOverlay={titleOverlay}
           caption={caption}
           playhead={playhead}
@@ -1568,6 +1839,10 @@ export default function App() {
             clipTime={clipTime}
             onSetKeyframe={onSetKeyframe}
             onClearKeyframes={onClearKeyframes}
+            onTrackCensor={onTrackCensor}
+            onRemoveCensor={onRemoveCensor}
+            tracking={tracking}
+            trackProgress={trackProgress}
             hasLeftNeighbor={selectedHasLeftNeighbor}
             onSetTransition={onSetTransition}
             onSetTitleText={onSetTitleText}
