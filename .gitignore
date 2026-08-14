@@ -9,3 +9,11 @@ Thumbs.db
 test4k_proxy.mp4
 testav.mp4
 testspeech.mp4
+
+# licensing / secrets — never commit private keys or server env files
+.env
+.env.*
+*.keys
+*.pem
+*-private.key
+cutlass-license.keys
