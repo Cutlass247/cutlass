@@ -1,0 +1,26 @@
+[package]
+name = "cutlass-license"
+version.workspace = true
+edition.workspace = true
+
+# Shared licensing primitives: the signed "lease" the server issues and the
+# client verifies. The client depends on this WITHOUT the `sign` feature, so it
+# only ever holds the public (verifying) key. The server enables `sign` to mint
+# leases and license keys with the private key (supplied at runtime, never
+# compiled in).
+
+[features]
+default = []
+sign = ["dep:rand", "ed25519-dalek/rand_core"]
+
+[dependencies]
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+rand = { version = "0.8", optional = true }
+
+[[bin]]
+name = "cutlass-keygen"
+path = "src/bin/keygen.rs"
+required-features = ["sign"]

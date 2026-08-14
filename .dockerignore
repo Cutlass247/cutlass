@@ -1,0 +1,11 @@
+target/
+vendor/
+node_modules/
+dist/
+**/*.mp4
+**/*.db
+.git/
+.env
+.env.*
+*.keys
+marketing/

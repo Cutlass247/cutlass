@@ -1,0 +1,20 @@
+[package]
+name = "cutlass-license-server"
+version.workspace = true
+edition.workspace = true
+
+# The licensing API Isaiah hosts. Records HWID -> trial-start (so reinstalls
+# get the ORIGINAL start date), issues signed leases, and redeems purchase
+# codes. The Ed25519 private key is supplied at runtime via an env var and is
+# never compiled in or committed.
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+rand = "0.8"
+base64 = "0.22"
+cutlass-license = { path = "../cutlass-license", features = ["sign"] }

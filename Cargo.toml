@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/cutlass-core",
     "crates/cutlass-engine",
+    "crates/cutlass-license",
+    "crates/cutlass-license-server",
     "crates/cutlass-sync-server",
     "apps/desktop/src-tauri",
 ]
