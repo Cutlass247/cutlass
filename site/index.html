@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Cutlass — Cut sharper. Own everything.</title>
+<title>Cutlass — The video editor you don't have to learn</title>
 <link rel="icon" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"%3E%3Cdefs%3E%3ClinearGradient id="b" x1="0" y1="1" x2="1" y2="0"%3E%3Cstop offset="0" stop-color="%23c8941f"/%3E%3Cstop offset=".5" stop-color="%23f6d06c"/%3E%3Cstop offset="1" stop-color="%23c8941f"/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x="8" y="8" width="240" height="240" rx="54" fill="%231a1a1c"/%3E%3Cpolygon points="93,173 93,189 189,133 153.6,112.4" fill="%23d9dde3" stroke="%23d9dde3" stroke-width="7" stroke-linejoin="round"/%3E%3Cpolygon points="83,67 83,163 143.6,102.4" fill="%23ffffff" stroke="%23ffffff" stroke-width="7" stroke-linejoin="round"/%3E%3Cline x1="64" y1="192" x2="192" y2="64" stroke="url(%23b)" stroke-width="10" stroke-linecap="round"/%3E%3C/svg%3E' />
-<meta name="description" content="Cutlass is a video editor that transcribes your footage on-device and lets you cut video by deleting words, grade it in one click, and publish fast. Real-time collaboration. No subscriptions required. Your content is yours — always." />
+<meta name="description" content="Cutlass is a dead-simple video editor for Windows. Everything you need is right in front of you — no menus to dig through, no tutorials to watch, no learning curve. Edit video by deleting words, grade in one click, export in seconds. Free beta, nothing uploaded." />
 <style>
   :root {
-    --bg: #141414; --panel: #1d1d1d; --border: #2d2d2d;
-    --gold: #e8b339; --blue: #4a90ff; --ok: #3fb950;
-    --text: #eceef2; --muted: #9ba1ac;
+    --bg: #181818; --panel: #202020; --border: #2d2d2d;
+    --gold: #e8b339; --blue: #4a90ff; --ok: #3fb950; --warn: #f0b429;
+    --text: #e8eaee; --muted: #9ba1ac;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -31,11 +31,15 @@
   nav a:hover { color: var(--text); }
 
   .hero { padding: 88px 0 64px; text-align: center; }
+  .hero .eyebrow {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.14em;
+    color: var(--blue); font-weight: 700; margin-bottom: 16px;
+  }
   .hero h1 {
     font-size: clamp(38px, 6vw, 64px); font-weight: 800; line-height: 1.1;
     letter-spacing: -0.02em;
   }
-  .hero h1 .gold { color: var(--gold); }
+  .hero h1 .gold { color: var(--blue); }
   .hero p.sub {
     margin: 22px auto 0; max-width: 640px; font-size: 19px; color: var(--muted);
   }
@@ -46,7 +50,7 @@
     transition: filter 160ms, transform 160ms;
   }
   .btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
-  .btn.gold { background: linear-gradient(180deg, #f0c458, var(--gold)); color: #201a08; }
+  .btn.gold { background: linear-gradient(180deg, #5a9bff, var(--blue)); color: #fff; box-shadow: 0 2px 10px rgba(74,144,255,0.35); }
   .btn.ghost { border: 1px solid var(--border); color: var(--text); }
   .pledge-line { margin-top: 18px; font-size: 13px; color: var(--muted); }
   .pledge-line b { color: var(--ok); }
@@ -60,7 +64,7 @@
   .words { font-size: 20px; line-height: 2; user-select: none; }
   .w { padding: 2px 4px; border-radius: 5px; }
   .w.cut { text-decoration: line-through; color: #5a5f68; background: rgba(248,81,73,0.12); }
-  .w.filler { color: var(--gold); text-decoration: underline dotted; }
+  .w.filler { color: var(--warn); text-decoration: underline dotted; }
   .demo .note { margin-top: 12px; font-size: 13px; color: var(--muted); }
 
   section { padding: 72px 0; border-top: 1px solid var(--border); }
@@ -77,7 +81,7 @@
   .card p { font-size: 14px; color: var(--muted); }
   .card p b { color: var(--text); }
 
-  .pledge { background: linear-gradient(180deg, rgba(232,179,57,0.06), transparent); }
+  .pledge { background: linear-gradient(180deg, rgba(74,144,255,0.06), transparent); }
   .pledge ul { margin-top: 24px; list-style: none; display: grid; gap: 14px; max-width: 640px; }
   .pledge li { padding-left: 30px; position: relative; font-size: 16px; }
   .pledge li::before { content: "✓"; position: absolute; left: 0; color: var(--ok); font-weight: 800; }
@@ -106,6 +110,7 @@
       </svg>
       Cutlass</span>
     <nav>
+      <a href="#simple">Why it's simple</a>
       <a href="#how">How it works</a>
       <a href="#pledge">The pledge</a>
       <a href="#waitlist">Download</a>
@@ -113,11 +118,13 @@
   </header>
 
   <div class="hero">
-    <h1>Cut sharper.<br /><span class="gold">Own everything.</span></h1>
+    <p class="eyebrow">A video editor that finally makes sense</p>
+    <h1>The video editor you<br /><span class="gold">don't have to learn.</span></h1>
     <p class="sub">
-      Cutlass transcribes your footage on your machine and lets you edit video
-      by deleting words. Cut every “um” in one click, grade the whole thing in
-      another, and export in seconds on your GPU. Collaborate live, like a doc.
+      Everything you need is right in front of you — no menus to dig through, no
+      tutorials to watch, no Reddit threads to search for where a tool is hiding.
+      Open Cutlass and you already know where everything is. Editing is as simple
+      as deleting the words you don't want.
     </p>
     <div class="cta-row">
       <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
@@ -153,9 +160,36 @@
     </div>
   </div>
 
+  <section id="simple">
+    <h2>Powerful — but you don't have to be</h2>
+    <p class="lead">
+      Premiere, DaVinci, Final Cut: incredible tools, buried under a hundred
+      panels and a learning curve measured in weeks. Cutlass puts every tool you
+      actually need on one screen, each one labeled in plain words. No hunting,
+      no manual, no “where is that setting?”
+    </p>
+    <div class="grid">
+      <div class="card">
+        <div class="ico">👀</div>
+        <h3>Nothing is hidden</h3>
+        <p>If you can see it, you can use it. Every control is on screen and named for what it does — <b>not buried in a right-click, a submenu, or a shortcut you have to memorize.</b></p>
+      </div>
+      <div class="card">
+        <div class="ico">🧭</div>
+        <h3>No tutorials required</h3>
+        <p>Skip the YouTube playlist and the Reddit search. Import a clip and the next step is obvious. <b>Most people make their first cut in under a minute.</b></p>
+      </div>
+      <div class="card">
+        <div class="ico">🎚️</div>
+        <h3>Grows when you're ready</h3>
+        <p><b>Create</b> mode stays dead simple: import → delete words → export. Flip to <b>Studio</b> for tracks, effects, and keyframes — same project, same plain UI, just more shown when you ask.</p>
+      </div>
+    </div>
+  </section>
+
   <section>
-    <h2>An editor that respects your machine — and you</h2>
-    <p class="lead">Built in Rust on a native decode engine. The heavy lifting happens on your hardware, not a rented cloud.</p>
+    <h2>Simple on top. Serious underneath.</h2>
+    <p class="lead">Easy doesn't mean basic. Under the plain UI is a native Rust engine, transcript-driven editing, live collaboration, and one-click grading — the capable stuff, minus the complicated part.</p>
     <div class="grid">
       <div class="card">
         <div class="ico">📝</div>
@@ -207,7 +241,7 @@
     <h2>Get the beta</h2>
     <p class="lead" style="margin: 0 auto;">Windows 10/11 today. macOS and Linux follow. If you're leaving another editor — we built this for you.</p>
     <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
-    <p class="pledge-line">Free beta. Not on Windows? <a href="mailto:beta@cutlass.app?subject=Cutlass%20for%20Mac%2FLinux&body=Tell%20me%20when%20it%27s%20ready.%20I%20use%3A%20" style="color: var(--gold);">Tell us to ping you</a> when your platform's ready.</p>
+    <p class="pledge-line">Free beta. Not on Windows? <a href="mailto:beta@cutlass.app?subject=Cutlass%20for%20Mac%2FLinux&body=Tell%20me%20when%20it%27s%20ready.%20I%20use%3A%20" style="color: var(--blue);">Tell us to ping you</a> when your platform's ready.</p>
   </section>
 </div>
 <footer>
