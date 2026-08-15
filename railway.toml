@@ -1,0 +1,13 @@
+# Railway deploys the Cutlass license server from this repo. It builds the
+# server's Dockerfile (repo root as context) and health-checks /health.
+# Set secrets in the Railway service Variables, and mount a persistent volume
+# at /data so the licensing database survives redeploys.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "crates/cutlass-license-server/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"

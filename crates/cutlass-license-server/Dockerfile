@@ -4,8 +4,9 @@
 
 FROM rust:1-slim AS build
 WORKDIR /src
+# build-essential gives cc for rusqlite's bundled SQLite; ca-certificates for crates.io
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+    build-essential pkg-config ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN cargo build --release -p cutlass-license-server
 
@@ -14,8 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /src/target/release/cutlass-license-server /app/cutlass-license-server
-# SQLite lives here; mount a volume at /data to persist across deploys.
+# SQLite lives here; mount a persistent volume at /data (Railway: mount path
+# /data) so licenses survive redeploys. DON'T set CUTLASS_PORT — the platform
+# injects $PORT and the server binds it automatically.
 ENV CUTLASS_DB_PATH=/data/cutlass-license.db
-ENV CUTLASS_PORT=8787
 EXPOSE 8787
 CMD ["/app/cutlass-license-server"]
