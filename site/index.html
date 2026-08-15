@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Cutlass — The video editor you don't have to learn</title>
 <link rel="icon" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"%3E%3Cdefs%3E%3ClinearGradient id="b" x1="0" y1="1" x2="1" y2="0"%3E%3Cstop offset="0" stop-color="%23c8941f"/%3E%3Cstop offset=".5" stop-color="%23f6d06c"/%3E%3Cstop offset="1" stop-color="%23c8941f"/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x="8" y="8" width="240" height="240" rx="54" fill="%231a1a1c"/%3E%3Cpolygon points="93,173 93,189 189,133 153.6,112.4" fill="%23d9dde3" stroke="%23d9dde3" stroke-width="7" stroke-linejoin="round"/%3E%3Cpolygon points="83,67 83,163 143.6,102.4" fill="%23ffffff" stroke="%23ffffff" stroke-width="7" stroke-linejoin="round"/%3E%3Cline x1="64" y1="192" x2="192" y2="64" stroke="url(%23b)" stroke-width="10" stroke-linecap="round"/%3E%3C/svg%3E' />
-<meta name="description" content="Cutlass is a dead-simple video editor for Windows. Everything you need is right in front of you — no menus to dig through, no tutorials to watch, no learning curve. Edit video by deleting words, grade in one click, export in seconds. Free beta, nothing uploaded." />
+<meta name="description" content="Cutlass is a dead-simple video editor for Windows that turns your footage into Shorts, Reels, and TikToks — reframe to vertical with no black bars, split a long video into clips, add captions in one click. Edit by deleting words, blur out anything, grade in one click. Free beta, nothing uploaded." />
 <style>
   :root {
     --bg: #181818; --panel: #202020; --border: #2d2d2d;
@@ -122,9 +122,9 @@
     <h1>The video editor you<br /><span class="gold">don't have to learn.</span></h1>
     <p class="sub">
       Everything you need is right in front of you — no menus to dig through, no
-      tutorials to watch, no Reddit threads to search for where a tool is hiding.
-      Open Cutlass and you already know where everything is. Editing is as simple
-      as deleting the words you don't want.
+      tutorials to watch. Turn a long recording into captioned Shorts, Reels, and
+      TikToks, or edit by simply deleting the words you don't want. Open Cutlass
+      and you already know where everything is.
     </p>
     <div class="cta-row">
       <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
@@ -182,24 +182,34 @@
       <div class="card">
         <div class="ico">🎚️</div>
         <h3>Grows when you're ready</h3>
-        <p><b>Create</b> mode stays dead simple: import → delete words → export. Flip to <b>Studio</b> for tracks, effects, and keyframes — same project, same plain UI, just more shown when you ask.</p>
+        <p><b>Create</b> mode is a clip maker: pick a shape for Shorts, TikTok, or Reels, add captions, export. Flip to <b>Studio</b> for tracks, effects, and keyframes — same project, same plain UI, just more shown when you ask.</p>
       </div>
     </div>
   </section>
 
   <section>
     <h2>Simple on top. Serious underneath.</h2>
-    <p class="lead">Easy doesn't mean basic. Under the plain UI is a native Rust engine, transcript-driven editing, live collaboration, and one-click grading — the capable stuff, minus the complicated part.</p>
+    <p class="lead">Easy doesn't mean basic. The same plain screen makes vertical clips, burns captions, blurs faces, and grades footage — on a native Rust engine fast enough for 4K on a laptop.</p>
     <div class="grid">
       <div class="card">
-        <div class="ico">📝</div>
-        <h3>Edit video like text</h3>
-        <p>On-device transcription with word-accurate timestamps. Click a word to jump there. Delete words to cut the video. <b>Captions come free.</b></p>
+        <div class="ico">🎬</div>
+        <h3>Made for vertical</h3>
+        <p>Shoot wide, post tall. Reframe any clip to <b>9:16, 1:1, or 16:9</b> — <b>Fill</b> crops edge-to-edge with no black bars, or drop in a <b>blurred background</b>. Pan to keep your subject centered.</p>
       </div>
       <div class="card">
-        <div class="ico">🤝</div>
-        <h3>Multiplayer timelines</h3>
-        <p>Share a room and edit the same timeline together — live cursors, offline edits that merge cleanly. <b>Like a doc, but it's a video edit.</b></p>
+        <div class="ico">✂️</div>
+        <h3>One video, many shorts</h3>
+        <p>Drop in a long recording and Cutlass <b>splits it into short-ready clips</b> at natural breaks. Pick one, export it, move to the next.</p>
+      </div>
+      <div class="card">
+        <div class="ico">📝</div>
+        <h3>Captions from your words</h3>
+        <p>On-device transcription, then <b>burned-in captions in one click</b>, timed to your speech. Click a word to jump there — delete words and the video cuts with them.</p>
+      </div>
+      <div class="card">
+        <div class="ico">🔲</div>
+        <h3>Blur out anything</h3>
+        <p>Cover a face, a screen, a name. <b>Blur, pixelate, or black-box</b> any region — and <b>motion tracking</b> makes it follow the subject as they move.</p>
       </div>
       <div class="card">
         <div class="ico">🎨</div>
@@ -207,7 +217,7 @@
         <p>One-click Looks preview live on your footage — Cinematic, Warm, Noir, and more. Drop in a <b>.cube LUT</b>, pull green screen, punch in, or dial color by hand. <b>No grading degree required.</b></p>
       </div>
       <div class="card">
-        <div class="ico">✂️</div>
+        <div class="ico">🧹</div>
         <h3>Smart cuts</h3>
         <p>Every “um”, “uh”, and dead-air pause found automatically from the transcript. <b>Remove them all in two clicks</b> — one undo brings them back.</p>
       </div>
@@ -217,9 +227,14 @@
         <p>Native engine: 4K decode at 200+ fps, 6&nbsp;ms scrub seeks, hardware-accelerated export. <b>Smooth on laptops, not just workstations.</b></p>
       </div>
       <div class="card">
+        <div class="ico">🤝</div>
+        <h3>Multiplayer timelines</h3>
+        <p>Share a room and edit the same timeline together — live cursors, offline edits that merge cleanly. <b>Like a doc, but it's a video edit.</b></p>
+      </div>
+      <div class="card">
         <div class="ico">🎛️</div>
         <h3>Two editors in one</h3>
-        <p><b>Create</b> mode is import → words appear → delete → export. <b>Studio</b> mode is a full multi-track NLE with effects, titles, and keyframes. Same project — switch anytime.</p>
+        <p><b>Create</b> is the clip maker: footage in, captioned vertical clip out. <b>Studio</b> is a full multi-track NLE with effects, titles, and keyframes. Same project — switch anytime.</p>
       </div>
     </div>
   </section>
