@@ -1098,3 +1098,58 @@ function mockRemoveTrack(track: string): ProjectSnapshot {
     );
   return structuredClone(mockState.project);
 }
+
+// ── licensing ────────────────────────────────────────────────────────
+export interface LicenseInfo {
+  status: "trial" | "paid" | "owner" | "expired" | "offline" | "error";
+  active: boolean;
+  days_left: number | null;
+  machine_id: string;
+  message: string;
+  needs_online: boolean;
+}
+
+// Browser mock: flip states for UI dev via
+//   localStorage.cutlassMockLicense = "trial" | "expired" | "paid" | "owner" | "offline"
+function mockLicense(): LicenseInfo {
+  const s = (localStorage.getItem("cutlassMockLicense") || "trial") as LicenseInfo["status"];
+  const base = { machine_id: "mock0000deadbeef", needs_online: false };
+  switch (s) {
+    case "expired":
+      return { status: "expired", active: false, days_left: 0,
+        message: "Your 7-day free trial has ended. Purchase to keep editing.", ...base };
+    case "paid":
+      return { status: "paid", active: true, days_left: null, message: "Licensed — thank you.", ...base };
+    case "owner":
+      return { status: "owner", active: true, days_left: null, message: "Creator edition — full access.", ...base };
+    case "offline":
+      return { status: "offline", active: false, days_left: null,
+        message: "Connect to the internet to start your 7-day free trial.", ...base, needs_online: true };
+    default:
+      return { status: "trial", active: true, days_left: 6,
+        message: "6 days left in your free trial.", ...base };
+  }
+}
+
+export async function licenseStatus(): Promise<LicenseInfo> {
+  if (!inTauri) return mockLicense();
+  return invoke<LicenseInfo>("license_status");
+}
+
+export async function licenseRedeem(code: string): Promise<LicenseInfo> {
+  if (!inTauri) {
+    const ok = /^CUTLASS-/i.test(code.trim());
+    if (ok) localStorage.setItem("cutlassMockLicense", "paid");
+    return ok
+      ? { status: "paid", active: true, days_left: null, machine_id: "mock0000deadbeef",
+          message: "Licensed — thank you.", needs_online: false }
+      : { status: "error", active: false, days_left: null, machine_id: "mock0000deadbeef",
+          message: "That code wasn't accepted. Check it and try again.", needs_online: false };
+  }
+  return invoke<LicenseInfo>("license_redeem", { code });
+}
+
+export async function licenseMachineId(): Promise<string> {
+  if (!inTauri) return "mock0000deadbeef";
+  return invoke<string>("license_machine_id");
+}

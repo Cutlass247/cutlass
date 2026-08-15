@@ -4,6 +4,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod license;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -1439,6 +1441,28 @@ async fn sync_task(
     let _ = app.emit("collab-error", "session ended");
 }
 
+// ── licensing ────────────────────────────────────────────────────────
+// Network + registry work runs off the UI thread so launch never blocks.
+#[tauri::command]
+async fn license_status() -> license::LicenseInfo {
+    tauri::async_runtime::spawn_blocking(license::resolve)
+        .await
+        .unwrap_or_else(|_| license::resolve())
+}
+
+#[tauri::command]
+async fn license_redeem(code: String) -> license::LicenseInfo {
+    let fallback = code.clone();
+    tauri::async_runtime::spawn_blocking(move || license::redeem(&code))
+        .await
+        .unwrap_or_else(|_| license::redeem(&fallback))
+}
+
+#[tauri::command]
+fn license_machine_id() -> String {
+    license::machine_id()
+}
+
 fn main() {
     // Use the ffmpeg we ship, not whatever happens to be on PATH. The
     // bundled build is LGPL and has the exact filters/encoders the export
@@ -1548,7 +1572,10 @@ fn main() {
             track_censor,
             reset_censor,
             add_title,
-            set_title_text
+            set_title_text,
+            license_status,
+            license_redeem,
+            license_machine_id
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");
