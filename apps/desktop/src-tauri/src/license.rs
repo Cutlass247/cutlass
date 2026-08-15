@@ -15,8 +15,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Public half of the licensing keypair. Safe to ship; verifies leases offline.
 const PUBLIC_KEY_B64: &str = "evVP402EDTzW7mbeHCJlPFANQEAZNe5FCRfdT3Vt+eM=";
 /// Default license server. Overridable at runtime with CUTLASS_LICENSE_URL
-/// (handy for testing against a local server). Set this to your deployment.
-const DEFAULT_SERVER: &str = "https://license.cutlass.app";
+/// (handy for testing against a local server).
+const DEFAULT_SERVER: &str = "https://cutlass-production.up.railway.app";
 
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64

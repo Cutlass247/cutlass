@@ -17,3 +17,4 @@ testspeech.mp4
 *.pem
 *-private.key
 cutlass-license.keys
+installers/
