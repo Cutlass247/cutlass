@@ -327,7 +327,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/admin/mint", post(mint))
         .with_state(state);
 
-    let port: u16 = env::var("CUTLASS_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(8787);
+    // Honor the platform's assigned port (Railway/Render/Fly set $PORT) before
+    // our own override, so the service is reachable without extra config.
+    let port: u16 = env::var("CUTLASS_PORT")
+        .ok()
+        .or_else(|| env::var("PORT").ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8787);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     println!("cutlass-license-server listening on :{port} (db: {db_path})");
     axum::serve(listener, app).await?;
