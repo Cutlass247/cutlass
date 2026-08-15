@@ -3,12 +3,21 @@ name = "cutlass-desktop"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Build the creator's edition: full access, no trial, never contacts the server.
+#   cargo tauri build -- --features owner
+owner = []
+
 [dependencies]
 anyhow = "1.0.103"
 automerge = "0.10.0"
 base64 = "0.22.1"
 cutlass-core = { path = "../../../crates/cutlass-core" }
 cutlass-engine = { path = "../../../crates/cutlass-engine" }
+cutlass-license = { path = "../../../crates/cutlass-license" }
+sha2 = "0.10"
+ureq = { version = "2.10", default-features = false, features = ["json", "native-tls"] }
+native-tls = "0.2"
 futures-util = "0.3.32"
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 serde = { version = "1.0.228", features = ["derive"] }
@@ -18,6 +27,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tokio = { version = "1.52.4", features = ["sync", "macros", "net", "time", "rt"] }
 tokio-tungstenite = "0.30.0"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

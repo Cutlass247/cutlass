@@ -15,6 +15,7 @@
   --panel-3: #2a2a2a;
   --border: #2d2d2d;
   --accent: #4a90ff;
+  --blue: #4a90ff; /* alias of --accent, used by Create + licensing UI */
   --ok: #3fb950;
   --warn: #f0b429;
   --danger: #f85149;
@@ -2276,4 +2277,192 @@ button {
   font-size: 10px;
   color: var(--muted);
   margin-top: 2px;
+}
+
+/* ── licensing gate ───────────────────────────────────────────────── */
+/* Full-screen states: checking, expired paywall, offline reconnect. */
+.lic-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(1200px 800px at 50% -10%, #1e2430, var(--bg));
+  padding: 24px;
+}
+.lic-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  color: var(--muted);
+}
+.lic-splash-text {
+  font-size: 13px;
+}
+.lic-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 34px 30px 26px;
+  text-align: center;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.lic-title {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  margin-top: 4px;
+}
+.lic-msg {
+  font-size: 14px;
+  color: var(--muted);
+  max-width: 340px;
+  line-height: 1.5;
+}
+.lic-primary {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 11px 22px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  text-decoration: none;
+  cursor: pointer;
+  background: linear-gradient(180deg, #5a9bff, var(--blue));
+  box-shadow: 0 4px 16px rgba(74, 144, 255, 0.3);
+}
+.lic-primary.small {
+  padding: 9px 16px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.lic-primary:hover {
+  filter: brightness(1.06);
+}
+.lic-primary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.lic-or {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.lic-redeem {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lic-redeem-row {
+  display: flex;
+  gap: 8px;
+}
+.lic-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  outline: none;
+}
+.lic-input:focus {
+  border-color: var(--blue);
+}
+.lic-err {
+  font-size: 12px;
+  color: var(--danger);
+  text-align: left;
+}
+.lic-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  margin-top: 4px;
+}
+.lic-link:hover {
+  color: var(--text);
+}
+.lic-machine {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.lic-machine.subtle {
+  opacity: 0.7;
+  text-align: left;
+  margin-top: 2px;
+}
+.lic-machine code {
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  color: var(--text);
+}
+.lic-modal {
+  max-width: 420px;
+}
+
+/* Thin trial countdown banner across the top of the editor. */
+.lic-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(74, 144, 255, 0.16), rgba(74, 144, 255, 0.06));
+  border-bottom: 1px solid var(--border);
+}
+.lic-banner.urgent {
+  background: linear-gradient(180deg, rgba(240, 180, 41, 0.18), rgba(240, 180, 41, 0.06));
+}
+.lic-banner-msg {
+  font-weight: 600;
+}
+.lic-banner-btn {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lic-banner-btn:hover {
+  border-color: var(--blue);
+  color: #cfe0ff;
+}
+.lic-banner-buy {
+  background: linear-gradient(180deg, #5a9bff, var(--blue));
+  border: none;
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.lic-banner-buy:hover {
+  filter: brightness(1.06);
 }
