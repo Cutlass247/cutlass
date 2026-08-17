@@ -74,6 +74,7 @@ import { Mode, TopBar } from "./components/TopBar";
 import { MediaPanel } from "./components/MediaPanel";
 import { Monitor, RESOLUTIONS, Resolution, CensorItem } from "./components/Monitor";
 import { ClipFormat, CLIP_FORMATS, ClipFormatDef, ShortSeg } from "./components/ClipFormat";
+import { findHighlights } from "./highlights";
 import { Inspector } from "./components/Inspector";
 import { ExportDialog } from "./components/ExportDialog";
 import { PPS_MAX, PPS_MIN, TRACK_H, Timeline, TrackCtl } from "./components/Timeline";
@@ -183,9 +184,11 @@ export default function App() {
   const [clipReframeX, setClipReframeX] = useState(0.5);
   // media id awaiting caption generation once its transcript lands
   const [wantCaptions, setWantCaptions] = useState<string | null>(null);
-  // auto-split: candidate shorts (source-time ranges) + which one is loaded
+  // auto-split / highlights: candidate shorts (source-time ranges) + loaded one
   const [shorts, setShorts] = useState<ShortSeg[]>([]);
   const [activeShort, setActiveShort] = useState<number | null>(null);
+  // media id awaiting transcription before highlight analysis
+  const [wantHighlights, setWantHighlights] = useState<string | null>(null);
 
   const lanesRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1716,12 +1719,49 @@ export default function App() {
     [createClip, shorts, applyEdit]
   );
 
+  // AI-free highlight finder: rank the standout moments (audio energy + speech
+  // signals — all on-device) into short-ready clips. Needs a transcript, so it
+  // transcribes first if the clip hasn't been (chained via `wantHighlights`).
+  const computeHighlights = useCallback(
+    (mediaId: string) => {
+      const m = media[mediaId];
+      const ws = transcripts[mediaId];
+      if (!m || !ws) return;
+      const hs = findHighlights(ws, m.waveform ?? [], m.duration_s, 6);
+      if (hs.length === 0) {
+        setError("Couldn't find clear highlights — try “split into even shorts”.");
+        return;
+      }
+      setShorts(hs.map((h) => ({ start: h.start, end: h.end, label: h.label, reasons: h.reasons })));
+      setActiveShort(null);
+    },
+    [media, transcripts]
+  );
+
+  const onFindHighlights = useCallback(() => {
+    if (!createClip) return;
+    if (transcripts[createClip.media]) {
+      computeHighlights(createClip.media);
+      return;
+    }
+    setWantHighlights(createClip.media);
+    doTranscribe(createClip.media);
+  }, [createClip, transcripts, computeHighlights, doTranscribe]);
+
+  useEffect(() => {
+    if (wantHighlights && transcripts[wantHighlights]) {
+      computeHighlights(wantHighlights);
+      setWantHighlights(null);
+    }
+  }, [wantHighlights, transcripts, computeHighlights]);
+
   // stale shorts belong to whatever clip was loaded before — drop them when
   // the source media changes (or the clip goes away)
   const createMediaId = createClip?.media ?? null;
   useEffect(() => {
     setShorts([]);
     setActiveShort(null);
+    setWantHighlights(null);
   }, [createMediaId]);
 
   // ── layout ──────────────────────────────────────────────────────────
@@ -1790,6 +1830,8 @@ export default function App() {
               shorts={shorts}
               activeShort={activeShort}
               onSplit={onSplitShorts}
+              onFindHighlights={onFindHighlights}
+              finding={wantHighlights !== null}
               onPickShort={onPickShort}
             />
           )}

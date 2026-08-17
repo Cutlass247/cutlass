@@ -779,6 +779,25 @@ button {
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }
+.cf-highlights-btn {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  color: #fff;
+  background: linear-gradient(180deg, #5a9bff, var(--blue));
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset, 0 4px 14px rgba(74, 144, 255, 0.22);
+}
+.cf-highlights-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+.cf-highlights-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
 .cf-split-btn {
   width: 100%;
   padding: 8px 12px;
@@ -786,13 +805,22 @@ button {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  color: var(--text);
-  background: var(--panel-2);
+  color: var(--muted);
+  background: transparent;
   border: 1px solid var(--border);
 }
-.cf-split-btn:hover {
+.cf-split-btn:hover:not(:disabled) {
   border-color: var(--blue);
   color: #cfe0ff;
+}
+.cf-split-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.cf-short-reasons {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--blue);
 }
 .cf-split-hint {
   font-size: 11px;
