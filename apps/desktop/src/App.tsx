@@ -187,8 +187,6 @@ export default function App() {
   // auto-split / highlights: candidate shorts (source-time ranges) + loaded one
   const [shorts, setShorts] = useState<ShortSeg[]>([]);
   const [activeShort, setActiveShort] = useState<number | null>(null);
-  // media id awaiting transcription before highlight analysis
-  const [wantHighlights, setWantHighlights] = useState<string | null>(null);
 
   const lanesRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1738,30 +1736,17 @@ export default function App() {
     [media, transcripts]
   );
 
+  // Instant only — never triggers a transcription. Uses the transcript for
+  // smarter (speech-aware) picks IF one already exists (from Add captions),
+  // otherwise ranks by audio energy from the waveform. Both are immediate.
   const onFindHighlights = useCallback(() => {
     if (!createClip) return;
-    // instant pass now (audio energy from the already-computed waveform)…
-    const got = computeHighlights(createClip.media);
-    if (!transcripts[createClip.media]) {
-      // …no transcript yet → transcribe in the background and refine. Even if
-      // the instant pass found nothing (quiet clip / no waveform), don't error —
-      // the speech pass will very likely find highlights.
-      setWantHighlights(createClip.media);
-      doTranscribe(createClip.media);
-    } else if (!got) {
-      setError("Couldn't find clear highlights — try “split into even shorts”.");
+    if (!computeHighlights(createClip.media)) {
+      setError(
+        'No audio to analyze in this clip. Click ✨ Add captions to find highlights from speech, or use “split into even shorts”.'
+      );
     }
-  }, [createClip, transcripts, computeHighlights, doTranscribe]);
-
-  useEffect(() => {
-    if (wantHighlights && transcripts[wantHighlights]) {
-      // refine the instant picks — unless the user already loaded one.
-      if (activeShort === null && !computeHighlights(wantHighlights)) {
-        setError("Couldn't find clear highlights — try “split into even shorts”.");
-      }
-      setWantHighlights(null);
-    }
-  }, [wantHighlights, transcripts, computeHighlights, activeShort]);
+  }, [createClip, computeHighlights]);
 
   // stale shorts belong to whatever clip was loaded before — drop them when
   // the source media changes (or the clip goes away)
@@ -1769,7 +1754,6 @@ export default function App() {
   useEffect(() => {
     setShorts([]);
     setActiveShort(null);
-    setWantHighlights(null);
   }, [createMediaId]);
 
   // ── layout ──────────────────────────────────────────────────────────
@@ -1839,7 +1823,7 @@ export default function App() {
               activeShort={activeShort}
               onSplit={onSplitShorts}
               onFindHighlights={onFindHighlights}
-              finding={wantHighlights !== null}
+              speechAware={createClip !== null && !!transcripts[createClip.media]}
               onPickShort={onPickShort}
             />
           )}

@@ -39,7 +39,8 @@ export function ClipFormat(p: {
   activeShort: number | null;
   onSplit: () => void;
   onFindHighlights: () => void;
-  finding: boolean;
+  /// true once the clip has a transcript, so highlights use speech signals
+  speechAware: boolean;
   onPickShort: (i: number) => void;
 }) {
   return (
@@ -111,18 +112,15 @@ export function ClipFormat(p: {
           <button className="cf-split-btn" onClick={p.onSplit}>
             ✂ Or split into even shorts
           </button>
-          {p.finding && (
-            <div className="cf-split-hint">
-              {p.shorts.length > 0
-                ? "🎙️ Refining with speech… you can pick a clip now."
-                : "🎙️ Analyzing your video for the best moments…"}
-            </div>
-          )}
           {p.shorts.length > 0 && (
             <>
-              {!p.finding && (
+              <div className="cf-split-hint">
+                Pick a clip to load it — then Export it in the shape above.
+              </div>
+              {!p.speechAware && (
                 <div className="cf-split-hint">
-                  Pick a clip to load it — then Export it in the shape above.
+                  💡 These are ranked by audio. <b>Add captions</b> first for smarter,
+                  speech-aware picks (finds funnier moments).
                 </div>
               )}
               <div className="cf-shorts">
