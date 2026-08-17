@@ -469,6 +469,23 @@ export async function onTrackProgress(cb: (p: number) => void): Promise<() => vo
   return listen<number>("track-progress", (e) => cb(e.payload));
 }
 
+// browser-mock progress fan-out so the UI animation is testable without Tauri
+const mockProgressCbs = new Set<(media: string, pct: number) => void>();
+
+/// Subscribe to transcription progress (per media, 0..100).
+export async function onTranscribeProgress(
+  cb: (media: string, pct: number) => void
+): Promise<() => void> {
+  if (!inTauri) {
+    mockProgressCbs.add(cb);
+    return () => mockProgressCbs.delete(cb);
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ media: string; pct: number }>("transcribe-progress", (e) =>
+    cb(e.payload.media, e.payload.pct)
+  );
+}
+
 /// Add a title clip on V2 at `start` (default lower-third style).
 export async function addTitle(start: number): Promise<ProjectSnapshot> {
   if (!inTauri) {
@@ -832,7 +849,13 @@ export interface Word {
 
 /// On-device whisper transcription with word timestamps.
 export async function transcribeMedia(mediaId: string): Promise<Word[]> {
-  if (!inTauri) return mockTranscript(mediaId);
+  if (!inTauri) {
+    for (let p = 0; p <= 100; p += 8) {
+      mockProgressCbs.forEach((cb) => cb(mediaId, p));
+      await new Promise((r) => setTimeout(r, 90));
+    }
+    return mockTranscript(mediaId);
+  }
   return invoke<Word[]>("transcribe_media", { mediaId });
 }
 

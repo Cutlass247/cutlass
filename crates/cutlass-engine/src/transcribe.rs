@@ -17,8 +17,13 @@ pub struct Word {
 }
 
 /// Decode the file's audio to 16 kHz mono and transcribe with word-level
-/// timestamps. `model_path` is a ggml whisper model.
-pub fn transcribe(path: &str, model_path: &str) -> anyhow::Result<Vec<Word>> {
+/// timestamps. `model_path` is a ggml whisper model. `progress` is called with
+/// a 0..100 percentage as the pass advances.
+pub fn transcribe<F: FnMut(i32) + Send + 'static>(
+    path: &str,
+    model_path: &str,
+    progress: F,
+) -> anyhow::Result<Vec<Word>> {
     // 1. audio → 16 kHz mono f32
     let mut dec = AudioDecoder::open_mono(path, WHISPER_RATE)?;
     let mut samples: Vec<f32> = Vec::new();
@@ -48,6 +53,7 @@ pub fn transcribe(path: &str, model_path: &str) -> anyhow::Result<Vec<Word>> {
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
+    params.set_progress_callback_safe::<F, F>(progress);
     state.full(params, &samples).context("whisper full")?;
 
     // 3. segments (≈ words) → Word list; timestamps are centiseconds

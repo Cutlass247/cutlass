@@ -749,12 +749,44 @@ button {
   border: 1px solid var(--border);
 }
 .cf-captions {
+  position: relative;
+  overflow: hidden;
   background: var(--panel-2);
   color: var(--text);
 }
 .cf-captions:hover:not(:disabled) {
   border-color: var(--blue);
   color: #cfe0ff;
+}
+/* transcription progress — a fill bar with a live shimmer + a % label */
+.cf-captions.loading {
+  opacity: 1;
+  cursor: default;
+  color: #fff;
+  border-color: var(--blue);
+}
+.cf-captions-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, #3f7ae0, #5a9bff);
+  transition: width 0.35s ease;
+}
+.cf-captions-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  animation: cf-shimmer 1.2s linear infinite;
+}
+@keyframes cf-shimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+.cf-captions-label {
+  position: relative;
+  z-index: 1;
 }
 .cf-export {
   border: none;
@@ -765,7 +797,7 @@ button {
 .cf-export:hover:not(:disabled) {
   filter: brightness(1.06);
 }
-.cf-captions:disabled,
+.cf-captions:disabled:not(.loading),
 .cf-export:disabled {
   opacity: 0.5;
   cursor: default;
