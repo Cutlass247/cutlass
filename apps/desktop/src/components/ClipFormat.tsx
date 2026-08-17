@@ -116,9 +116,17 @@ export function ClipFormat(p: {
 
       {p.canSplit && (
         <div className="cf-split">
-          <button className="cf-highlights-btn" disabled={!p.hasClip} onClick={p.onFindHighlights}>
-            ✨ Find highlight moments
-          </button>
+          {p.speechAware ? (
+            <button className="cf-highlights-btn" disabled={!p.hasClip} onClick={p.onFindHighlights}>
+              ✨ Find highlight moments
+            </button>
+          ) : (
+            <div className="cf-split-hint">
+              {p.transcribing
+                ? `✨ Highlights unlock when transcription finishes (${Math.round(p.transcribePct)}%).`
+                : "✨ Add captions first — highlights need the transcript to find the best moments."}
+            </div>
+          )}
           <button className="cf-split-btn" onClick={p.onSplit}>
             ✂ Or split into even shorts
           </button>
@@ -127,12 +135,6 @@ export function ClipFormat(p: {
               <div className="cf-split-hint">
                 Pick a clip to load it — then Export it in the shape above.
               </div>
-              {!p.speechAware && (
-                <div className="cf-split-hint">
-                  💡 These are ranked by audio. <b>Add captions</b> first for smarter,
-                  speech-aware picks (finds funnier moments).
-                </div>
-              )}
               <div className="cf-shorts">
                 {p.shorts.map((s, i) => (
                   <button
