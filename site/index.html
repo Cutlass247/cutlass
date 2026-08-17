@@ -24,7 +24,8 @@
     display: flex; align-items: center; gap: 10px;
     padding: 18px 0;
   }
-  .logo { font-weight: 800; font-size: 20px; letter-spacing: 0.01em; }
+  .logo { font-weight: 800; font-size: 20px; letter-spacing: 0.01em; color: var(--text); text-decoration: none; transition: opacity 160ms; }
+  .logo:hover { opacity: 0.82; }
   .logo .blade { color: var(--gold); }
   nav { margin-left: auto; display: flex; gap: 22px; font-size: 14px; }
   nav a { color: var(--muted); text-decoration: none; transition: color 160ms; }
@@ -97,7 +98,7 @@
 <body>
 <div class="wrap">
   <header>
-    <span class="logo">
+    <a class="logo" href="/" aria-label="Cutlass home">
       <svg width="26" height="26" viewBox="0 0 256 256" style="vertical-align:-6px">
         <defs>
           <linearGradient id="hb" x1="0" y1="1" x2="1" y2="0">
@@ -108,7 +109,7 @@
         <polygon points="83,67 83,163 143.6,102.4" fill="#ffffff" stroke="#ffffff" stroke-width="7" stroke-linejoin="round"/>
         <line x1="58" y1="198" x2="198" y2="58" stroke="url(#hb)" stroke-width="12" stroke-linecap="round"/>
       </svg>
-      Cutlass</span>
+      Cutlass</a>
     <nav>
       <a href="#simple">Why it's simple</a>
       <a href="#how">How it works</a>
