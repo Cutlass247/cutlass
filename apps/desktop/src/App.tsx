@@ -372,6 +372,27 @@ export default function App() {
     trackCtlRef.current = trackCtl;
   }, [trackCtl]);
 
+  // Playback is built from a timeline snapshot taken when play() starts, so a
+  // mid-play edit (e.g. removing a clip) would otherwise keep playing the stale
+  // snapshot. This signature changes whenever the audio/video-relevant timeline
+  // does, which re-runs the effect below and restarts the engine in sync.
+  const playSig = useMemo(() => {
+    const clips = project.clips
+      .map(
+        (c) =>
+          `${c.id}|${c.track}|${c.start}|${c.len}|${c.src_in}|${c.media}|${c.text ? "t" : ""}|${
+            c.fx?.volume ?? 1
+          }|${c.fx?.speed ?? 1}`
+      )
+      .join(",");
+    const mutes = Object.entries(trackCtl)
+      .filter(([, v]) => v.mute)
+      .map(([t]) => t)
+      .sort()
+      .join(",");
+    return `${clips}##${mutes}`;
+  }, [project.clips, trackCtl]);
+
   useEffect(() => {
     if (!playing) return;
     let cancelled = false;
@@ -412,7 +433,7 @@ export default function App() {
         if (t != null) setPlayhead(t);
       });
     };
-  }, [playing]);
+  }, [playing, playSig]);
 
   // broadcast presence while in a room
   useEffect(() => {
