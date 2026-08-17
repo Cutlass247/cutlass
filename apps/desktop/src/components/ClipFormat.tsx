@@ -8,8 +8,9 @@ export const CLIP_FORMATS: ClipFormatDef[] = [
   { id: "wide", label: "Wide", sub: "YouTube · landscape", w: 1920, h: 1080 },
 ];
 
-/// A candidate short: a source-time range with a preview label.
-export type ShortSeg = { start: number; end: number; label: string };
+/// A candidate short: a source-time range with a preview label, and (for
+/// AI-free highlight picks) the signals that made it stand out.
+export type ShortSeg = { start: number; end: number; label: string; reasons?: string[] };
 
 const clock = (s: number) => {
   const m = Math.floor(s / 60);
@@ -32,11 +33,13 @@ export function ClipFormat(p: {
   onAddCaptions: () => void;
   exporting: boolean;
   onExport: () => void;
-  // auto-split: turn one long clip into several short-ready segments
+  // auto-split + highlight finder: turn one long clip into short-ready clips
   canSplit: boolean;
   shorts: ShortSeg[];
   activeShort: number | null;
   onSplit: () => void;
+  onFindHighlights: () => void;
+  finding: boolean;
   onPickShort: (i: number) => void;
 }) {
   return (
@@ -102,13 +105,16 @@ export function ClipFormat(p: {
 
       {p.canSplit && (
         <div className="cf-split">
-          <button className="cf-split-btn" onClick={p.onSplit}>
-            ✂ Split into shorts
+          <button className="cf-highlights-btn" disabled={p.finding} onClick={p.onFindHighlights}>
+            {p.finding ? "Finding the best moments…" : "✨ Find highlight moments"}
+          </button>
+          <button className="cf-split-btn" disabled={p.finding} onClick={p.onSplit}>
+            ✂ Or split into even shorts
           </button>
           {p.shorts.length > 0 && (
             <>
               <div className="cf-split-hint">
-                Pick a segment to load it — then Export it in the shape above.
+                Pick a clip to load it — then Export it in the shape above.
               </div>
               <div className="cf-shorts">
                 {p.shorts.map((s, i) => (
@@ -121,6 +127,9 @@ export function ClipFormat(p: {
                     <span className="cf-short-n">{i + 1}</span>
                     <span className="cf-short-body">
                       <span className="cf-short-label">{s.label}</span>
+                      {s.reasons && s.reasons.length > 0 && (
+                        <span className="cf-short-reasons">{s.reasons.join("  ·  ")}</span>
+                      )}
                       <span className="cf-short-time">
                         {clock(s.start)}–{clock(s.end)} · {Math.round(s.end - s.start)}s
                       </span>
