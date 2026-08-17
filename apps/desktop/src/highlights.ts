@@ -112,7 +112,49 @@ function scoreText(text: string) {
   return { score: Math.min(1, s), reasons };
 }
 
+const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+
+/// Greedily keep the highest-scoring windows that don't substantially overlap.
+function topNonOverlapping(cands: Highlight[], top: number): Highlight[] {
+  cands.sort((a, b) => b.score - a.score);
+  const picked: Highlight[] = [];
+  for (const c of cands) {
+    if (picked.length >= top) break;
+    const overlaps = picked.some((p) => {
+      const o = Math.min(p.end, c.end) - Math.max(p.start, c.start);
+      return o > 0.4 * Math.min(p.end - p.start, c.end - c.start);
+    });
+    if (!overlaps) picked.push(c);
+  }
+  return picked.sort((a, b) => a.start - b.start);
+}
+
+/// Instant, transcript-free pass: rank windows by audio energy alone. Uses the
+/// waveform we already computed at import, so there's no wait.
+function fromAudio(waveform: number[], duration: number, top: number): Highlight[] {
+  if (waveform.length === 0 || duration <= 0) return [];
+  const baseline = waveform.reduce((a, b) => a + b, 0) / waveform.length;
+  if (baseline <= 0) return [];
+  const cands: Highlight[] = [];
+  const step = TARGET / 2;
+  for (let start = 0; start + MIN <= duration; start += step) {
+    const end = Math.min(duration, start + TARGET);
+    const { mean, peak } = windowEnergy(waveform, duration, start, end);
+    const score = Math.max(0, mean / baseline - 1) + (peak > 0.85 ? 0.4 : 0);
+    cands.push({
+      start,
+      end,
+      label: `Loud moment · ${mmss(start)}`,
+      score,
+      reasons: [peak > 0.85 ? "🔊 Big reaction" : "🔊 Louder moment"],
+    });
+  }
+  return topNonOverlapping(cands, top);
+}
+
 /// Find and rank up to `top` highlight-worthy windows in source-media time.
+/// With a transcript it uses speech + audio signals; without one it falls back
+/// to the instant audio-only pass.
 export function findHighlights(
   words: Word[],
   waveform: number[],
@@ -120,7 +162,7 @@ export function findHighlights(
   top = 5
 ): Highlight[] {
   const sents = sentences(words);
-  if (sents.length === 0) return [];
+  if (sents.length === 0) return fromAudio(waveform, duration, top);
 
   const baseline =
     waveform.length > 0 ? waveform.reduce((a, b) => a + b, 0) / waveform.length : 0;
@@ -169,16 +211,5 @@ export function findHighlights(
     });
   }
 
-  // greedily take the highest-scoring, non-overlapping windows.
-  cands.sort((a, b) => b.score - a.score);
-  const picked: Highlight[] = [];
-  for (const c of cands) {
-    if (picked.length >= top) break;
-    const overlaps = picked.some((p) => {
-      const o = Math.min(p.end, c.end) - Math.max(p.start, c.start);
-      return o > 0.4 * Math.min(p.end - p.start, c.end - c.start);
-    });
-    if (!overlaps) picked.push(c);
-  }
-  return picked.sort((a, b) => a.start - b.start);
+  return topNonOverlapping(cands, top);
 }

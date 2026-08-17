@@ -105,17 +105,22 @@ export function ClipFormat(p: {
 
       {p.canSplit && (
         <div className="cf-split">
-          <button className="cf-highlights-btn" disabled={p.finding} onClick={p.onFindHighlights}>
-            {p.finding ? "Finding the best moments…" : "✨ Find highlight moments"}
+          <button className="cf-highlights-btn" disabled={!p.hasClip} onClick={p.onFindHighlights}>
+            ✨ Find highlight moments
           </button>
-          <button className="cf-split-btn" disabled={p.finding} onClick={p.onSplit}>
+          <button className="cf-split-btn" onClick={p.onSplit}>
             ✂ Or split into even shorts
           </button>
+          {p.finding && (
+            <div className="cf-split-hint">🎙️ Refining with speech… you can pick a clip now.</div>
+          )}
           {p.shorts.length > 0 && (
             <>
-              <div className="cf-split-hint">
-                Pick a clip to load it — then Export it in the shape above.
-              </div>
+              {!p.finding && (
+                <div className="cf-split-hint">
+                  Pick a clip to load it — then Export it in the shape above.
+                </div>
+              )}
               <div className="cf-shorts">
                 {p.shorts.map((s, i) => (
                   <button

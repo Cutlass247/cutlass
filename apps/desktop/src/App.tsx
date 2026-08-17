@@ -1725,9 +1725,10 @@ export default function App() {
   const computeHighlights = useCallback(
     (mediaId: string) => {
       const m = media[mediaId];
-      const ws = transcripts[mediaId];
-      if (!m || !ws) return;
-      const hs = findHighlights(ws, m.waveform ?? [], m.duration_s, 6);
+      if (!m) return;
+      // works with or without a transcript — audio-only picks are instant, a
+      // transcript (if present) enriches them with speech signals.
+      const hs = findHighlights(transcripts[mediaId] ?? [], m.waveform ?? [], m.duration_s, 6);
       if (hs.length === 0) {
         setError("Couldn't find clear highlights — try “split into even shorts”.");
         return;
@@ -1740,20 +1741,22 @@ export default function App() {
 
   const onFindHighlights = useCallback(() => {
     if (!createClip) return;
-    if (transcripts[createClip.media]) {
-      computeHighlights(createClip.media);
-      return;
+    // instant pass now (audio energy from the already-computed waveform)…
+    computeHighlights(createClip.media);
+    // …then transcribe in the background and refine into speech-aware picks.
+    if (!transcripts[createClip.media]) {
+      setWantHighlights(createClip.media);
+      doTranscribe(createClip.media);
     }
-    setWantHighlights(createClip.media);
-    doTranscribe(createClip.media);
   }, [createClip, transcripts, computeHighlights, doTranscribe]);
 
   useEffect(() => {
     if (wantHighlights && transcripts[wantHighlights]) {
-      computeHighlights(wantHighlights);
+      // refine the instant picks — unless the user already loaded one.
+      if (activeShort === null) computeHighlights(wantHighlights);
       setWantHighlights(null);
     }
-  }, [wantHighlights, transcripts, computeHighlights]);
+  }, [wantHighlights, transcripts, computeHighlights, activeShort]);
 
   // stale shorts belong to whatever clip was loaded before — drop them when
   // the source media changes (or the clip goes away)
