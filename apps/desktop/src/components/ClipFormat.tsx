@@ -112,7 +112,11 @@ export function ClipFormat(p: {
             ✂ Or split into even shorts
           </button>
           {p.finding && (
-            <div className="cf-split-hint">🎙️ Refining with speech… you can pick a clip now.</div>
+            <div className="cf-split-hint">
+              {p.shorts.length > 0
+                ? "🎙️ Refining with speech… you can pick a clip now."
+                : "🎙️ Analyzing your video for the best moments…"}
+            </div>
           )}
           {p.shorts.length > 0 && (
             <>

@@ -1722,19 +1722,18 @@ export default function App() {
   // AI-free highlight finder: rank the standout moments (audio energy + speech
   // signals — all on-device) into short-ready clips. Needs a transcript, so it
   // transcribes first if the clip hasn't been (chained via `wantHighlights`).
+  // Populate the shorts list from highlights; returns whether any were found.
   const computeHighlights = useCallback(
-    (mediaId: string) => {
+    (mediaId: string): boolean => {
       const m = media[mediaId];
-      if (!m) return;
+      if (!m) return false;
       // works with or without a transcript — audio-only picks are instant, a
       // transcript (if present) enriches them with speech signals.
       const hs = findHighlights(transcripts[mediaId] ?? [], m.waveform ?? [], m.duration_s, 6);
-      if (hs.length === 0) {
-        setError("Couldn't find clear highlights — try “split into even shorts”.");
-        return;
-      }
+      if (hs.length === 0) return false;
       setShorts(hs.map((h) => ({ start: h.start, end: h.end, label: h.label, reasons: h.reasons })));
       setActiveShort(null);
+      return true;
     },
     [media, transcripts]
   );
@@ -1742,18 +1741,24 @@ export default function App() {
   const onFindHighlights = useCallback(() => {
     if (!createClip) return;
     // instant pass now (audio energy from the already-computed waveform)…
-    computeHighlights(createClip.media);
-    // …then transcribe in the background and refine into speech-aware picks.
+    const got = computeHighlights(createClip.media);
     if (!transcripts[createClip.media]) {
+      // …no transcript yet → transcribe in the background and refine. Even if
+      // the instant pass found nothing (quiet clip / no waveform), don't error —
+      // the speech pass will very likely find highlights.
       setWantHighlights(createClip.media);
       doTranscribe(createClip.media);
+    } else if (!got) {
+      setError("Couldn't find clear highlights — try “split into even shorts”.");
     }
   }, [createClip, transcripts, computeHighlights, doTranscribe]);
 
   useEffect(() => {
     if (wantHighlights && transcripts[wantHighlights]) {
       // refine the instant picks — unless the user already loaded one.
-      if (activeShort === null) computeHighlights(wantHighlights);
+      if (activeShort === null && !computeHighlights(wantHighlights)) {
+        setError("Couldn't find clear highlights — try “split into even shorts”.");
+      }
       setWantHighlights(null);
     }
   }, [wantHighlights, transcripts, computeHighlights, activeShort]);
