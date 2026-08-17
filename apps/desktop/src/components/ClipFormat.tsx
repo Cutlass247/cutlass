@@ -30,6 +30,7 @@ export function ClipFormat(p: {
   hasClip: boolean;
   captionsReady: boolean;
   transcribing: boolean;
+  transcribePct: number;
   onAddCaptions: () => void;
   exporting: boolean;
   onExport: () => void;
@@ -92,12 +93,21 @@ export function ClipFormat(p: {
       )}
 
       <button
-        className="cf-captions"
+        className={`cf-captions${p.transcribing ? " loading" : ""}`}
         disabled={p.transcribing || !p.hasClip}
         onClick={p.onAddCaptions}
-        title="Transcribe on-device and burn captions"
+        title="On-device transcription, then burned-in captions"
       >
-        {p.transcribing ? "Adding captions…" : p.captionsReady ? "✓ Captions added" : "✨ Add captions"}
+        {p.transcribing && (
+          <span className="cf-captions-fill" style={{ width: `${Math.max(3, p.transcribePct)}%` }} />
+        )}
+        <span className="cf-captions-label">
+          {p.transcribing
+            ? `Transcribing… ${Math.round(p.transcribePct)}%`
+            : p.captionsReady
+            ? "✓ Captions added"
+            : "✨ Add captions"}
+        </span>
       </button>
 
       <button className="cf-export" disabled={!p.hasClip || p.exporting} onClick={p.onExport}>

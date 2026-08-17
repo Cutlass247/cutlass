@@ -34,6 +34,7 @@ import {
   moveClip,
   onExportProgress,
   onTrackProgress,
+  onTranscribeProgress,
   onPlaybackFrame,
   onPresence,
   onProjectChanged,
@@ -141,6 +142,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [transcripts, setTranscripts] = useState<Record<string, Word[]>>({});
   const [transcribing, setTranscribing] = useState<string | null>(null);
+  // per-media transcription progress (0..100), shown on the Add captions button
+  const [transcribeProgress, setTranscribeProgress] = useState<Record<string, number>>({});
   const [wordSel, setWordSel] = useState<{ media: string; a: number; b: number } | null>(null);
   const [room, setRoom] = useState<string | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -279,6 +282,9 @@ export default function App() {
       )
     );
     const unTrack = onTrackProgress((p) => setTrackProgress(p));
+    const unTx = onTranscribeProgress((media, pct) =>
+      setTranscribeProgress((prev) => ({ ...prev, [media]: pct }))
+    );
     const unFrame = onPlaybackFrame((_t, src) => setPlayFrame(src));
     const unPresence = onPresence((p) =>
       setPeers((prev) => ({ ...prev, [p.id]: { ...p, ts: Date.now() } }))
@@ -296,6 +302,7 @@ export default function App() {
       un.then((f) => f());
       unExport.then((f) => f());
       unTrack.then((f) => f());
+      unTx.then((f) => f());
       unFrame.then((f) => f());
       unPresence.then((f) => f());
       clearInterval(prune);
@@ -888,11 +895,12 @@ export default function App() {
   // ── import / transcribe ─────────────────────────────────────────────
   const doTranscribe = useCallback(async (mediaId: string) => {
     setTranscribing(mediaId);
+    setTranscribeProgress((p) => ({ ...p, [mediaId]: 0 }));
     try {
       const words = await transcribeMedia(mediaId);
       setTranscripts((t) => ({ ...t, [mediaId]: words }));
+      setTranscribeProgress((p) => ({ ...p, [mediaId]: 100 }));
       setDirty(true); // transcript is now stored in the doc → savable
-
     } catch (e) {
       setError(String(e));
     } finally {
@@ -909,16 +917,17 @@ export default function App() {
       const res = await importMedia(path);
       setMedia((m) => ({ ...m, [res.media.id]: res.media }));
       applyEdit(res.project);
-      // The clip waits in the bin; drag it onto a track when you want it.
-      // Captions are opt-in in Create mode (the "Add captions" button), so
-      // import stays fast and transcription only runs when asked.
+      // Transcribe in the background right away, so captions and highlights are
+      // ready (and instant) by the time you want them. Progress shows on the
+      // Add captions button; nothing else blocks.
+      doTranscribe(res.media.id);
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  }, [mode, doTranscribe]);
 
   // place a clip from a bin item at a given track + start
   const onDropMedia = useCallback(
@@ -1814,7 +1823,8 @@ export default function App() {
               onReframeX={setClipReframeX}
               hasClip={createClip !== null}
               captionsReady={project.clips.some((c) => c.text)}
-              transcribing={transcribing !== null}
+              transcribing={createClip !== null && transcribing === createClip.media}
+              transcribePct={createClip ? transcribeProgress[createClip.media] ?? 0 : 0}
               onAddCaptions={onAddCaptions}
               exporting={exportModal?.phase === "running"}
               onExport={exportClip}

@@ -910,8 +910,11 @@ fn whisper_model_path() -> Result<std::path::PathBuf, String> {
 #[tauri::command]
 async fn transcribe_media(
     media_id: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<cutlass_engine::transcribe::Word>, String> {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use tauri::Emitter;
     let path = state
         .media
         .lock()
@@ -920,12 +923,22 @@ async fn transcribe_media(
         .map(|m| m.path.clone())
         .ok_or_else(|| format!("unknown media {media_id}"))?;
     let model = whisper_model_path()?;
-    // whisper runs seconds+ on CPU — off the UI thread
+    // whisper runs seconds+ on CPU — off the UI thread, streaming progress so
+    // the UI can show a real percentage.
+    let app2 = app.clone();
+    let mid = media_id.clone();
+    let last = std::sync::Arc::new(AtomicI32::new(-1));
     let words = tauri::async_runtime::spawn_blocking(move || {
-        cutlass_engine::transcribe::transcribe(&path, &model.to_string_lossy()).map_err(err_str)
+        cutlass_engine::transcribe::transcribe(&path, &model.to_string_lossy(), move |p| {
+            if last.swap(p, Ordering::Relaxed) != p {
+                let _ = app2.emit("transcribe-progress", serde_json::json!({ "media": mid, "pct": p }));
+            }
+        })
+        .map_err(err_str)
     })
     .await
     .map_err(err_str)??;
+    let _ = app.emit("transcribe-progress", serde_json::json!({ "media": media_id, "pct": 100 }));
     // persist into the doc so the transcript saves + syncs with the project
     if let Ok(json) = serde_json::to_string(&words) {
         let _ = state.project.lock().unwrap().set_transcript(&media_id, &json);
