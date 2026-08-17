@@ -1,34 +1,54 @@
-// On-device highlight finder. Scores candidate moments from signals we already
-// have — audio energy (waveform) for laughter/excitement, and transcript text
-// for hooks, questions, emphasis, and laughter markers — then ranks the best
-// short-ready windows. Nothing leaves the machine.
+// On-device highlight finder. No AI — it scores candidate clips from signals we
+// already have (audio energy + transcript text) and ranks self-contained,
+// short-ready moments. Not comprehension, but it hunts for the same shape a
+// good short has: a strong hook, a story turn or emotional beat, and a payoff.
+// Nothing leaves the machine.
 
 import type { Word } from "./ipc";
 
 export interface Highlight {
   start: number; // source-media seconds
   end: number;
-  label: string; // the opening line, used as a hook/title
-  score: number; // 0..1
+  label: string; // the opening line (the hook), used as a title
+  score: number; // relative, higher = stronger
   reasons: string[]; // human-readable why-it-was-picked tags
 }
 
 // clip-length targets (seconds)
-const TARGET = 30;
-const MIN = 12;
-const MAX = 60;
+const TARGET = 28;
+const MIN = 14;
+const MAX = 55;
 
-const HOOKS = [
-  "wait", "actually", "honestly", "the thing is", "here's the", "you won't believe",
-  "guess what", "the best part", "the craziest part", "the worst part", "turns out",
-  "plot twist", "nobody tells you", "here's why", "the secret",
+// ── signal vocabularies ──────────────────────────────────────────────
+// Curiosity/hook openers — great as the FIRST line of a clip.
+const CURIOSITY = [
+  "here's the", "here's why", "here's what", "here's how", "the reason", "the truth",
+  "the secret", "the trick", "the best part", "the worst part", "the craziest", "the problem with",
+  "did you know", "let me tell you", "what if", "nobody tells you", "nobody talks about",
+  "everyone thinks", "you won't believe", "i'll never forget", "the one thing", "this changed",
 ];
-const EMPHASIS = [
-  "crazy", "insane", "unbelievable", "incredible", "amazing", "ridiculous", "wild",
-  "shocking", "mind-blowing", "never", "best", "worst", "huge", "massive", "perfect",
-  "obsessed", "favorite", "hilarious", "genius", "brutal",
+// Story pivots / turns.
+const PIVOT = [
+  "but ", "however", "turns out", "suddenly", "the problem", "here's the thing", "plot twist",
+  "except", "until", "the moment", "little did", "out of nowhere", "next thing",
 ];
-const REACTION = ["wow", "whoa", "oh my god", "omg", "no way", "holy", "what the", "finally"];
+// Emotional intensity / stakes.
+const EMOTION = [
+  "crazy", "insane", "unbelievable", "incredible", "amazing", "ridiculous", "wild", "shocking",
+  "hilarious", "terrifying", "obsessed", "genius", "brutal", "perfect", "furious", "devastated",
+  "love", "hate", "scared", "excited", "best", "worst", "favorite", "never again",
+];
+// Payoff / conclusions.
+const PAYOFF = [
+  "that's why", "the point is", "the lesson", "the takeaway", "in the end", "the moral",
+  "which means", "and that's how", "so that's", "long story short", "bottom line",
+];
+const REACTION = ["wow", "whoa", "oh my god", "omg", "no way", "holy", "what the", "finally", "let's go"];
+// Opening words that lean on prior context — a clip starting here feels mid-thought.
+const REFERENTIAL = new Set([
+  "it", "that", "this", "these", "those", "so", "and", "but", "because", "which", "they",
+  "them", "he", "she", "then", "also", "plus", "anyway", "yeah", "okay", "um", "uh", "like",
+]);
 
 interface Sentence {
   text: string;
@@ -59,7 +79,6 @@ function sentences(words: Word[]): Sentence[] {
   return out;
 }
 
-/// Mean/peak waveform amplitude across a time window.
 function windowEnergy(wf: number[], duration: number, a: number, b: number) {
   if (wf.length === 0 || duration <= 0) return { mean: 0, peak: 0 };
   const n = wf.length;
@@ -76,43 +95,39 @@ function windowEnergy(wf: number[], duration: number, a: number, b: number) {
   return { mean: c ? sum / c : 0, peak };
 }
 
-/// Score a window's transcript text for highlight signals.
-function scoreText(text: string) {
-  const t = ` ${text.toLowerCase()} `;
-  let s = 0;
-  const reasons = new Set<string>();
-  if (/\b(a?ha(ha)+|hah|lol|lmao|rofl)\b/.test(t) || /\[laugh/.test(t)) {
-    s += 0.5;
-    reasons.add("😂 Laughter");
-  }
-  const q = (text.match(/\?/g) || []).length;
-  if (q) {
-    s += Math.min(0.3, q * 0.15);
-    reasons.add("❓ Hook question");
-  }
-  const ex = (text.match(/!/g) || []).length;
-  if (ex) s += Math.min(0.2, ex * 0.1);
-  if (HOOKS.some((h) => t.includes(h))) {
-    s += 0.25;
-    reasons.add("🎣 Strong hook");
-  }
-  const emph = EMPHASIS.filter((w) => t.includes(` ${w}`)).length;
-  if (emph) {
-    s += Math.min(0.3, emph * 0.12);
-    reasons.add("🔥 Punchy language");
-  }
-  if (REACTION.some((w) => t.includes(w))) {
-    s += 0.15;
-    reasons.add("😮 Reaction");
-  }
-  if (/\b\d+\b/.test(t) && /\b(reasons|ways|things|tips|steps|rules|mistakes)\b/.test(t)) {
-    s += 0.2;
-    reasons.add("🔢 Listicle");
-  }
-  return { score: Math.min(1, s), reasons };
-}
-
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
+const hits = (t: string, list: string[]) => list.filter((w) => t.includes(w)).length;
+
+/// Per-sentence signal analysis (text only).
+interface Sig {
+  curiosity: number;
+  pivot: number;
+  emotion: number;
+  reaction: number;
+  payoff: number;
+  laugh: boolean;
+  question: boolean;
+  specific: number;
+  referentialStart: boolean;
+}
+function analyze(text: string): Sig {
+  const t = ` ${text.toLowerCase()} `;
+  const first = text.trim().toLowerCase().split(/\s+/)[0]?.replace(/[^a-z]/g, "") ?? "";
+  return {
+    curiosity: hits(t, CURIOSITY),
+    pivot: hits(t, PIVOT),
+    emotion: hits(t, EMOTION),
+    reaction: REACTION.some((w) => t.includes(w)) ? 1 : 0,
+    payoff: hits(t, PAYOFF),
+    laugh: /\b(a?ha(ha)+|hah|lol|lmao|rofl)\b/.test(t) || /\[laugh/.test(t),
+    question: text.includes("?"),
+    specific:
+      /\b\d/.test(t) || t.includes("$") || t.includes("percent") || t.includes(" million") || t.includes(" thousand")
+        ? 1
+        : 0,
+    referentialStart: REFERENTIAL.has(first),
+  };
+}
 
 /// Greedily keep the highest-scoring windows that don't substantially overlap.
 function topNonOverlapping(cands: Highlight[], top: number): Highlight[] {
@@ -122,39 +137,34 @@ function topNonOverlapping(cands: Highlight[], top: number): Highlight[] {
     if (picked.length >= top) break;
     const overlaps = picked.some((p) => {
       const o = Math.min(p.end, c.end) - Math.max(p.start, c.start);
-      return o > 0.4 * Math.min(p.end - p.start, c.end - c.start);
+      return o > 0.35 * Math.min(p.end - p.start, c.end - c.start);
     });
     if (!overlaps) picked.push(c);
   }
   return picked.sort((a, b) => a.start - b.start);
 }
 
-/// Instant, transcript-free pass: rank windows by audio energy alone. Uses the
-/// waveform we already computed at import, so there's no wait.
+/// Instant, transcript-free fallback: rank windows by audio energy alone.
 function fromAudio(waveform: number[], duration: number, top: number): Highlight[] {
   if (waveform.length === 0 || duration <= 0) return [];
   const baseline = waveform.reduce((a, b) => a + b, 0) / waveform.length;
   if (baseline <= 0) return [];
   const cands: Highlight[] = [];
-  const step = TARGET / 2;
-  for (let start = 0; start + MIN <= duration; start += step) {
+  for (let start = 0; start + MIN <= duration; start += TARGET / 2) {
     const end = Math.min(duration, start + TARGET);
     const { mean, peak } = windowEnergy(waveform, duration, start, end);
-    const score = Math.max(0, mean / baseline - 1) + (peak > 0.85 ? 0.4 : 0);
     cands.push({
       start,
       end,
       label: `Loud moment · ${mmss(start)}`,
-      score,
+      score: Math.max(0, mean / baseline - 1) + (peak > 0.85 ? 0.4 : 0),
       reasons: [peak > 0.85 ? "🔊 Big reaction" : "🔊 Louder moment"],
     });
   }
   return topNonOverlapping(cands, top);
 }
 
-/// Find and rank up to `top` highlight-worthy windows in source-media time.
-/// With a transcript it uses speech + audio signals; without one it falls back
-/// to the instant audio-only pass.
+/// Find and rank up to `top` highlight-worthy clips in source-media time.
 export function findHighlights(
   words: Word[],
   waveform: number[],
@@ -162,54 +172,114 @@ export function findHighlights(
   top = 5
 ): Highlight[] {
   const sents = sentences(words);
-  if (sents.length === 0) return fromAudio(waveform, duration, top);
+  if (sents.length < 2) return fromAudio(waveform, duration, top);
 
-  const baseline =
-    waveform.length > 0 ? waveform.reduce((a, b) => a + b, 0) / waveform.length : 0;
-
-  // Value each sentence on its own — text signals + how loud/energetic it is.
-  const sv = sents.map((s) => {
-    const { score: textScore, reasons } = scoreText(s.text);
+  const baseline = waveform.length > 0 ? waveform.reduce((a, b) => a + b, 0) / waveform.length : 0;
+  const sig = sents.map((s) => analyze(s.text));
+  const energy = sents.map((s) => {
     const { mean, peak } = windowEnergy(waveform, duration, s.start, s.end);
-    let energyScore = 0;
-    if (baseline > 0) {
-      energyScore = Math.max(0, Math.min(1, mean / baseline - 1));
-      if (peak > 0.85) energyScore = Math.min(1, energyScore + 0.3);
-    }
-    if (energyScore > 0.45) reasons.add("🔊 Big reaction");
-    return { score: 0.5 * textScore + 0.5 * energyScore, reasons };
+    if (baseline <= 0) return 0;
+    return Math.max(0, Math.min(1, mean / baseline - 1)) + (peak > 0.85 ? 0.3 : 0);
   });
 
-  // Anchor a window on each sentence so the strong moment is the *opening* line
-  // (the hook), then grow forward toward the target length.
+  // pick the most compelling line in [i..k] to use as the title.
+  const hookScore = (j: number) =>
+    sig[j].curiosity * 2 +
+    (sig[j].question ? 1.2 : 0) +
+    sig[j].emotion * 0.8 +
+    (sig[j].laugh ? 2 : 0) +
+    sig[j].reaction * 0.6 +
+    energy[j] * 1.2;
+
   const cands: Highlight[] = [];
   for (let i = 0; i < sents.length; i++) {
+    // grow toward the target length, but stop at a natural pause (topic
+    // boundary) once we have enough, so distinct moments don't merge.
     let k = i;
-    let end = sents[i].end;
-    while (k + 1 < sents.length && sents[k + 1].end - sents[i].start <= MAX) {
+    while (k + 1 < sents.length) {
+      if (sents[k + 1].end - sents[i].start > MAX) break;
+      const curSpan = sents[k].end - sents[i].start;
+      const nextGap = sents[k + 1].start - sents[k].end;
+      if (curSpan >= MIN && nextGap > 0.8) break; // natural break — end here
       k++;
-      end = sents[k].end;
-      if (end - sents[i].start >= TARGET) break;
+      if (sents[k].end - sents[i].start >= TARGET) break;
     }
     const start = sents[i].start;
-    if (end - start < MIN && !(i === 0 && sents.length === 1)) continue;
+    const end = sents[k].end;
+    if (end - start < MIN && !(i === 0 && sents.length <= 2)) continue;
 
-    // dominated by the anchor (which becomes the label), plus a bonus for a
-    // second strong beat landing inside the window.
-    const reasons = new Set(sv[i].reasons);
-    let bestOther = 0;
-    for (let j = i + 1; j <= k; j++) {
-      bestOther = Math.max(bestOther, sv[j].score);
-      for (const r of sv[j].reasons) if (r.startsWith("😂") || r.startsWith("🔊")) reasons.add(r);
+    let titleIdx = i;
+    let bestHook = -1;
+    for (let j = i; j <= k; j++) {
+      const h = hookScore(j);
+      if (h > bestHook) {
+        bestHook = h;
+        titleIdx = j;
+      }
     }
+
+    const reasons = new Set<string>();
+
+    // 1) OPENING — a short lives or dies on its first line.
+    let opener = 0;
+    const o = sig[i];
+    if (o.question) {
+      opener += 0.35;
+      reasons.add("❓ Opens on a question");
+    }
+    if (o.curiosity) {
+      opener += 0.4;
+      reasons.add("🎣 Strong hook");
+    }
+    if (o.emotion) opener += 0.15;
+    if (o.referentialStart && !o.question && !o.curiosity) {
+      opener -= 0.3; // starts mid-thought, needs prior context
+    }
+
+    // 2) BODY — the beats inside the clip.
+    let body = 0;
+    let hasPivot = false;
+    let hasPayoff = false;
+    let bestBeat = 0;
+    for (let j = i; j <= k; j++) {
+      const s = sig[j];
+      body += 0.12 * s.emotion + 0.1 * s.reaction + 0.08 * s.specific + energy[j] * 0.5;
+      if (s.laugh) {
+        body += 0.45;
+        reasons.add("😂 Laughter");
+      }
+      if (s.pivot) hasPivot = true;
+      if (s.payoff && j > i) hasPayoff = true;
+      bestBeat = Math.max(bestBeat, s.emotion * 0.3 + energy[j]);
+      if (energy[j] > 0.55) reasons.add("🔊 Big reaction");
+    }
+    if (hasPivot) reasons.add("↪️ Story turn");
+    if (hasPayoff) reasons.add("✅ Has a payoff");
+
+    // 3) ARC bonus — hook + turn/beat + payoff is a complete little story.
+    let arc = 0;
+    if (opener > 0.2 && (hasPivot || bestBeat > 0.4) && hasPayoff) {
+      arc = 0.4;
+      reasons.add("🎬 Complete story");
+    }
+
+    // 4) DENSITY — reward clips packed with signal, not one spike in dead air.
+    const dur = end - start;
+    const density = Math.min(0.3, (reasons.size / dur) * 6);
+
+    const score = opener + Math.min(0.6, body) + arc + density;
+    if (score <= 0.05) continue; // skip flat filler
+
+    const title = sents[titleIdx].text;
     cands.push({
       start,
       end,
-      label: sents[i].text.slice(0, 64) + (sents[i].text.length > 64 ? "…" : ""),
-      score: sv[i].score + 0.3 * bestOther,
-      reasons: [...reasons],
+      label: title.slice(0, 70) + (title.length > 70 ? "…" : ""),
+      score,
+      reasons: [...reasons].slice(0, 4),
     });
   }
 
+  if (cands.length === 0) return fromAudio(waveform, duration, top);
   return topNonOverlapping(cands, top);
 }
