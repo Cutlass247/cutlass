@@ -6,7 +6,7 @@
 
 The video editor you don't have to learn. Turn a long recording into captioned Shorts, Reels, and TikToks — or edit by deleting words, and the video cuts itself. Everything runs on your machine; your footage never leaves it.
 
-### [⬇ Download for Windows](../../releases/latest) · v0.1.0 · 7-day free trial
+### [⬇ Download for Windows](../../releases/latest) · v0.1.0 · Free 7-day trial, then yours forever
 
 </div>
 
@@ -33,8 +33,11 @@ The video editor you don't have to learn. Turn a long recording into captioned S
 
 **Create** mode is the clip maker: footage in, captioned vertical clip out. **Studio** mode is a full multi-track editor with effects, titles, and keyframes — same project, switch anytime.
 
-## The pledge
+## Buy it once. Own it forever.
 
+Every other editor wants a recurring piece of you — a monthly rental, a watermark, or a license to your work. Premiere is **$20+ a month, forever**. Cutlass is a **one-time purchase you keep for good**.
+
+- **Pay once — it's yours.** No subscription, ever. Buy it and own it, right on your machine.
 - **Your content is yours.** Cutlass claims no license, ever, to anything you make.
 - **Your footage never leaves your machine.** Transcription and editing run on-device — nothing you shoot is ever uploaded.
 - **No account. No watermark. No lock-in.** Your project file is open and documented. The 7-day trial checks a license on first launch (an anonymous machine ID only — never your footage); after that, a one-time purchase keeps you editing.
