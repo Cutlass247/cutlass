@@ -812,8 +812,10 @@ button {
   border-top: 1px solid var(--border);
 }
 .cf-highlights-btn {
+  position: relative;
+  overflow: hidden;
   width: 100%;
-  padding: 9px 12px;
+  padding: 11px 12px;
   border-radius: 8px;
   font-size: 13px;
   font-weight: 700;
@@ -827,8 +829,22 @@ button {
   filter: brightness(1.06);
 }
 .cf-highlights-btn:disabled {
-  opacity: 0.6;
   cursor: default;
+}
+.cf-highlights-btn:disabled:not(.loading) {
+  opacity: 0.6;
+}
+/* while the AI reads the transcript: an indeterminate sweep across the button */
+.cf-ai-scan {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: cf-shimmer 1.15s linear infinite;
+}
+.cf-shorts-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .cf-split-btn {
   width: 100%;

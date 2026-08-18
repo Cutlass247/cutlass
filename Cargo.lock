@@ -1154,11 +1154,13 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "cutlass-license",
+ "native-tls",
  "rand 0.8.7",
  "rusqlite",
  "serde",
  "serde_json",
  "tokio",
+ "ureq 2.12.1",
 ]
 
 [[package]]

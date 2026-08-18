@@ -1476,6 +1476,17 @@ fn license_machine_id() -> String {
     license::machine_id()
 }
 
+#[tauri::command]
+async fn ai_highlights(
+    transcript: Vec<license::TWord>,
+    count: Option<u32>,
+) -> Result<Vec<license::Moment>, String> {
+    let n = count.unwrap_or(8);
+    tauri::async_runtime::spawn_blocking(move || license::ai_highlights(transcript, n))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 fn main() {
     // Use the ffmpeg we ship, not whatever happens to be on PATH. The
     // bundled build is LGPL and has the exact filters/encoders the export
@@ -1588,7 +1599,8 @@ fn main() {
             set_title_text,
             license_status,
             license_redeem,
-            license_machine_id
+            license_machine_id,
+            ai_highlights
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");

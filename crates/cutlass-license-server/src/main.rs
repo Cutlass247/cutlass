@@ -46,6 +46,7 @@ struct Config {
     paid_grace_secs: i64,
     owner_hwids: HashSet<String>,
     admin_token: Option<String>,
+    anthropic_key: Option<String>,
 }
 
 #[derive(Clone)]
@@ -290,6 +291,167 @@ fn new_code() -> String {
     format!("CUTLASS-{}-{}-{}", group(&mut rng), group(&mut rng), group(&mut rng))
 }
 
+// ── AI highlights (Claude reads the transcript, finds the best moments) ─
+#[derive(Deserialize)]
+struct TWord {
+    text: String,
+    start: f64,
+    end: f64,
+}
+
+#[derive(Deserialize)]
+struct HighlightsReq {
+    hwid: String,
+    transcript: Vec<TWord>,
+    count: Option<u32>,
+    app_version: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Moment {
+    start: f64,
+    end: f64,
+    title: String,
+    #[serde(default)]
+    reason: String,
+}
+
+/// Group words into ~14-word lines, each stamped with its start second, so the
+/// model sees where each phrase lands without a token-heavy per-word dump.
+fn transcript_lines(words: &[TWord]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < words.len() {
+        let start = words[i].start;
+        let mut line = String::new();
+        let mut n = 0;
+        while i < words.len() && n < 14 {
+            line.push_str(words[i].text.trim());
+            line.push(' ');
+            i += 1;
+            n += 1;
+        }
+        out.push_str(&format!("[{start:.1}] {}\n", line.trim()));
+    }
+    out
+}
+
+fn build_prompt(words: &[TWord], count: u32) -> String {
+    let total = words.last().map(|w| w.end).unwrap_or(0.0);
+    format!(
+        "You are a world-class short-form video editor who makes viral YouTube Shorts, \
+TikToks, and Instagram Reels. Below is the full timestamped transcript of a {total:.0}-second \
+video. Each line is prefixed with its start time in seconds: [SECONDS].\n\n\
+Find the {count} BEST standalone moments to cut into vertical short clips. Prioritise moments \
+that are genuinely FUNNY, EXCITING, SURPRISING, emotionally powerful, or PIVOTAL — the parts \
+that make someone stop scrolling and watch. Skim the ENTIRE video; spread picks across it.\n\n\
+Hard rules:\n\
+- Each clip must be self-contained and make sense on its own (include enough setup/context).\n\
+- Between 15 and 60 seconds long. Start and end on natural sentence boundaries.\n\
+- Must open with a strong hook in the first few seconds.\n\
+- Do NOT pick overlapping, repetitive, or near-duplicate moments — each must be distinct.\n\
+- Rank them best-first.\n\n\
+Return ONLY a JSON array (no prose, no markdown fences). Each element is exactly:\n\
+{{\"start\": <seconds number>, \"end\": <seconds number>, \"title\": \"<punchy 3-7 word title>\", \
+\"reason\": \"<why it stands out, 4-9 words>\"}}\n\n\
+Transcript:\n{}",
+        transcript_lines(words)
+    )
+}
+
+/// Call the Anthropic Messages API (blocking; run under spawn_blocking).
+fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
+    let connector = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(90))
+        .tls_connector(std::sync::Arc::new(connector))
+        .build();
+    let body = serde_json::json!({
+        "model": "claude-sonnet-5",
+        "max_tokens": 3000,
+        "messages": [{ "role": "user", "content": prompt }]
+    });
+    let resp = match agent
+        .post("https://api.anthropic.com/v1/messages")
+        .set("x-api-key", key)
+        .set("anthropic-version", "2023-06-01")
+        .set("content-type", "application/json")
+        .send_json(body)
+    {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, r)) => {
+            let msg = r.into_string().unwrap_or_default();
+            return Err(format!("anthropic {code}: {}", msg.chars().take(300).collect::<String>()));
+        }
+        Err(e) => return Err(format!("anthropic transport error: {e}")),
+    };
+    let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
+    let text = v["content"]
+        .as_array()
+        .map(|blocks| {
+            blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("")
+        })
+        .unwrap_or_default();
+    if text.is_empty() {
+        return Err("empty response from anthropic".into());
+    }
+    Ok(text)
+}
+
+/// Extract the outermost JSON array from a possibly-chatty model response.
+fn extract_json_array(s: &str) -> Option<&str> {
+    let a = s.find('[')?;
+    let b = s.rfind(']')?;
+    (b > a).then(|| &s[a..=b])
+}
+
+async fn highlights(
+    State(state): State<AppState>,
+    Json(req): Json<HighlightsReq>,
+) -> Result<Json<Vec<Moment>>, (StatusCode, String)> {
+    let key = state
+        .cfg
+        .anthropic_key
+        .clone()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "AI highlights are not configured".into()))?;
+    if req.transcript.len() < 5 {
+        return Err((StatusCode::BAD_REQUEST, "transcript too short to analyse".into()));
+    }
+    // gate on an active licence so the AI key can't be used by unlicensed apps
+    let t = now();
+    let active = {
+        let db = state.db.lock().unwrap();
+        let row = get_or_create(&db, &state.cfg, req.hwid.trim(), req.app_version.as_deref(), t);
+        lease_for(&row, &state.cfg, t).is_active_at(t)
+    };
+    if !active {
+        return Err((StatusCode::PAYMENT_REQUIRED, "no active licence for AI highlights".into()));
+    }
+
+    let count = req.count.unwrap_or(8).clamp(1, 15);
+    let prompt = build_prompt(&req.transcript, count);
+    let text = tokio::task::spawn_blocking(move || call_anthropic(&key, prompt))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+    let json = extract_json_array(&text)
+        .ok_or((StatusCode::BAD_GATEWAY, "AI response was not valid JSON".into()))?;
+    let mut moments: Vec<Moment> = serde_json::from_str(json)
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("could not parse AI JSON: {e}")))?;
+    // clamp to the real transcript span so a hallucinated time can't overrun
+    let dur = req.transcript.last().map(|w| w.end).unwrap_or(0.0);
+    for m in moments.iter_mut() {
+        if m.start < 0.0 {
+            m.start = 0.0;
+        }
+        if dur > 0.0 && m.end > dur {
+            m.end = dur;
+        }
+    }
+    moments.retain(|m| m.end > m.start && m.end - m.start >= 5.0);
+    Ok(Json(moments))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let key_b64 = env::var("CUTLASS_LICENSE_PRIVATE_KEY")
@@ -308,6 +470,7 @@ async fn main() -> anyhow::Result<()> {
             .filter(|s| !s.is_empty())
             .collect(),
         admin_token: env::var("CUTLASS_ADMIN_TOKEN").ok(),
+        anthropic_key: env::var("CUTLASS_ANTHROPIC_KEY").ok(),
     };
 
     let db_path = env::var("CUTLASS_DB_PATH").unwrap_or_else(|_| "cutlass-license.db".into());
@@ -325,6 +488,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/activate", post(activate))
         .route("/redeem", post(redeem))
         .route("/admin/mint", post(mint))
+        .route("/highlights", post(highlights))
         .with_state(state);
 
     // Honor the platform's assigned port (Railway/Render/Fly set $PORT) before
