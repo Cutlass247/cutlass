@@ -19,7 +19,8 @@ const clock = (s: number) => {
 };
 
 /// The Create tab's clip maker: pick a platform shape, choose how the footage
-/// fills it, add captions, and export. Everything for one short, in one panel.
+/// fills it, let the AI find the best moments (each becomes a captioned clip),
+/// and export. Everything for one short, in one panel.
 export function ClipFormat(p: {
   format: ClipFormatDef;
   onFormat: (f: ClipFormatDef) => void;
@@ -28,22 +29,23 @@ export function ClipFormat(p: {
   reframeX: number;
   onReframeX: (x: number) => void;
   hasClip: boolean;
-  captionsReady: boolean;
+  // "Find best moments" runs on-device transcription (progress %) then hands
+  // the transcript to the AI (aiFinding) — one button, two phases.
   transcribing: boolean;
   transcribePct: number;
-  onAddCaptions: () => void;
+  aiFinding: boolean;
+  onFindHighlights: () => void;
   exporting: boolean;
   onExport: () => void;
-  // auto-split + highlight finder: turn one long clip into short-ready clips
+  // manual fallback: chop one long clip into even short-ready segments
   canSplit: boolean;
   shorts: ShortSeg[];
   activeShort: number | null;
   onSplit: () => void;
-  onFindHighlights: () => void;
-  /// true once the clip has a transcript, so highlights use speech signals
-  speechAware: boolean;
   onPickShort: (i: number) => void;
 }) {
+  const finding = p.transcribing || p.aiFinding;
+  const pct = Math.round(p.transcribePct);
   return (
     <div className="clip-format">
       <div className="cf-title">Make a clip for</div>
@@ -92,73 +94,70 @@ export function ClipFormat(p: {
         </div>
       )}
 
+      {/* THE headline action: AI reads the whole clip and pulls the best
+          moments — each loads as a captioned short ready to export. */}
       <button
-        className={`cf-captions${p.transcribing ? " loading" : ""}`}
-        disabled={p.transcribing || !p.hasClip}
-        onClick={p.onAddCaptions}
-        title="On-device transcription, then burned-in captions"
+        className={`cf-highlights-btn${finding ? " loading" : ""}`}
+        disabled={finding || !p.hasClip}
+        onClick={p.onFindHighlights}
+        title="Transcribes on-device, then the AI finds the funniest, most exciting and pivotal moments — each becomes a captioned clip"
       >
         {p.transcribing && (
           <span className="cf-captions-fill" style={{ width: `${Math.max(3, p.transcribePct)}%` }} />
         )}
+        {p.aiFinding && <span className="cf-ai-scan" />}
         <span className="cf-captions-label">
           {p.transcribing
-            ? `Transcribing… ${Math.round(p.transcribePct)}%`
-            : p.captionsReady
-            ? "✓ Captions added"
-            : "✨ Add captions"}
+            ? `Reading the video… ${pct}%`
+            : p.aiFinding
+            ? "✨ Finding the best moments…"
+            : "✨ Find the best moments"}
         </span>
       </button>
+      {!finding && p.shorts.length === 0 && (
+        <div className="cf-split-hint">
+          The AI scans your whole clip for standout moments and turns each into a
+          short — with captions baked in.
+        </div>
+      )}
+
+      {p.shorts.length > 0 && (
+        <div className="cf-shorts-wrap">
+          <div className="cf-split-hint">
+            Pick a moment to load it (with captions) — then Export it in the shape above.
+          </div>
+          <div className="cf-shorts">
+            {p.shorts.map((s, i) => (
+              <button
+                key={i}
+                className={`cf-short${p.activeShort === i ? " on" : ""}`}
+                onClick={() => p.onPickShort(i)}
+                title={s.label}
+              >
+                <span className="cf-short-n">{i + 1}</span>
+                <span className="cf-short-body">
+                  <span className="cf-short-label">{s.label}</span>
+                  {s.reasons && s.reasons.length > 0 && (
+                    <span className="cf-short-reasons">{s.reasons.join("  ·  ")}</span>
+                  )}
+                  <span className="cf-short-time">
+                    {clock(s.start)}–{clock(s.end)} · {Math.round(s.end - s.start)}s
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <button className="cf-export" disabled={!p.hasClip || p.exporting} onClick={p.onExport}>
         {p.exporting ? "Exporting…" : `Export ${p.format.label} clip`}
       </button>
 
       {p.canSplit && (
-        <div className="cf-split">
-          {p.speechAware ? (
-            <button className="cf-highlights-btn" disabled={!p.hasClip} onClick={p.onFindHighlights}>
-              ✨ Find highlight moments
-            </button>
-          ) : (
-            <div className="cf-split-hint">
-              {p.transcribing
-                ? `✨ Highlights unlock when transcription finishes (${Math.round(p.transcribePct)}%).`
-                : "✨ Add captions first — highlights need the transcript to find the best moments."}
-            </div>
-          )}
-          <button className="cf-split-btn" onClick={p.onSplit}>
-            ✂ Or split into even shorts
-          </button>
-          {p.shorts.length > 0 && (
-            <>
-              <div className="cf-split-hint">
-                Pick a clip to load it — then Export it in the shape above.
-              </div>
-              <div className="cf-shorts">
-                {p.shorts.map((s, i) => (
-                  <button
-                    key={i}
-                    className={`cf-short${p.activeShort === i ? " on" : ""}`}
-                    onClick={() => p.onPickShort(i)}
-                    title={s.label}
-                  >
-                    <span className="cf-short-n">{i + 1}</span>
-                    <span className="cf-short-body">
-                      <span className="cf-short-label">{s.label}</span>
-                      {s.reasons && s.reasons.length > 0 && (
-                        <span className="cf-short-reasons">{s.reasons.join("  ·  ")}</span>
-                      )}
-                      <span className="cf-short-time">
-                        {clock(s.start)}–{clock(s.end)} · {Math.round(s.end - s.start)}s
-                      </span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
+        <button className="cf-split-btn" disabled={finding} onClick={p.onSplit}>
+          ✂ Or split into even shorts
+        </button>
       )}
     </div>
   );

@@ -9,7 +9,9 @@ import {
   addCaptions,
   addClipFromMedia,
   addTitle,
+  aiHighlights,
   audioClock,
+  CaptionSpec,
   parseCube,
   pickLut,
   readTextFile,
@@ -75,7 +77,6 @@ import { Mode, TopBar } from "./components/TopBar";
 import { MediaPanel } from "./components/MediaPanel";
 import { Monitor, RESOLUTIONS, Resolution, CensorItem } from "./components/Monitor";
 import { ClipFormat, CLIP_FORMATS, ClipFormatDef, ShortSeg } from "./components/ClipFormat";
-import { findHighlights } from "./highlights";
 import { Inspector } from "./components/Inspector";
 import { ExportDialog } from "./components/ExportDialog";
 import { PPS_MAX, PPS_MIN, TRACK_H, Timeline, TrackCtl } from "./components/Timeline";
@@ -185,8 +186,10 @@ export default function App() {
   const [clipFormat, setClipFormat] = useState<ClipFormatDef>(CLIP_FORMATS[0]);
   const [clipReframe, setClipReframe] = useState<"fill" | "blur">("fill");
   const [clipReframeX, setClipReframeX] = useState(0.5);
-  // media id awaiting caption generation once its transcript lands
-  const [wantCaptions, setWantCaptions] = useState<string | null>(null);
+  // media id waiting on its transcript before the AI moment-finder can run
+  const [wantAi, setWantAi] = useState<string | null>(null);
+  // true while the AI is analyzing the transcript for standout moments
+  const [aiFinding, setAiFinding] = useState(false);
   // auto-split / highlights: candidate shorts (source-time ranges) + loaded one
   const [shorts, setShorts] = useState<ShortSeg[]>([]);
   const [activeShort, setActiveShort] = useState<number | null>(null);
@@ -893,7 +896,7 @@ export default function App() {
   }, [clips, playhead, selected, fxDraft, textDraft]);
 
   // ── import / transcribe ─────────────────────────────────────────────
-  const doTranscribe = useCallback(async (mediaId: string) => {
+  const doTranscribe = useCallback(async (mediaId: string): Promise<Word[] | null> => {
     setTranscribing(mediaId);
     setTranscribeProgress((p) => ({ ...p, [mediaId]: 0 }));
     try {
@@ -901,8 +904,10 @@ export default function App() {
       setTranscripts((t) => ({ ...t, [mediaId]: words }));
       setTranscribeProgress((p) => ({ ...p, [mediaId]: 100 }));
       setDirty(true); // transcript is now stored in the doc → savable
+      return words;
     } catch (e) {
       setError(String(e));
+      return null;
     } finally {
       setTranscribing(null);
     }
@@ -1620,33 +1625,17 @@ export default function App() {
       return;
     }
     try {
-      applyEdit(await addCaptions(specs));
+      // regenerating replaces any prior auto-captions (keep manual titles)
+      let snap: ProjectSnapshot | null = null;
+      for (const c of project.clips.filter((c) => c.text && c.name === "Caption")) {
+        snap = await removeClip(c.id, false);
+      }
+      snap = await addCaptions(specs);
+      applyEdit(snap);
     } catch (e) {
       setError(String(e));
     }
-  }, [transcriptMedia, transcripts, srcToTimeline, applyEdit]);
-
-  // Create-tab "Add captions": one button that transcribes on-device (if
-  // needed) then turns the transcript into caption clips. The two steps are
-  // chained through `wantCaptions` because the transcript lands in state
-  // asynchronously — the effect below fires once it arrives.
-  const onAddCaptions = useCallback(() => {
-    const clip = project.clips.find((c) => c.media && !c.text);
-    if (!clip) return;
-    if (transcripts[clip.media]) {
-      onGenerateCaptions(clip.media);
-      return;
-    }
-    setWantCaptions(clip.media);
-    doTranscribe(clip.media);
-  }, [project.clips, transcripts, onGenerateCaptions, doTranscribe]);
-
-  useEffect(() => {
-    if (wantCaptions && transcripts[wantCaptions]) {
-      onGenerateCaptions(wantCaptions);
-      setWantCaptions(null);
-    }
-  }, [wantCaptions, transcripts, onGenerateCaptions]);
+  }, [transcriptMedia, transcripts, srcToTimeline, applyEdit, project.clips]);
 
   const caption = useMemo(() => {
     if (!underPlayhead) return null;
@@ -1710,52 +1699,124 @@ export default function App() {
     setActiveShort(null);
   }, [createClip, media, transcripts]);
 
-  // Load a chosen short: retrim the timeline clip to that source range, so the
-  // whole timeline *is* that short and the normal Export renders just it.
+  // Caption a picked moment. The timeline clip is now the moment [from,to] with
+  // src_in=from, start=0, so a transcript word at source time `w` maps to
+  // timeline time `w - from`. Words are grouped into short lines. Replaces any
+  // prior auto-captions so re-picking a different moment stays clean.
+  const captionMoment = useCallback(
+    async (mediaId: string, from: number, to: number) => {
+      const ws = transcripts[mediaId];
+      const span = to - from;
+      const specs: CaptionSpec[] = [];
+      if (ws && ws.length) {
+        let cur: Word[] = [];
+        const flush = () => {
+          if (!cur.length) return;
+          const text = cur.map((w) => w.text.trim()).join(" ").replace(/\s+([.,!?])/g, "$1");
+          const start = Math.max(0, cur[0].start - from);
+          const end = Math.min(span, cur[cur.length - 1].end - from);
+          if (end > start) specs.push({ text, start, len: Math.max(0.4, end - start) });
+          cur = [];
+        };
+        for (const w of ws) {
+          if (w.end <= from || w.start >= to) continue; // outside the moment
+          cur.push(w);
+          if (cur.length >= 6 || cur[cur.length - 1].end - cur[0].start >= 2.8) flush();
+        }
+        flush();
+      }
+      try {
+        let snap: ProjectSnapshot | null = null;
+        for (const c of project.clips.filter((c) => c.text && c.name === "Caption")) {
+          snap = await removeClip(c.id, false);
+        }
+        if (specs.length) snap = await addCaptions(specs);
+        if (snap) applyEdit(snap);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [transcripts, project.clips, applyEdit]
+  );
+
+  // Load a chosen moment: retrim the timeline clip to that source range (so the
+  // whole timeline *is* that short and the normal Export renders just it), then
+  // auto-generate captions for it — the captions come WITH the clip.
   const onPickShort = useCallback(
-    (i: number) => {
+    async (i: number) => {
       if (!createClip) return;
       const s = shorts[i];
       if (!s) return;
-      trimClip(createClip.id, 0, s.end - s.start, s.start)
-        .then(applyEdit)
-        .then(() => setPlayhead(0))
-        .catch((e) => setError(String(e)));
       setActiveShort(i);
+      try {
+        applyEdit(await trimClip(createClip.id, 0, s.end - s.start, s.start));
+        setPlayhead(0);
+        await captionMoment(createClip.media, s.start, s.end);
+      } catch (e) {
+        setError(String(e));
+      }
     },
-    [createClip, shorts, applyEdit]
+    [createClip, shorts, applyEdit, captionMoment]
   );
 
-  // AI-free highlight finder: rank the standout moments (audio energy + speech
-  // signals — all on-device) into short-ready clips. Needs a transcript, so it
-  // transcribes first if the clip hasn't been (chained via `wantHighlights`).
-  // Populate the shorts list from highlights; returns whether any were found.
-  const computeHighlights = useCallback(
-    (mediaId: string): boolean => {
-      const m = media[mediaId];
-      if (!m) return false;
-      // works with or without a transcript — audio-only picks are instant, a
-      // transcript (if present) enriches them with speech signals.
-      const hs = findHighlights(transcripts[mediaId] ?? [], m.waveform ?? [], m.duration_s, 6);
-      if (hs.length === 0) return false;
-      setShorts(hs.map((h) => ({ start: h.start, end: h.end, label: h.label, reasons: h.reasons })));
-      setActiveShort(null);
-      return true;
+  // Run the AI moment-finder on a media's transcript: Claude reads the whole
+  // transcript and returns the funniest / most exciting / pivotal standout
+  // moments. Populates the shorts list. Requires a transcript already in state.
+  const runAi = useCallback(
+    async (mediaId: string) => {
+      const ws = transcripts[mediaId];
+      if (!ws || ws.length < 5) {
+        setError("This clip has too little speech for the AI to find moments. Try a clip with more dialogue.");
+        return;
+      }
+      setAiFinding(true);
+      setError(null);
+      try {
+        const moments = await aiHighlights(ws, 8);
+        if (moments.length === 0) {
+          setError("The AI didn't find clear standout moments here. Try a longer or livelier clip.");
+          return;
+        }
+        setShorts(
+          moments.map((m) => ({
+            start: m.start,
+            end: m.end,
+            label: m.title,
+            reasons: m.reason ? [m.reason] : [],
+          }))
+        );
+        setActiveShort(null);
+      } catch (e) {
+        setError(`Couldn't find moments: ${String(e)}`);
+      } finally {
+        setAiFinding(false);
+      }
     },
-    [media, transcripts]
+    [transcripts]
   );
 
-  // Instant only — never triggers a transcription. Uses the transcript for
-  // smarter (speech-aware) picks IF one already exists (from Add captions),
-  // otherwise ranks by audio energy from the waveform. Both are immediate.
+  // ONE button. Transcribe the clip on-device if needed (progress shows on the
+  // button), then hand the transcript to the AI to find the best moments. The
+  // two steps are chained through `wantAi` since the transcript lands in state
+  // asynchronously — the effect below fires the AI pass once it arrives.
   const onFindHighlights = useCallback(() => {
     if (!createClip) return;
-    if (!computeHighlights(createClip.media)) {
-      setError(
-        'No audio to analyze in this clip. Click ✨ Add captions to find highlights from speech, or use “split into even shorts”.'
-      );
+    const mid = createClip.media;
+    if (transcripts[mid]) {
+      runAi(mid);
+      return;
     }
-  }, [createClip, computeHighlights]);
+    setWantAi(mid);
+    if (transcribing !== mid) doTranscribe(mid);
+  }, [createClip, transcripts, runAi, transcribing, doTranscribe]);
+
+  useEffect(() => {
+    if (wantAi && transcripts[wantAi]) {
+      const mid = wantAi;
+      setWantAi(null);
+      runAi(mid);
+    }
+  }, [wantAi, transcripts, runAi]);
 
   // stale shorts belong to whatever clip was loaded before — drop them when
   // the source media changes (or the clip goes away)
@@ -1822,18 +1883,16 @@ export default function App() {
               reframeX={clipReframeX}
               onReframeX={setClipReframeX}
               hasClip={createClip !== null}
-              captionsReady={project.clips.some((c) => c.text)}
               transcribing={createClip !== null && transcribing === createClip.media}
               transcribePct={createClip ? transcribeProgress[createClip.media] ?? 0 : 0}
-              onAddCaptions={onAddCaptions}
+              aiFinding={aiFinding}
+              onFindHighlights={onFindHighlights}
               exporting={exportModal?.phase === "running"}
               onExport={exportClip}
               canSplit={createClip !== null && createDur > 75}
               shorts={shorts}
               activeShort={activeShort}
               onSplit={onSplitShorts}
-              onFindHighlights={onFindHighlights}
-              speechAware={createClip !== null && !!transcripts[createClip.media]}
               onPickShort={onPickShort}
             />
           )}

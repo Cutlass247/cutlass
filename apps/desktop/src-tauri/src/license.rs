@@ -234,3 +234,41 @@ pub fn redeem(code: &str) -> LicenseInfo {
         None => LicenseInfo::error(&hwid, "That code wasn't accepted. Check it and try again."),
     }
 }
+
+// ── AI highlights (transcript → server → Claude → best moments) ───────
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TWord {
+    pub text: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct Moment {
+    pub start: f64,
+    pub end: f64,
+    pub title: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// Send the transcript (text only — never the video) to the server, which asks
+/// Claude for the best moments. Long timeout; the model call takes a while.
+pub fn ai_highlights(transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, String> {
+    let hwid = machine_id();
+    let url = format!("{}/highlights", server_url().trim_end_matches('/'));
+    let body = serde_json::json!({
+        "hwid": hwid,
+        "transcript": transcript,
+        "count": count,
+        "app_version": env!("CARGO_PKG_VERSION"),
+    });
+    match agent().post(&url).timeout(Duration::from_secs(120)).send_json(body) {
+        Ok(resp) => resp.into_json::<Vec<Moment>>().map_err(|e| e.to_string()),
+        Err(ureq::Error::Status(code, r)) => {
+            let msg = r.into_string().unwrap_or_default();
+            Err(format!("{code}: {}", msg.chars().take(200).collect::<String>()))
+        }
+        Err(e) => Err(format!("Couldn't reach the highlights service: {e}")),
+    }
+}

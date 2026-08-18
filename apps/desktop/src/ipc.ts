@@ -1176,3 +1176,44 @@ export async function licenseMachineId(): Promise<string> {
   if (!inTauri) return "mock0000deadbeef";
   return invoke<string>("license_machine_id");
 }
+
+// ── AI highlights ────────────────────────────────────────────────────
+/// A standout moment the AI found, in source-media seconds.
+export interface AiMoment {
+  start: number;
+  end: number;
+  title: string; // punchy caption/hook for the clip
+  reason: string; // why it stands out
+}
+
+/// Ask the AI for the best short-form moments. The transcript TEXT is sent to
+/// the licensing server (which calls Claude); the video never leaves the
+/// machine. Throws with a readable message on failure.
+export async function aiHighlights(transcript: Word[], count = 8): Promise<AiMoment[]> {
+  if (!inTauri) {
+    await new Promise((r) => setTimeout(r, 1400)); // simulate the model call
+    return mockAiHighlights(transcript, count);
+  }
+  const words = transcript.map((w) => ({ text: w.text, start: w.start, end: w.end }));
+  return invoke<AiMoment[]>("ai_highlights", { transcript: words, count });
+}
+
+function mockAiHighlights(words: Word[], count: number): AiMoment[] {
+  if (words.length < 5) return [];
+  const dur = words[words.length - 1].end;
+  const n = Math.min(count, 3);
+  const seg = dur / n;
+  const out: AiMoment[] = [];
+  for (let i = 0; i < n; i++) {
+    const start = i * seg;
+    const end = Math.min(dur, start + Math.min(40, seg * 0.9));
+    const inRange = words.filter((w) => w.start >= start && w.start < end);
+    out.push({
+      start,
+      end,
+      title: inRange.slice(0, 6).map((w) => w.text).join(" ") || `Moment ${i + 1}`,
+      reason: "Strong hook and a clear payoff (mock)",
+    });
+  }
+  return out;
+}
