@@ -29,11 +29,14 @@ export function ClipFormat(p: {
   reframeX: number;
   onReframeX: (x: number) => void;
   hasClip: boolean;
-  // "Find best moments" runs on-device transcription (progress %) then hands
-  // the transcript to the AI (aiFinding) — one button, two phases.
+  // "Find best moments" transcribes (progress %) then hands the transcript to
+  // the AI (aiFinding) — one button, two phases.
   transcribing: boolean;
   transcribePct: number;
   aiFinding: boolean;
+  // how the transcription runs: "fast" = cloud GPU, "private" = on-device
+  transcribeMode: "fast" | "private";
+  onTranscribeMode: (m: "fast" | "private") => void;
   onFindHighlights: () => void;
   exporting: boolean;
   onExport: () => void;
@@ -94,13 +97,31 @@ export function ClipFormat(p: {
         </div>
       )}
 
+      {/* speed vs privacy: cloud GPU (fast) or on-device (nothing leaves) */}
+      <div className="cf-row">
+        <span className="cf-lbl">Transcribe</span>
+        <Segmented
+          options={[
+            { value: "fast", label: "Fast" },
+            { value: "private", label: "Private" },
+          ]}
+          value={p.transcribeMode}
+          onChange={(v) => p.onTranscribeMode(v as "fast" | "private")}
+        />
+      </div>
+      <div className="cf-split-hint" style={{ marginTop: -2 }}>
+        {p.transcribeMode === "fast"
+          ? "⚡ Cloud GPU — seconds, even for long videos. Audio (not your video) is sent to transcribe, then discarded."
+          : "🔒 On-device — nothing leaves your machine. Slower on long videos."}
+      </div>
+
       {/* THE headline action: AI reads the whole clip and pulls the best
           moments — each loads as a captioned short ready to export. */}
       <button
         className={`cf-highlights-btn${finding ? " loading" : ""}`}
         disabled={finding || !p.hasClip}
         onClick={p.onFindHighlights}
-        title="Transcribes on-device, then the AI finds the funniest, most exciting and pivotal moments — each becomes a captioned clip"
+        title="Transcribes the clip, then the AI finds the funniest, most exciting and pivotal moments — each becomes a captioned clip"
       >
         {p.transcribing && (
           <span className="cf-captions-fill" style={{ width: `${Math.max(3, p.transcribePct)}%` }} />

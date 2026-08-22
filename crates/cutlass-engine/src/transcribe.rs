@@ -8,7 +8,7 @@ use crate::audio::AudioDecoder;
 
 pub const WHISPER_RATE: u32 = 16_000;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Word {
     pub text: String,
     /// source-media time, seconds

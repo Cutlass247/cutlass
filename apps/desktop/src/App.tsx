@@ -12,6 +12,7 @@ import {
   aiHighlights,
   audioClock,
   CaptionSpec,
+  cloudTranscribe,
   parseCube,
   pickLut,
   readTextFile,
@@ -190,6 +191,16 @@ export default function App() {
   const [wantAi, setWantAi] = useState<string | null>(null);
   // true while the AI is analyzing the transcript for standout moments
   const [aiFinding, setAiFinding] = useState(false);
+  // how the Create tab transcribes: "fast" = cloud GPU (audio leaves machine),
+  // "private" = on-device whisper (nothing leaves, slower). Persisted.
+  const [transcribeMode, setTranscribeMode] = useState<"fast" | "private">(
+    () => (localStorage.getItem("cutlass-stt-mode") as "fast" | "private") || "fast"
+  );
+  const chooseTranscribeMode = useCallback((m: "fast" | "private") => {
+    setTranscribeMode(m);
+    localStorage.setItem("cutlass-stt-mode", m);
+    savePref("transcribeMode", m).catch(() => {});
+  }, []);
   // auto-split / highlights: candidate shorts (source-time ranges) + loaded one
   const [shorts, setShorts] = useState<ShortSeg[]>([]);
   const [activeShort, setActiveShort] = useState<number | null>(null);
@@ -896,22 +907,27 @@ export default function App() {
   }, [clips, playhead, selected, fxDraft, textDraft]);
 
   // ── import / transcribe ─────────────────────────────────────────────
-  const doTranscribe = useCallback(async (mediaId: string): Promise<Word[] | null> => {
-    setTranscribing(mediaId);
-    setTranscribeProgress((p) => ({ ...p, [mediaId]: 0 }));
-    try {
-      const words = await transcribeMedia(mediaId);
-      setTranscripts((t) => ({ ...t, [mediaId]: words }));
-      setTranscribeProgress((p) => ({ ...p, [mediaId]: 100 }));
-      setDirty(true); // transcript is now stored in the doc → savable
-      return words;
-    } catch (e) {
-      setError(String(e));
-      return null;
-    } finally {
-      setTranscribing(null);
-    }
-  }, []);
+  // `cloud` = Groq GPU transcription (fast, audio leaves the machine); else the
+  // on-device whisper pass (private, slower). Both stream the same progress.
+  const doTranscribe = useCallback(
+    async (mediaId: string, cloud = false): Promise<Word[] | null> => {
+      setTranscribing(mediaId);
+      setTranscribeProgress((p) => ({ ...p, [mediaId]: 0 }));
+      try {
+        const words = cloud ? await cloudTranscribe(mediaId) : await transcribeMedia(mediaId);
+        setTranscripts((t) => ({ ...t, [mediaId]: words }));
+        setTranscribeProgress((p) => ({ ...p, [mediaId]: 100 }));
+        setDirty(true); // transcript is now stored in the doc → savable
+        return words;
+      } catch (e) {
+        setError(String(e));
+        return null;
+      } finally {
+        setTranscribing(null);
+      }
+    },
+    []
+  );
 
   const doImport = useCallback(async () => {
     setError(null);
@@ -922,10 +938,9 @@ export default function App() {
       const res = await importMedia(path);
       setMedia((m) => ({ ...m, [res.media.id]: res.media }));
       applyEdit(res.project);
-      // Transcribe in the background right away, so captions and highlights are
-      // ready (and instant) by the time you want them. Progress shows on the
-      // Add captions button; nothing else blocks.
-      doTranscribe(res.media.id);
+      // No auto-transcribe on import anymore — "Find the best moments" fetches
+      // the transcript on demand (cloud is fast enough that a head-start pass
+      // would just waste CPU, or upload audio the user didn't ask to send yet).
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1807,8 +1822,8 @@ export default function App() {
       return;
     }
     setWantAi(mid);
-    if (transcribing !== mid) doTranscribe(mid);
-  }, [createClip, transcripts, runAi, transcribing, doTranscribe]);
+    if (transcribing !== mid) doTranscribe(mid, transcribeMode === "fast");
+  }, [createClip, transcripts, runAi, transcribing, doTranscribe, transcribeMode]);
 
   useEffect(() => {
     if (wantAi && transcripts[wantAi]) {
@@ -1886,6 +1901,8 @@ export default function App() {
               transcribing={createClip !== null && transcribing === createClip.media}
               transcribePct={createClip ? transcribeProgress[createClip.media] ?? 0 : 0}
               aiFinding={aiFinding}
+              transcribeMode={transcribeMode}
+              onTranscribeMode={chooseTranscribeMode}
               onFindHighlights={onFindHighlights}
               exporting={exportModal?.phase === "running"}
               onExport={exportClip}
