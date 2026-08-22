@@ -14,9 +14,12 @@
 //!   CUTLASS_TRIAL_GRACE_DAYS     offline grace for a trial lease (default 3)
 //!   CUTLASS_PAID_GRACE_DAYS      offline grace for a paid lease (default 30)
 //!   CUTLASS_PORT                 listen port (default 8787)
+//!   CUTLASS_ANTHROPIC_KEY        Anthropic key for /highlights (AI moments)
+//!   CUTLASS_GROQ_KEY             Groq key for /transcribe (cloud STT)
 
 use axum::{
-    extract::State,
+    body::Bytes,
+    extract::{DefaultBodyLimit, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -47,6 +50,7 @@ struct Config {
     owner_hwids: HashSet<String>,
     admin_token: Option<String>,
     anthropic_key: Option<String>,
+    groq_key: Option<String>,
 }
 
 #[derive(Clone)]
@@ -452,6 +456,142 @@ async fn highlights(
     Ok(Json(moments))
 }
 
+// ── Cloud transcription (Groq Whisper on GPUs — the OpusClip speed trick) ─
+// The client extracts + compresses the audio into ~10-min chunks and uploads
+// each here in parallel; we forward to Groq and stamp the words back into
+// absolute time with the chunk's `offset`. Only the audio ever leaves the
+// machine (never the video), and only for licensed apps.
+#[derive(Serialize, Deserialize)]
+struct SttWord {
+    text: String,
+    start: f64,
+    end: f64,
+}
+
+#[derive(Deserialize)]
+struct SttQuery {
+    hwid: String,
+    #[serde(default)]
+    offset: f64,
+    app_version: Option<String>,
+}
+
+fn push_text_field(body: &mut Vec<u8>, boundary: &str, name: &str, value: &str) {
+    body.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
+            .as_bytes(),
+    );
+}
+
+/// POST one audio chunk to Groq's OpenAI-compatible transcription API and
+/// return word-level timestamps (relative to the chunk start).
+fn call_groq(key: &str, audio: &[u8]) -> Result<Vec<SttWord>, String> {
+    let connector = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(150))
+        .tls_connector(std::sync::Arc::new(connector))
+        .build();
+
+    let boundary = format!("----cutlass{}", now());
+    let mut body: Vec<u8> = Vec::with_capacity(audio.len() + 512);
+    push_text_field(&mut body, &boundary, "model", "whisper-large-v3-turbo");
+    push_text_field(&mut body, &boundary, "response_format", "verbose_json");
+    push_text_field(&mut body, &boundary, "timestamp_granularities[]", "word");
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.flac\"\r\nContent-Type: audio/flac\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(audio);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let resp = match agent
+        .post("https://api.groq.com/openai/v1/audio/transcriptions")
+        .set("Authorization", &format!("Bearer {key}"))
+        .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
+        .send_bytes(&body)
+    {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, r)) => {
+            let msg = r.into_string().unwrap_or_default();
+            return Err(format!("groq {code}: {}", msg.chars().take(300).collect::<String>()));
+        }
+        Err(e) => return Err(format!("groq transport error: {e}")),
+    };
+    let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
+    // prefer word-level; fall back to segment-level if the model didn't return words
+    let mut words: Vec<SttWord> = v["words"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|w| {
+                    Some(SttWord {
+                        text: w.get("word").and_then(|x| x.as_str())?.to_string(),
+                        start: w.get("start").and_then(|x| x.as_f64())?,
+                        end: w.get("end").and_then(|x| x.as_f64())?,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if words.is_empty() {
+        if let Some(segs) = v["segments"].as_array() {
+            words = segs
+                .iter()
+                .filter_map(|s| {
+                    Some(SttWord {
+                        text: s.get("text").and_then(|x| x.as_str())?.trim().to_string(),
+                        start: s.get("start").and_then(|x| x.as_f64())?,
+                        end: s.get("end").and_then(|x| x.as_f64())?,
+                    })
+                })
+                .collect();
+        }
+    }
+    Ok(words)
+}
+
+async fn transcribe(
+    State(state): State<AppState>,
+    Query(q): Query<SttQuery>,
+    body: Bytes,
+) -> Result<Json<Vec<SttWord>>, (StatusCode, String)> {
+    let key = state
+        .cfg
+        .groq_key
+        .clone()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "cloud transcription is not configured".into()))?;
+    if body.len() < 512 {
+        return Err((StatusCode::BAD_REQUEST, "audio chunk too small".into()));
+    }
+    // same entitlement gate as /highlights — no active licence, no cloud work
+    let t = now();
+    let active = {
+        let db = state.db.lock().unwrap();
+        let row = get_or_create(&db, &state.cfg, q.hwid.trim(), q.app_version.as_deref(), t);
+        lease_for(&row, &state.cfg, t).is_active_at(t)
+    };
+    if !active {
+        return Err((StatusCode::PAYMENT_REQUIRED, "no active licence for cloud transcription".into()));
+    }
+
+    let audio = body.to_vec();
+    let mut words = tokio::task::spawn_blocking(move || call_groq(&key, &audio))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+    // stamp the chunk offset back so times are absolute over the whole video
+    if q.offset != 0.0 {
+        for w in words.iter_mut() {
+            w.start += q.offset;
+            w.end += q.offset;
+        }
+    }
+    Ok(Json(words))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let key_b64 = env::var("CUTLASS_LICENSE_PRIVATE_KEY")
@@ -471,6 +611,7 @@ async fn main() -> anyhow::Result<()> {
             .collect(),
         admin_token: env::var("CUTLASS_ADMIN_TOKEN").ok(),
         anthropic_key: env::var("CUTLASS_ANTHROPIC_KEY").ok(),
+        groq_key: env::var("CUTLASS_GROQ_KEY").ok(),
     };
 
     let db_path = env::var("CUTLASS_DB_PATH").unwrap_or_else(|_| "cutlass-license.db".into());
@@ -489,6 +630,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/redeem", post(redeem))
         .route("/admin/mint", post(mint))
         .route("/highlights", post(highlights))
+        // audio chunks can be a few MB — lift axum's 2 MB default for this route
+        .route(
+            "/transcribe",
+            post(transcribe).layer(DefaultBodyLimit::max(48 * 1024 * 1024)),
+        )
         .with_state(state);
 
     // Honor the platform's assigned port (Railway/Render/Fly set $PORT) before

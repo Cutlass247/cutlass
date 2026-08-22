@@ -859,6 +859,21 @@ export async function transcribeMedia(mediaId: string): Promise<Word[]> {
   return invoke<Word[]>("transcribe_media", { mediaId });
 }
 
+/// Cloud transcription (Groq Whisper on GPUs): extracts + chunks the audio and
+/// transcribes it in parallel on the server. Far faster than on-device for long
+/// videos. Only the audio leaves the machine — never the video. Progress is
+/// emitted on the same "transcribe-progress" channel.
+export async function cloudTranscribe(mediaId: string): Promise<Word[]> {
+  if (!inTauri) {
+    for (let p = 0; p <= 100; p += 20) {
+      mockProgressCbs.forEach((cb) => cb(mediaId, p));
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    return mockTranscript(mediaId);
+  }
+  return invoke<Word[]>("cloud_transcribe", { mediaId });
+}
+
 /// Delete a source range from a clip — the "delete these words" edit.
 export async function razorOut(
   id: string,

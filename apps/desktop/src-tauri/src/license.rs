@@ -272,3 +272,38 @@ pub fn ai_highlights(transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, 
         Err(e) => Err(format!("Couldn't reach the highlights service: {e}")),
     }
 }
+
+// ── Cloud transcription (Groq Whisper — audio chunk → word timestamps) ───
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SttWord {
+    pub text: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+/// Upload one compressed audio chunk to the server (→ Groq) and get back its
+/// words, already stamped into absolute time by `offset` (seconds). Only the
+/// audio leaves the machine — never the video.
+pub fn cloud_transcribe_chunk(audio: Vec<u8>, offset: f64) -> Result<Vec<SttWord>, String> {
+    let hwid = machine_id();
+    let url = format!(
+        "{}/transcribe?hwid={}&offset={}&app_version={}",
+        server_url().trim_end_matches('/'),
+        hwid,
+        offset,
+        env!("CARGO_PKG_VERSION"),
+    );
+    match agent()
+        .post(&url)
+        .timeout(Duration::from_secs(180))
+        .set("Content-Type", "audio/flac")
+        .send_bytes(&audio)
+    {
+        Ok(resp) => resp.into_json::<Vec<SttWord>>().map_err(|e| e.to_string()),
+        Err(ureq::Error::Status(code, r)) => {
+            let msg = r.into_string().unwrap_or_default();
+            Err(format!("{code}: {}", msg.chars().take(200).collect::<String>()))
+        }
+        Err(e) => Err(format!("Couldn't reach the transcription service: {e}")),
+    }
+}

@@ -947,6 +947,120 @@ async fn transcribe_media(
     Ok(words)
 }
 
+/// Cloud transcription (the OpusClip speed path): extract the audio into
+/// ~10-min FLAC chunks with the bundled ffmpeg, upload them to the server (→
+/// Groq GPUs) in PARALLEL, and merge the word timestamps. Minutes of on-device
+/// CPU work collapse to seconds. Only the audio leaves the machine — never the
+/// video — and only for a licensed app.
+#[tauri::command]
+async fn cloud_transcribe(
+    media_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<license::SttWord>, String> {
+    use tauri::Emitter;
+    let path = state
+        .media
+        .lock()
+        .unwrap()
+        .get(&media_id)
+        .map(|m| m.path.clone())
+        .ok_or_else(|| format!("unknown media {media_id}"))?;
+
+    let mid = media_id.clone();
+    let app2 = app.clone();
+    let emit = move |pct: i32| {
+        let _ = app2.emit(
+            "transcribe-progress",
+            serde_json::json!({ "media": mid.as_str(), "pct": pct }),
+        );
+    };
+    emit(0);
+
+    // 1. extract 16 kHz mono FLAC in ~10-min segments (+ a CSV of chunk offsets)
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let tmp = std::env::temp_dir().join(format!("cutlass-stt-{stamp}"));
+    std::fs::create_dir_all(&tmp).map_err(err_str)?;
+    let list_path = tmp.join("list.csv");
+    let pattern = tmp.join("chunk_%04d.flac");
+
+    let ff = std::env::var("FFMPEG_BINARY").unwrap_or_else(|_| "ffmpeg".into());
+    let mut cmd = std::process::Command::new(&ff);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(&path)
+        .args([
+            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "flac", "-f", "segment", "-segment_time",
+            "600", "-reset_timestamps", "1", "-segment_list",
+        ])
+        .arg(&list_path)
+        .args(["-segment_list_type", "csv"])
+        .arg(&pattern);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — no console flash
+    }
+    let out = cmd.output().map_err(err_str)?;
+    if !out.status.success() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!(
+            "audio extraction failed: {}",
+            String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>()
+        ));
+    }
+    emit(12);
+
+    // 2. parse the segment list — "chunk_0000.flac,<start>,<end>" per line
+    let csv = std::fs::read_to_string(&list_path).map_err(err_str)?;
+    let mut chunks: Vec<(std::path::PathBuf, f64)> = Vec::new();
+    for line in csv.lines() {
+        let mut it = line.split(',');
+        let (Some(name), Some(start)) = (it.next(), it.next()) else {
+            continue;
+        };
+        let offset: f64 = start.trim().parse().unwrap_or(0.0);
+        chunks.push((tmp.join(name.trim()), offset));
+    }
+    if chunks.is_empty() {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err("no audio track found to transcribe".into());
+    }
+
+    // 3. upload + transcribe every chunk concurrently, then merge
+    let n = chunks.len() as i32;
+    let mut handles = Vec::new();
+    for (cpath, offset) in chunks {
+        handles.push(tauri::async_runtime::spawn_blocking(move || {
+            let bytes = std::fs::read(&cpath).map_err(|e| e.to_string())?;
+            license::cloud_transcribe_chunk(bytes, offset)
+        }));
+    }
+    let mut all: Vec<license::SttWord> = Vec::new();
+    let mut last_err: Option<String> = None;
+    for (i, h) in handles.into_iter().enumerate() {
+        match h.await {
+            Ok(Ok(mut words)) => all.append(&mut words),
+            Ok(Err(e)) => last_err = Some(e),
+            Err(e) => last_err = Some(e.to_string()),
+        }
+        emit(12 + (i as i32 + 1) * 88 / n);
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    if all.is_empty() {
+        return Err(last_err.unwrap_or_else(|| "transcription returned no words".into()));
+    }
+    all.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    emit(100);
+
+    // persist into the doc (identical shape to the on-device path)
+    if let Ok(json) = serde_json::to_string(&all) {
+        let _ = state.project.lock().unwrap().set_transcript(&media_id, &json);
+        notify_sync(&state);
+    }
+    Ok(all)
+}
+
 /// Delete a source range from a clip (the "delete these words" edit).
 #[tauri::command]
 fn razor_out(
@@ -1600,7 +1714,8 @@ fn main() {
             license_status,
             license_redeem,
             license_machine_id,
-            ai_highlights
+            ai_highlights,
+            cloud_transcribe
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");
