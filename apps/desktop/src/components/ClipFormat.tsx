@@ -1,5 +1,12 @@
 import { Segmented } from "./ui";
 
+/// Monthly AI allowance (mirrors ipc.AiUsage). remaining_minutes = -1 ⇒ unlimited.
+export type AiUsageInfo = {
+  used_minutes: number;
+  remaining_minutes: number;
+  unlimited: boolean;
+};
+
 /// The output shape a Create clip is made for.
 export type ClipFormatDef = { id: string; label: string; sub: string; w: number; h: number };
 export const CLIP_FORMATS: ClipFormatDef[] = [
@@ -40,6 +47,8 @@ export function ClipFormat(p: {
   // captions are opt-in: only burned onto a clip when this is on
   captionsOn: boolean;
   onToggleCaptions: (on: boolean) => void;
+  // monthly AI allowance readout (null = unknown/hidden)
+  usage: AiUsageInfo | null;
   onFindHighlights: () => void;
   exporting: boolean;
   onExport: () => void;
@@ -156,6 +165,16 @@ export function ClipFormat(p: {
             : "✨ Find the best moments"}
         </span>
       </button>
+      {p.usage &&
+        (p.usage.unlimited ? (
+          <div className="cf-usage">
+            {Math.round(p.usage.used_minutes)} min of AI used this month · unlimited during beta
+          </div>
+        ) : (
+          <div className={`cf-usage${p.usage.remaining_minutes <= 15 ? " low" : ""}`}>
+            {Math.max(0, Math.round(p.usage.remaining_minutes))} min of AI left this month
+          </div>
+        ))}
       {!finding && p.shorts.length === 0 && (
         <div className="cf-split-hint">
           The AI scans your whole clip for standout moments and turns each into a

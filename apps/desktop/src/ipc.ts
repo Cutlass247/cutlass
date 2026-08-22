@@ -1249,6 +1249,29 @@ export async function aiHighlights(transcript: Word[], count = 8): Promise<AiMom
   return invoke<AiMoment[]>("ai_highlights", { transcript: words, count });
 }
 
+/// Monthly AI allowance for this machine. remaining_minutes = -1 ⇒ unlimited.
+export interface AiUsage {
+  used_minutes: number;
+  cap_minutes: number;
+  credit_minutes: number;
+  remaining_minutes: number;
+  unlimited: boolean;
+  period: string;
+}
+
+/// How much AI processing is left this month (for the Create-panel readout).
+/// Returns null on any failure so the readout simply hides.
+export async function aiUsage(): Promise<AiUsage | null> {
+  if (!inTauri) {
+    return { used_minutes: 0, cap_minutes: 0, credit_minutes: 0, remaining_minutes: -1, unlimited: true, period: "2026-08" };
+  }
+  try {
+    return await invoke<AiUsage>("ai_usage");
+  } catch {
+    return null;
+  }
+}
+
 function mockAiHighlights(words: Word[], count: number): AiMoment[] {
   if (words.length < 5) return [];
   const dur = words[words.length - 1].end;

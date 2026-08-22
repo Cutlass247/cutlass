@@ -865,6 +865,17 @@ button {
   flex-direction: column;
   gap: 8px;
 }
+/* monthly AI allowance readout under the Find-best-moments button */
+.cf-usage {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--muted);
+  text-align: center;
+  margin-top: -2px;
+}
+.cf-usage.low {
+  color: #e0a23a;
+}
 .cf-split-btn {
   width: 100%;
   padding: 8px 12px;

@@ -1654,6 +1654,13 @@ async fn ai_highlights(
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn ai_usage() -> Result<license::AiUsage, String> {
+    tauri::async_runtime::spawn_blocking(license::ai_usage)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 fn main() {
     // Use the ffmpeg we ship, not whatever happens to be on PATH. The
     // bundled build is LGPL and has the exact filters/encoders the export
@@ -1769,6 +1776,7 @@ fn main() {
             license_redeem,
             license_machine_id,
             ai_highlights,
+            ai_usage,
             cloud_transcribe
         ])
         .run(tauri::generate_context!())
