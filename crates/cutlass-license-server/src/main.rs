@@ -16,6 +16,8 @@
 //!   CUTLASS_PORT                 listen port (default 8787)
 //!   CUTLASS_ANTHROPIC_KEY        Anthropic key for /highlights (AI moments)
 //!   CUTLASS_GROQ_KEY             Groq key for /transcribe (cloud STT)
+//!   CUTLASS_AI_MONTHLY_MINUTES   per-HWID monthly AI allowance (0/unset =
+//!                                unlimited, usage still tracked)
 
 use axum::{
     body::Bytes,
@@ -51,6 +53,8 @@ struct Config {
     admin_token: Option<String>,
     anthropic_key: Option<String>,
     groq_key: Option<String>,
+    /// Monthly AI processing allowance in SECONDS (0 = unlimited / track-only).
+    ai_monthly_secs: f64,
 }
 
 #[derive(Clone)]
@@ -78,9 +82,110 @@ fn init_db(conn: &Connection) {
             created_at   INTEGER NOT NULL,
             used_at      INTEGER,
             used_by      TEXT
+         );
+         -- AI usage metering: seconds of media processed per HWID per calendar
+         -- month (resets when the YYYY-MM period rolls over).
+         CREATE TABLE IF NOT EXISTS ai_usage (
+            hwid         TEXT NOT NULL,
+            period       TEXT NOT NULL,      -- \"YYYY-MM\" (UTC)
+            seconds      REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (hwid, period)
+         );
+         -- persistent top-up balance (seconds) consumed only after the monthly
+         -- allowance is spent; granted via /admin/grant.
+         CREATE TABLE IF NOT EXISTS ai_credits (
+            hwid         TEXT PRIMARY KEY,
+            seconds      REAL NOT NULL DEFAULT 0
          );",
     )
     .expect("init db");
+}
+
+/// UTC calendar year-month ("YYYY-MM") for a unix time — the usage period
+/// bucket. Civil-from-days (Howard Hinnant), no date-lib dependency.
+fn year_month(unix_secs: i64) -> String {
+    let z = unix_secs.div_euclid(86_400) + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}")
+}
+
+fn ai_used_secs(db: &Connection, hwid: &str, period: &str) -> f64 {
+    db.query_row(
+        "SELECT seconds FROM ai_usage WHERE hwid=?1 AND period=?2",
+        rusqlite::params![hwid, period],
+        |r| r.get(0),
+    )
+    .unwrap_or(0.0)
+}
+
+fn ai_credit_secs(db: &Connection, hwid: &str) -> f64 {
+    db.query_row("SELECT seconds FROM ai_credits WHERE hwid=?1", [hwid], |r| r.get(0))
+        .unwrap_or(0.0)
+}
+
+/// Entitlement + usage gate for the AI endpoints. Returns Ok(is_owner) when the
+/// call may proceed, or an error status. Owners are unlimited; a monthly cap of
+/// 0 means "track usage but never block" (the beta default).
+fn ai_gate(
+    state: &AppState,
+    hwid: &str,
+    ver: Option<&str>,
+    t: i64,
+) -> Result<bool, (StatusCode, String)> {
+    let db = state.db.lock().unwrap();
+    let row = get_or_create(&db, &state.cfg, hwid, ver, t);
+    let is_owner = row.status == "owner";
+    if !lease_for(&row, &state.cfg, t).is_active_at(t) {
+        return Err((StatusCode::PAYMENT_REQUIRED, "no active licence for AI features".into()));
+    }
+    if !is_owner && state.cfg.ai_monthly_secs > 0.0 {
+        let period = year_month(t);
+        let used = ai_used_secs(&db, hwid, &period);
+        let credits = ai_credit_secs(&db, hwid);
+        if used >= state.cfg.ai_monthly_secs && credits <= 0.0 {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "monthly AI limit reached — add credits or switch to Private (on-device) transcription".into(),
+            ));
+        }
+    }
+    Ok(is_owner)
+}
+
+/// Record `cost_secs` of AI media processing against the monthly allowance,
+/// spilling the overflow onto the persistent credit balance. No-op for owners.
+fn ai_charge(state: &AppState, hwid: &str, is_owner: bool, cost_secs: f64, t: i64) {
+    if is_owner || cost_secs <= 0.0 {
+        return;
+    }
+    let db = state.db.lock().unwrap();
+    let period = year_month(t);
+    let cap = state.cfg.ai_monthly_secs;
+    let (from_monthly, from_credits) = if cap <= 0.0 {
+        (cost_secs, 0.0) // track-only: everything visible in monthly, no drain
+    } else {
+        let room = (cap - ai_used_secs(&db, hwid, &period)).max(0.0);
+        let fm = cost_secs.min(room);
+        (fm, cost_secs - fm)
+    };
+    let _ = db.execute(
+        "INSERT INTO ai_usage (hwid, period, seconds) VALUES (?1, ?2, ?3)
+         ON CONFLICT(hwid, period) DO UPDATE SET seconds = seconds + ?3",
+        rusqlite::params![hwid, period, from_monthly],
+    );
+    if from_credits > 0.0 {
+        let _ = db.execute(
+            "UPDATE ai_credits SET seconds = MAX(0, seconds - ?2) WHERE hwid = ?1",
+            rusqlite::params![hwid, from_credits],
+        );
+    }
 }
 
 struct Row {
@@ -442,16 +547,10 @@ async fn highlights(
     if req.transcript.len() < 5 {
         return Err((StatusCode::BAD_REQUEST, "transcript too short to analyse".into()));
     }
-    // gate on an active licence so the AI key can't be used by unlicensed apps
+    // gate on an active licence + monthly AI allowance
     let t = now();
-    let active = {
-        let db = state.db.lock().unwrap();
-        let row = get_or_create(&db, &state.cfg, req.hwid.trim(), req.app_version.as_deref(), t);
-        lease_for(&row, &state.cfg, t).is_active_at(t)
-    };
-    if !active {
-        return Err((StatusCode::PAYMENT_REQUIRED, "no active licence for AI highlights".into()));
-    }
+    let hwid = req.hwid.trim().to_string();
+    let is_owner = ai_gate(&state, &hwid, req.app_version.as_deref(), t)?;
 
     let count = req.count.unwrap_or(8).clamp(1, 15);
     let prompt = build_prompt(&req.transcript, count);
@@ -474,6 +573,9 @@ async fn highlights(
         }
     }
     moments.retain(|m| m.end > m.start && m.end - m.start >= 5.0);
+    // meter the analysed span (Claude cost is incurred on either transcribe path)
+    let span = dur - req.transcript.first().map(|w| w.start).unwrap_or(0.0);
+    ai_charge(&state, &hwid, is_owner, span.max(0.0), t);
     Ok(Json(moments))
 }
 
@@ -587,22 +689,20 @@ async fn transcribe(
     if body.len() < 512 {
         return Err((StatusCode::BAD_REQUEST, "audio chunk too small".into()));
     }
-    // same entitlement gate as /highlights — no active licence, no cloud work
+    // same gate as /highlights — active licence + monthly AI allowance
     let t = now();
-    let active = {
-        let db = state.db.lock().unwrap();
-        let row = get_or_create(&db, &state.cfg, q.hwid.trim(), q.app_version.as_deref(), t);
-        lease_for(&row, &state.cfg, t).is_active_at(t)
-    };
-    if !active {
-        return Err((StatusCode::PAYMENT_REQUIRED, "no active licence for cloud transcription".into()));
-    }
+    let hwid = q.hwid.trim().to_string();
+    let is_owner = ai_gate(&state, &hwid, q.app_version.as_deref(), t)?;
 
     let audio = body.to_vec();
     let mut words = tokio::task::spawn_blocking(move || call_groq(&key, &audio))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+    // meter this chunk's audio length before stamping absolute time
+    let chunk_secs = words.last().map(|w| w.end).unwrap_or(0.0)
+        - words.first().map(|w| w.start).unwrap_or(0.0);
+    ai_charge(&state, &hwid, is_owner, chunk_secs.max(0.0), t);
     // stamp the chunk offset back so times are absolute over the whole video
     if q.offset != 0.0 {
         for w in words.iter_mut() {
@@ -611,6 +711,65 @@ async fn transcribe(
         }
     }
     Ok(Json(words))
+}
+
+// ── usage metering endpoints ─────────────────────────────────────────
+#[derive(Deserialize)]
+struct UsageQuery {
+    hwid: String,
+}
+
+/// GET /usage?hwid=… — how much AI allowance is left this month (for the app
+/// to display). remaining_minutes = -1 means unlimited.
+async fn usage(State(state): State<AppState>, Query(q): Query<UsageQuery>) -> Json<serde_json::Value> {
+    let t = now();
+    let period = year_month(t);
+    let hwid = q.hwid.trim();
+    let db = state.db.lock().unwrap();
+    let used = ai_used_secs(&db, hwid, &period);
+    let credits = ai_credit_secs(&db, hwid);
+    drop(db);
+    let cap = state.cfg.ai_monthly_secs;
+    let unlimited = state.cfg.owner_hwids.contains(hwid) || cap <= 0.0;
+    let remaining = if unlimited { -1.0 } else { ((cap - used).max(0.0) + credits) / 60.0 };
+    Json(serde_json::json!({
+        "period": period,
+        "used_minutes": (used / 60.0).round(),
+        "cap_minutes": if unlimited { 0.0 } else { (cap / 60.0).round() },
+        "credit_minutes": (credits / 60.0).round(),
+        "remaining_minutes": remaining.round(),
+        "unlimited": unlimited,
+    }))
+}
+
+#[derive(Deserialize)]
+struct GrantReq {
+    hwid: String,
+    minutes: f64,
+}
+
+/// POST /admin/grant {hwid, minutes} — add top-up credits to an HWID (token-gated).
+async fn grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<GrantReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let want = headers.get("x-admin-token").and_then(|v| v.to_str().ok()).unwrap_or("");
+    match &state.cfg.admin_token {
+        Some(tok) if !tok.is_empty() && want == tok => {}
+        _ => return Err((StatusCode::UNAUTHORIZED, "bad admin token".into())),
+    }
+    let hwid = req.hwid.trim();
+    let secs = (req.minutes * 60.0).max(0.0);
+    let db = state.db.lock().unwrap();
+    db.execute(
+        "INSERT INTO ai_credits (hwid, seconds) VALUES (?1, ?2)
+         ON CONFLICT(hwid) DO UPDATE SET seconds = seconds + ?2",
+        rusqlite::params![hwid, secs],
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let bal = ai_credit_secs(&db, hwid);
+    Ok(Json(serde_json::json!({ "hwid": hwid, "credit_minutes": (bal / 60.0).round() })))
 }
 
 #[tokio::main]
@@ -633,6 +792,11 @@ async fn main() -> anyhow::Result<()> {
         admin_token: env::var("CUTLASS_ADMIN_TOKEN").ok(),
         anthropic_key: env::var("CUTLASS_ANTHROPIC_KEY").ok(),
         groq_key: env::var("CUTLASS_GROQ_KEY").ok(),
+        ai_monthly_secs: env::var("CUTLASS_AI_MONTHLY_MINUTES")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0)
+            * 60.0,
     };
 
     let db_path = env::var("CUTLASS_DB_PATH").unwrap_or_else(|_| "cutlass-license.db".into());
@@ -650,6 +814,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/activate", post(activate))
         .route("/redeem", post(redeem))
         .route("/admin/mint", post(mint))
+        .route("/admin/grant", post(grant))
+        .route("/usage", get(usage))
         .route("/highlights", post(highlights))
         // audio chunks can be a few MB — lift axum's 2 MB default for this route
         .route(
@@ -669,4 +835,103 @@ async fn main() -> anyhow::Result<()> {
     println!("cutlass-license-server listening on :{port} (db: {db_path})");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_state(cap_minutes: f64, owners: &[&str]) -> AppState {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn);
+        let cfg = Config {
+            trial_secs: 7 * 86_400,
+            trial_grace_secs: 3 * 86_400,
+            paid_grace_secs: 30 * 86_400,
+            owner_hwids: owners.iter().map(|s| s.to_string()).collect(),
+            admin_token: Some("t".into()),
+            anthropic_key: None,
+            groq_key: None,
+            ai_monthly_secs: cap_minutes * 60.0,
+        };
+        // any valid 32-byte key — the signing key is unused by the metering path
+        let key = signing_key_from_b64("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=").unwrap();
+        AppState {
+            db: Arc::new(Mutex::new(conn)),
+            cfg: Arc::new(cfg),
+            key: Arc::new(key),
+        }
+    }
+
+    #[test]
+    fn year_month_known_date() {
+        // 1_755_000_000 → ~Aug 12 2025 UTC
+        assert_eq!(year_month(1_755_000_000), "2025-08");
+    }
+
+    #[test]
+    fn charge_accumulates_and_cap_blocks() {
+        let t = now();
+        let s = test_state(10.0, &[]); // 10-minute monthly cap
+        let hwid = "unittesthwid00";
+        assert!(ai_gate(&s, hwid, None, t).is_ok());
+        ai_charge(&s, hwid, false, 6.0 * 60.0, t); // 6 min
+        {
+            let db = s.db.lock().unwrap();
+            assert!((ai_used_secs(&db, hwid, &year_month(t)) - 360.0).abs() < 1.0);
+        }
+        assert!(ai_gate(&s, hwid, None, t).is_ok()); // still under cap
+        ai_charge(&s, hwid, false, 5.0 * 60.0, t); // now 11 min, over cap
+        let g = ai_gate(&s, hwid, None, t);
+        assert_eq!(g.unwrap_err().0, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn credits_allow_past_cap_and_drain() {
+        let t = now();
+        let s = test_state(1.0, &[]); // 1-minute cap
+        let hwid = "credittest0000";
+        ai_gate(&s, hwid, None, t).unwrap();
+        ai_charge(&s, hwid, false, 60.0, t); // exactly at cap
+        {
+            let db = s.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO ai_credits (hwid, seconds) VALUES (?1, ?2)",
+                rusqlite::params![hwid, 120.0],
+            )
+            .unwrap();
+        }
+        assert!(ai_gate(&s, hwid, None, t).is_ok()); // at cap but has credits
+        ai_charge(&s, hwid, false, 90.0, t); // spills fully onto credits
+        let db = s.db.lock().unwrap();
+        assert!((ai_credit_secs(&db, hwid) - 30.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn owner_is_unlimited() {
+        let t = now();
+        let s = test_state(1.0, &["ownerhwid00000"]);
+        let hwid = "ownerhwid00000";
+        let is_owner = ai_gate(&s, hwid, None, t).unwrap();
+        assert!(is_owner);
+        ai_charge(&s, hwid, true, 9_999.0 * 60.0, t); // no-op for owners
+        {
+            let db = s.db.lock().unwrap();
+            assert_eq!(ai_used_secs(&db, hwid, &year_month(t)), 0.0);
+        }
+        assert!(ai_gate(&s, hwid, None, t).is_ok());
+    }
+
+    #[test]
+    fn zero_cap_tracks_but_never_blocks() {
+        let t = now();
+        let s = test_state(0.0, &[]); // 0 = unlimited / track-only
+        let hwid = "betatrackonly0";
+        ai_charge(&s, hwid, false, 9_999.0 * 60.0, t);
+        {
+            let db = s.db.lock().unwrap();
+            assert!(ai_used_secs(&db, hwid, &year_month(t)) > 0.0); // usage recorded
+        }
+        assert!(ai_gate(&s, hwid, None, t).is_ok()); // never blocked
+    }
 }
