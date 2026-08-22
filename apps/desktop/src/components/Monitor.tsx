@@ -337,6 +337,7 @@ export function Monitor(p: {
                   src={p.layers[p.layers.length - 1].src}
                   alt=""
                   draggable={false}
+                  style={{ filter: p.layers[p.layers.length - 1].style?.filter }}
                 />
               )}
               <img
@@ -345,6 +346,10 @@ export function Monitor(p: {
                 alt=""
                 draggable={false}
                 style={{
+                  // carry the clip's grade (Looks/effects: filter, transform,
+                  // opacity) onto the Create preview, then pin the reframe fit —
+                  // otherwise colour grades never show in the Create tab.
+                  ...(p.layers[p.layers.length - 1].style ?? {}),
                   objectFit: p.format.reframe === "fill" ? "cover" : "contain",
                   objectPosition: `${(p.format.rx ?? 0.5) * 100}% 50%`,
                 }}

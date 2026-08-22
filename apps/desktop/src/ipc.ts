@@ -772,6 +772,42 @@ export async function openProject(knownPath?: string): Promise<{
   return { ...res, path };
 }
 
+/// Switch the active workspace. Create and Studio are fully independent
+/// (separate timeline, undo, and media pool); this swaps to the requested one
+/// and returns its project + media + transcripts to rebuild the UI from.
+export interface WorkspacePayload {
+  project: ProjectSnapshot;
+  media: MediaItem[];
+  transcripts: Record<string, Word[]>;
+}
+export async function setWorkspaceMode(mode: "create" | "studio"): Promise<WorkspacePayload> {
+  if (!inTauri) return mockSetMode(mode);
+  return invoke<WorkspacePayload>("set_mode", { mode });
+}
+
+// browser mock: two independent in-memory workspaces, swapped on switch
+let mockActiveMode: "create" | "studio" = "create";
+let mockAlt: { project: ProjectSnapshot; media: Record<string, MediaItem>; nextClip: number } = {
+  project: { name: "Untitled", clips: [] },
+  media: {},
+  nextClip: 1,
+};
+async function mockSetMode(mode: "create" | "studio"): Promise<WorkspacePayload> {
+  if (mode !== mockActiveMode) {
+    const cur = { project: mockState.project, media: mockState.media, nextClip: mockState.nextClip };
+    mockState.project = mockAlt.project;
+    mockState.media = mockAlt.media;
+    mockState.nextClip = mockAlt.nextClip;
+    mockAlt = cur;
+    mockActiveMode = mode;
+  }
+  return {
+    project: structuredClone(mockState.project),
+    media: Object.values(mockState.media),
+    transcripts: {},
+  };
+}
+
 /// A .cutlass path the app was launched with (double-clicked file). Loaded
 /// once on mount; null in the browser or on a plain launch.
 export async function takeStartupFile(): Promise<string | null> {

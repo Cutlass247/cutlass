@@ -30,6 +30,14 @@ struct AppState {
     project: Mutex<Project>,
     history: Mutex<History>,
     media: Mutex<HashMap<String, MediaInfo>>,
+    // The Create and Studio tabs are independent workspaces. `project`/`history`
+    // /`media` above are always the ACTIVE tab's; these hold the OTHER tab's,
+    // and `set_mode` swaps them so every existing command keeps hitting the
+    // active one untouched. `active_mode` is "" / "create" or "studio".
+    alt_project: Mutex<Project>,
+    alt_history: Mutex<History>,
+    alt_media: Mutex<HashMap<String, MediaInfo>>,
+    active_mode: Mutex<String>,
     playback: Mutex<Option<cutlass_engine::player::PlaybackHandle>>,
     /// stop flag for the real-time video playback thread
     video_stop: Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
@@ -837,6 +845,51 @@ async fn open_project(
     let snap = project.snapshot();
     *state.project.lock().unwrap() = project;
     *state.history.lock().unwrap() = History::default(); // fresh doc, fresh history
+    notify_sync(&state);
+    Ok(json!({ "project": snap, "media": media_out, "transcripts": transcripts }))
+}
+
+/// Switch the active workspace (Create vs Studio). They're fully independent —
+/// separate timeline, undo history, and media pool — so editing one never
+/// touches the other. We swap the active slots with the stored alternate, then
+/// hand the frontend the now-active workspace's project + media + transcripts.
+#[tauri::command]
+fn set_mode(mode: String, state: State<AppState>) -> Result<serde_json::Value, String> {
+    let mode = if mode == "studio" { "studio" } else { "create" };
+    {
+        let mut active = state.active_mode.lock().unwrap();
+        let cur = if active.is_empty() { "create" } else { active.as_str() };
+        if cur != mode {
+            std::mem::swap(
+                &mut *state.project.lock().unwrap(),
+                &mut *state.alt_project.lock().unwrap(),
+            );
+            std::mem::swap(
+                &mut *state.history.lock().unwrap(),
+                &mut *state.alt_history.lock().unwrap(),
+            );
+            std::mem::swap(
+                &mut *state.media.lock().unwrap(),
+                &mut *state.alt_media.lock().unwrap(),
+            );
+            *active = mode.to_string();
+        }
+    }
+    // build the now-active workspace's payload (mirrors open_project's shape)
+    let (snap, transcripts) = {
+        let mut project = state.project.lock().unwrap();
+        let snap = project.snapshot();
+        let transcripts: serde_json::Map<String, serde_json::Value> = project
+            .transcripts()
+            .into_iter()
+            .filter_map(|(id, j)| serde_json::from_str::<serde_json::Value>(&j).ok().map(|v| (id, v)))
+            .collect();
+        (snap, transcripts)
+    };
+    let media_out: Vec<serde_json::Value> = {
+        let media = state.media.lock().unwrap();
+        media.values().filter_map(|info| media_json(info).ok()).collect()
+    };
     notify_sync(&state);
     Ok(json!({ "project": snap, "media": media_out, "transcripts": transcripts }))
 }
@@ -1694,6 +1747,7 @@ fn main() {
             load_prefs,
             save_pref,
             open_project,
+            set_mode,
             hydrate_media,
             join_session,
             send_presence,

@@ -20,8 +20,9 @@ export function Timeline(p: {
   onPps: (v: number) => void;
   playhead: number;
   peers: Presence[];
-  selected: string | null;
+  selectedIds: string[];
   dragClipId: string | null;
+  marquee: { x: number; y: number; w: number; h: number } | null;
   timelineEndS: number;
   snap: boolean;
   onSnap: (v: boolean) => void;
@@ -33,8 +34,9 @@ export function Timeline(p: {
   scrollRef: RefObject<HTMLDivElement>;
   onRulerPointerDown: (e: React.PointerEvent) => void;
   onRulerPointerMove: (e: React.PointerEvent) => void;
-  onLanesPointerDown: () => void;
+  onLanesPointerDown: (e: React.PointerEvent) => void;
   onClipPointerDown: (e: React.PointerEvent, clip: Clip) => void;
+  onClipContextMenu: (e: React.MouseEvent, clip: Clip) => void;
   onClipPointerMove: (e: React.PointerEvent) => void;
   onClipPointerUp: () => void;
   onSeek: (t: number) => void;
@@ -177,7 +179,7 @@ export function Timeline(p: {
             <div
               className={`lanes${p.dropActive ? " drop-target" : ""}`}
               ref={p.lanesRef}
-              onPointerDown={p.onLanesPointerDown}
+              onPointerDown={(e) => p.onLanesPointerDown(e)}
             >
               {p.tracks.map((track) => {
                 const ctl = p.trackCtl[track] ?? { lock: false, mute: false, hide: false };
@@ -198,9 +200,10 @@ export function Timeline(p: {
                           pps={p.pps}
                           audio={isAudio}
                           dragging={p.dragClipId === clip.id}
-                          selected={p.selected === clip.id}
+                          selected={p.selectedIds.includes(clip.id)}
                           locked={ctl.lock}
                           onPointerDown={p.onClipPointerDown}
+                          onContextMenu={p.onClipContextMenu}
                           onPointerMove={p.onClipPointerMove}
                           onPointerUp={p.onClipPointerUp}
                         />
@@ -225,6 +228,17 @@ export function Timeline(p: {
                   onPointerMove={p.onRulerPointerMove}
                 />
               </div>
+              {p.marquee && (
+                <div
+                  className="tl-marquee"
+                  style={{
+                    left: p.marquee.x,
+                    top: p.marquee.y,
+                    width: p.marquee.w,
+                    height: p.marquee.h,
+                  }}
+                />
+              )}
             </div>
           </div>
         </div>
@@ -242,6 +256,7 @@ function ClipView({
   selected,
   locked,
   onPointerDown,
+  onContextMenu,
   onPointerMove,
   onPointerUp,
 }: {
@@ -253,6 +268,7 @@ function ClipView({
   selected: boolean;
   locked: boolean;
   onPointerDown: (e: React.PointerEvent, clip: Clip) => void;
+  onContextMenu: (e: React.MouseEvent, clip: Clip) => void;
   onPointerMove: (e: React.PointerEvent) => void;
   onPointerUp: () => void;
 }) {
@@ -301,6 +317,7 @@ function ClipView({
         ...(isTitle || audio ? { background: `hsl(${hue} 45% 26%)` } : {}),
       }}
       onPointerDown={(e) => onPointerDown(e, clip)}
+      onContextMenu={(e) => onContextMenu(e, clip)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
     >

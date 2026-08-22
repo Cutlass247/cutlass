@@ -1464,6 +1464,57 @@ button {
   position: relative;
 }
 
+/* rubber-band marquee selection box */
+.tl-marquee {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  border: 1px solid var(--blue);
+  background: rgba(74, 144, 255, 0.14);
+  border-radius: 2px;
+}
+
+/* right-click clip context menu */
+.ctx-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+.ctx-menu {
+  position: fixed;
+  min-width: 168px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.ctx-item {
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.ctx-item:hover {
+  background: var(--blue);
+  color: #fff;
+}
+.ctx-item.danger:hover {
+  background: #d64545;
+}
+.ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
 .lane {
   position: relative;
   border-bottom: 1px solid var(--border);

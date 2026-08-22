@@ -61,6 +61,9 @@ export function MediaPanel(p: {
   media: MediaItem[];
   transcripts: Record<string, unknown[]>;
   transcribing: string | null;
+  transcribeProgress: Record<string, number>;
+  transcribeMode: "fast" | "private";
+  onTranscribeMode: (m: "fast" | "private") => void;
   onImport: () => void;
   onTranscribe: (id: string) => void;
   onMediaPointerDown: (mediaId: string, e: React.PointerEvent) => void;
@@ -222,6 +225,21 @@ export function MediaPanel(p: {
               {p.busy ? "Importing…" : "+ Import media"}
             </button>
           </div>
+          {p.media.length > 0 && (
+            <div className="cf-row" style={{ padding: "0 2px 6px" }}>
+              <span className="cf-lbl" title="Fast = cloud GPU (seconds); Private = on-device (nothing leaves)">
+                Transcribe
+              </span>
+              <Segmented
+                options={[
+                  { value: "fast", label: "Fast" },
+                  { value: "private", label: "Private" },
+                ]}
+                value={p.transcribeMode}
+                onChange={(v) => p.onTranscribeMode(v as "fast" | "private")}
+              />
+            </div>
+          )}
           <div className="bin-list">
             {filtered.length === 0 && (
               <div className="empty-state">
@@ -268,7 +286,11 @@ export function MediaPanel(p: {
                       disabled={p.transcribing !== null}
                       onClick={() => p.onTranscribe(m.id)}
                     >
-                      {p.transcribing === m.id ? "Transcribing…" : "Transcribe"}
+                      {p.transcribing === m.id
+                        ? `Transcribing… ${Math.round(p.transcribeProgress[m.id] ?? 0)}%`
+                        : p.transcribeMode === "fast"
+                        ? "⚡ Transcribe"
+                        : "Transcribe"}
                     </button>
                   )}
                 </div>
