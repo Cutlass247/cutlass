@@ -332,13 +332,9 @@ export function Monitor(p: {
               }
             >
               {p.format.reframe === "blur" && (
-                <img
-                  className="cs-bg"
-                  src={p.layers[p.layers.length - 1].src}
-                  alt=""
-                  draggable={false}
-                  style={{ filter: p.layers[p.layers.length - 1].style?.filter }}
-                />
+                // the blurred backdrop keeps its CSS blur(24px) — don't override
+                // it with the clip grade (that goes on the sharp foreground)
+                <img className="cs-bg" src={p.layers[p.layers.length - 1].src} alt="" draggable={false} />
               )}
               <img
                 className="cs-fg"
