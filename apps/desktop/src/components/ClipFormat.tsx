@@ -37,6 +37,9 @@ export function ClipFormat(p: {
   // how the transcription runs: "fast" = cloud GPU, "private" = on-device
   transcribeMode: "fast" | "private";
   onTranscribeMode: (m: "fast" | "private") => void;
+  // captions are opt-in: only burned onto a clip when this is on
+  captionsOn: boolean;
+  onToggleCaptions: (on: boolean) => void;
   onFindHighlights: () => void;
   exporting: boolean;
   onExport: () => void;
@@ -115,13 +118,31 @@ export function ClipFormat(p: {
           : "🔒 On-device — nothing leaves your machine. Slower on long videos."}
       </div>
 
+      {/* captions are opt-in — never burned on automatically */}
+      <div className="cf-row">
+        <span className="cf-lbl">Captions</span>
+        <Segmented
+          options={[
+            { value: "off", label: "Off" },
+            { value: "on", label: "On" },
+          ]}
+          value={p.captionsOn ? "on" : "off"}
+          onChange={(v) => p.onToggleCaptions(v === "on")}
+        />
+      </div>
+      <div className="cf-split-hint" style={{ marginTop: -2 }}>
+        {p.captionsOn
+          ? "On — the loaded clip gets captions from the transcript."
+          : "Off — clips load without captions. Flip on any time to add them."}
+      </div>
+
       {/* THE headline action: AI reads the whole clip and pulls the best
-          moments — each loads as a captioned short ready to export. */}
+          moments — each loads as a short ready to export. */}
       <button
         className={`cf-highlights-btn${finding ? " loading" : ""}`}
         disabled={finding || !p.hasClip}
         onClick={p.onFindHighlights}
-        title="Transcribes the clip, then the AI finds the funniest, most exciting and pivotal moments — each becomes a captioned clip"
+        title="Transcribes the clip, then the AI finds the funniest, most exciting and pivotal standout moments"
       >
         {p.transcribing && (
           <span className="cf-captions-fill" style={{ width: `${Math.max(3, p.transcribePct)}%` }} />
@@ -138,14 +159,15 @@ export function ClipFormat(p: {
       {!finding && p.shorts.length === 0 && (
         <div className="cf-split-hint">
           The AI scans your whole clip for standout moments and turns each into a
-          short — with captions baked in.
+          short{p.captionsOn ? " — with captions baked in." : "."}
         </div>
       )}
 
       {p.shorts.length > 0 && (
         <div className="cf-shorts-wrap">
           <div className="cf-split-hint">
-            Pick a moment to load it (with captions) — then Export it in the shape above.
+            Pick a moment to load it{p.captionsOn ? " (with captions)" : ""} — then Export it in the
+            shape above.
           </div>
           <div className="cf-shorts">
             {p.shorts.map((s, i) => (

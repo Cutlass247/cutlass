@@ -59,6 +59,7 @@ import {
   removeTrack,
   revealFile,
   saveProject,
+  setWorkspaceMode,
   splitClip,
   sendPresence,
   setEffect,
@@ -98,7 +99,18 @@ function thumbAt(m: MediaItem, srcT: number): string {
 }
 
 type DragState =
-  | { kind: "move"; clipId: string; track: string; start: number; grabOffsetS: number }
+  | {
+      kind: "move";
+      clipId: string;
+      track: string;
+      start: number;
+      grabOffsetS: number;
+      /// the dragged clip's original start (delta = start - primaryStart)
+      primaryStart: number;
+      /// when moving a multi-selection: all selected clips' original placement
+      /// (they shift by the same delta, keeping their own tracks). null = single.
+      group: { id: string; start: number; track: string }[] | null;
+    }
   | {
       kind: "trim-l" | "trim-r";
       clipId: string;
@@ -119,7 +131,16 @@ export default function App() {
   const [autoSave, setAutoSave] = useState(false);
   const [playhead, setPlayhead] = useState(0);
   const [drag, setDrag] = useState<DragState | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  // multi-selection: the set of selected clip ids. `selected` is the single
+  // "focused" clip the Inspector/effects act on — only when exactly one is
+  // selected (multi-select is for timeline move/delete, not per-clip editing).
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selected = selectedIds.length === 1 ? selectedIds[0] : null;
+  const selectOne = useCallback((id: string | null) => setSelectedIds(id ? [id] : []), []);
+  // marquee (rubber-band) selection box, in lanes content coords; null = idle
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  // right-click menu on a clip (viewport coords + which clip)
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; clipId: string } | null>(null);
   // user-saved Looks (Effects tab), persisted in localStorage
   const [customLooks, setCustomLooks] = useState<{ name: string; params: Record<string, number> }[]>(
     () => {
@@ -204,14 +225,48 @@ export default function App() {
   // auto-split / highlights: candidate shorts (source-time ranges) + loaded one
   const [shorts, setShorts] = useState<ShortSeg[]>([]);
   const [activeShort, setActiveShort] = useState<number | null>(null);
+  // whether picking a moment also burns captions onto the clip. Off by default
+  // — captions are opt-in, never applied automatically. Persisted.
+  const [captionsOn, setCaptionsOn] = useState<boolean>(
+    () => localStorage.getItem("cutlass-captions-on") === "1"
+  );
 
   const lanesRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const switchMode = useCallback((m: Mode) => {
-    setMode(m);
-    localStorage.setItem("cutlass-mode", m);
-  }, []);
+  // Switching tabs swaps to that workspace's independent project + media +
+  // transcripts, so Create and Studio never affect each other. Transient UI
+  // state (selection, playhead, drag, markers) resets to the incoming tab.
+  const switchMode = useCallback(
+    (m: Mode) => {
+    if (m === mode) return;
+    setPlaying(false);
+    pauseAudio().catch(() => {});
+    setWorkspaceMode(m)
+      .then((res) => {
+        setMode(m);
+        localStorage.setItem("cutlass-mode", m);
+        setProject(res.project);
+        const map: Record<string, MediaItem> = {};
+        for (const md of res.media) map[md.id] = md;
+        setMedia(map);
+        setTranscripts(res.transcripts ?? {});
+        setSelectedIds([]);
+        setShorts([]);
+        setActiveShort(null);
+        setDrag(null);
+        setWordSel(null);
+        setMarkers([]);
+        setPlayhead(0);
+        // each workspace saves to its own file — forget the other tab's path so
+        // a Save here can't silently overwrite it (Save As prompts fresh)
+        setProjectPath(null);
+        setDirty(false);
+      })
+      .catch((e) => setError(String(e)));
+    },
+    [mode]
+  );
   // How many video / audio tracks exist. Grows on demand (add-track
   // buttons) and auto-bumps to cover any track a loaded/synced clip sits
   // on. Order shown top→bottom: Vn..V1 (video, higher composites on top),
@@ -284,7 +339,17 @@ export default function App() {
 
   // ── mount: load project, subscribe to events ────────────────────────
   useEffect(() => {
-    getProject().then(setProject).catch((e) => setError(String(e)));
+    // sync the backend to the tab we're restoring (Create/Studio are separate
+    // workspaces) and load that one. Both are empty on a fresh launch.
+    setWorkspaceMode(mode)
+      .then((res) => {
+        setProject(res.project);
+        const map: Record<string, MediaItem> = {};
+        for (const md of res.media) map[md.id] = md;
+        setMedia(map);
+        setTranscripts(res.transcripts ?? {});
+      })
+      .catch(() => getProject().then(setProject).catch((e) => setError(String(e))));
     currentRoom().then((r) => r && setRoom(r));
     defaultExportDir().then((d) => d && setExportDir(d));
     const un = onProjectChanged((snap) => setProject(snap));
@@ -326,6 +391,15 @@ export default function App() {
   // ── derived clip state (drag overrides applied) ─────────────────────
   const clips = useMemo(() => {
     if (!drag) return project.clips;
+    // group move: shift every selected clip by the same delta
+    if (drag.kind === "move" && drag.group) {
+      const delta = drag.start - drag.primaryStart;
+      const ids = new Set(drag.group.map((g) => g.id));
+      const origStart = new Map(drag.group.map((g) => [g.id, g.start]));
+      return project.clips.map((c) =>
+        ids.has(c.id) ? { ...c, start: Math.max(0, (origStart.get(c.id) ?? c.start) + delta) } : c
+      );
+    }
     return project.clips.map((c) => {
       if (c.id !== drag.clipId) return c;
       return drag.kind === "move"
@@ -357,6 +431,19 @@ export default function App() {
     () => clips.find((c) => c.id === selected) ?? null,
     [clips, selected]
   );
+  // keep clip rectangles (lanes content coords) current for marquee hit-testing
+  useEffect(() => {
+    clipRectsRef.current = clips.map((c) => {
+      const lane = tracks.indexOf(c.track);
+      return {
+        id: c.id,
+        left: c.start * pps,
+        top: (lane < 0 ? 0 : lane) * TRACK_H,
+        width: c.len * pps,
+        height: TRACK_H,
+      };
+    });
+  }, [clips, tracks, pps]);
 
   // ── playback (audio owns the clock when live) ───────────────────────
   const playheadRef = useRef(0);
@@ -381,6 +468,10 @@ export default function App() {
   useEffect(() => {
     ppsRef.current = pps;
   }, [pps]);
+  const modeRef = useRef(mode);
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
   const mediaRef = useRef(media);
   useEffect(() => {
     mediaRef.current = media;
@@ -393,6 +484,17 @@ export default function App() {
   useEffect(() => {
     trackCtlRef.current = trackCtl;
   }, [trackCtl]);
+  // current clip ids, for keyboard Select-All without re-binding the listener
+  const clipIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    clipIdsRef.current = project.clips.map((c) => c.id);
+  }, [project.clips]);
+  const selectedIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+  }, [selectedIds]);
+  // clip rectangles in lanes content coords, for marquee hit-testing
+  const clipRectsRef = useRef<{ id: string; left: number; top: number; width: number; height: number }[]>([]);
 
   // Playback is built from a timeline snapshot taken when play() starts, so a
   // mid-play edit (e.g. removing a clip) would otherwise keep playing the stale
@@ -853,7 +955,7 @@ export default function App() {
         applyEdit(snap);
         // select the newest title so the editor opens
         const t = snap.clips.filter((c) => c.text).slice(-1)[0];
-        if (t) setSelected(t.id);
+        if (t) selectOne(t.id);
       })
       .catch((e) => setError(String(e)));
   }, [applyEdit]);
@@ -955,7 +1057,7 @@ export default function App() {
       try {
         const placed = await addClipFromMedia(mediaId, track, start);
         applyEdit(placed.project);
-        setSelected(placed.clipId);
+        selectOne(placed.clipId);
       } catch (e) {
         setError(String(e));
       }
@@ -996,7 +1098,11 @@ export default function App() {
           tracksRef.current.length - 1,
           Math.max(0, Math.floor((ev.clientY - rect.top) / TRACK_H))
         );
-        const start = Math.max(0, (ev.clientX - rect.left) / ppsRef.current);
+        // Create anchors the clip to the very start (one short, ready to
+        // trim/export); Studio is a free multi-clip timeline, so it drops at
+        // the cursor position.
+        const start =
+          modeRef.current === "create" ? 0 : Math.max(0, (ev.clientX - rect.left) / ppsRef.current);
         onDropMedia(mediaId, tracksRef.current[lane], start);
       };
       window.addEventListener("pointermove", move);
@@ -1084,7 +1190,7 @@ export default function App() {
       const map: Record<string, MediaItem> = {};
       for (const m of res.media) map[m.id] = m;
       setMedia(map);
-      setSelected(null);
+      setSelectedIds([]);
       setWordSel(null);
       setTranscripts(res.transcripts ?? {});
       setPlayhead(0);
@@ -1239,32 +1345,57 @@ export default function App() {
   );
   const doDeleteSel = useCallback(
     (ripple: boolean) => {
-      if (!selected) return;
-      removeClip(selected, ripple).then(applyEdit).catch((e) => setError(String(e)));
-      setSelected(null);
+      const ids = selectedIds;
+      if (ids.length === 0) return;
+      setSelectedIds([]);
+      (async () => {
+        try {
+          let snap: ProjectSnapshot | null = null;
+          // ripple only makes sense one-at-a-time; delete right-to-left so
+          // earlier ripples don't move clips we're about to remove
+          const order = ripple ? [...ids].reverse() : ids;
+          for (const id of order) snap = await removeClip(id, ripple);
+          if (snap) applyEdit(snap);
+        } catch (e) {
+          setError(String(e));
+        }
+      })();
     },
-    [selected, applyEdit]
+    [selectedIds, applyEdit]
   );
 
   // remove media from the project (drops it + any clips that use it)
   const doRemoveMedia = useCallback(
     async (mediaId: string) => {
-      const selUsesIt =
-        !!selected && project.clips.some((c) => c.id === selected && c.media === mediaId);
       try {
-        const snap = await removeMedia(mediaId);
+        let snap = await removeMedia(mediaId);
+        // removeMedia drops the media + the clips that use it, but auto-captions
+        // (text clips on V2, media="") were generated FROM that footage and are
+        // now orphaned — sweep any that no longer sit over a real media clip.
+        const mediaClips = snap.clips.filter((c) => c.media && !c.text);
+        const orphanCaptions = snap.clips.filter(
+          (c) =>
+            c.text &&
+            c.name === "Caption" &&
+            !mediaClips.some((m) => c.start < m.start + m.len && c.start + c.len > m.start)
+        );
+        for (const c of orphanCaptions) snap = await removeClip(c.id, false);
         setProject(snap);
         setMedia((m) => {
           const n = { ...m };
           delete n[mediaId];
           return n;
         });
+        // drop its transcript + any moments found for it
         setTranscripts((t) => {
           const n = { ...t };
           delete n[mediaId];
           return n;
         });
-        if (selUsesIt) setSelected(null);
+        setShorts([]);
+        setActiveShort(null);
+        // drop any now-deleted clips from the selection
+        setSelectedIds((prev) => prev.filter((id) => snap.clips.some((c) => c.id === id)));
         setDirty(true);
       } catch (e) {
         setError(String(e));
@@ -1326,6 +1457,9 @@ export default function App() {
       } else if (e.ctrlKey && e.key.toLowerCase() === "o") {
         e.preventDefault();
         doOpen();
+      } else if (e.ctrlKey && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        setSelectedIds(clipIdsRef.current);
       } else if (e.code === "Space") {
         e.preventDefault();
         setPlaying((p) => !p);
@@ -1345,7 +1479,7 @@ export default function App() {
           const near = ms.findIndex((m) => Math.abs(m - t) < 0.2);
           return near >= 0 ? ms.filter((_, i) => i !== near) : [...ms, t].sort((a, b) => a - b);
         });
-      } else if ((e.key === "Delete" || e.key === "Backspace") && selected) {
+      } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         doDeleteSel(e.shiftKey);
       }
@@ -1438,10 +1572,19 @@ export default function App() {
   const onClipPointerDown = useCallback(
     (e: React.PointerEvent, clip: Clip) => {
       e.stopPropagation();
-      setSelected(clip.id);
+      // selection: Ctrl/Cmd/Shift toggles into a multi-selection; a plain click
+      // on a clip already in the selection keeps the group (so you can drag it),
+      // otherwise it selects just this clip.
+      const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+      let selNow: string[];
+      setSelectedIds((prev) => {
+        if (additive) selNow = prev.includes(clip.id) ? prev.filter((id) => id !== clip.id) : [...prev, clip.id];
+        else selNow = prev.includes(clip.id) ? prev : [clip.id];
+        return selNow;
+      });
       // selecting a clip must NOT stop playback — you can click around the
       // timeline while the video keeps rolling, like Premiere / FCP
-      if (ctlOf(clip.track).lock) return; // locked: select only
+      if (additive || ctlOf(clip.track).lock) return; // modifier-click / locked: select only
       capture(e);
       const lanes = lanesRef.current!;
       const x = e.clientX - lanes.getBoundingClientRect().left;
@@ -1452,16 +1595,26 @@ export default function App() {
       } else if (localPx >= clip.len * pps - TRIM_ZONE_PX) {
         setDrag({ kind: "trim-r", clipId: clip.id, ...orig, orig });
       } else {
+        // group move when this clip is part of a multi-selection
+        const sel = selNow!;
+        const group =
+          sel.length > 1 && sel.includes(clip.id)
+            ? project.clips
+                .filter((c) => sel.includes(c.id) && !ctlOf(c.track).lock)
+                .map((c) => ({ id: c.id, start: c.start, track: c.track }))
+            : null;
         setDrag({
           kind: "move",
           clipId: clip.id,
           track: clip.track,
           start: clip.start,
           grabOffsetS: x / pps - clip.start,
+          primaryStart: clip.start,
+          group,
         });
       }
     },
-    [pps, ctlOf]
+    [pps, ctlOf, project.clips]
   );
 
   const onClipPointerMove = useCallback(
@@ -1477,7 +1630,16 @@ export default function App() {
         const clip = project.clips.find((c) => c.id === drag.clipId);
         let start = Math.max(0, t - drag.grabOffsetS);
         start = Math.max(0, snapStart(start, clip?.len ?? 0, drag.clipId));
-        setDrag({ ...drag, track: tracks[lane], start });
+        // a group keeps every clip on its own track (horizontal shift only);
+        // a single clip can also change track (vertical move)
+        if (drag.group) {
+          const delta = start - drag.primaryStart;
+          const minStart = Math.min(...drag.group.map((g) => g.start));
+          const clampedDelta = Math.max(-minStart, delta); // no clip past t=0
+          setDrag({ ...drag, start: drag.primaryStart + clampedDelta });
+        } else {
+          setDrag({ ...drag, track: tracks[lane], start });
+        }
         setPlayhead(start);
         return;
       }
@@ -1505,7 +1667,16 @@ export default function App() {
     const r2 = (v: number) => Math.round(v * 100) / 100;
     try {
       if (drag.kind === "move") {
-        applyEdit(await moveClip(drag.clipId, drag.track, r2(drag.start)));
+        if (drag.group) {
+          const delta = drag.start - drag.primaryStart;
+          let snap: ProjectSnapshot | null = null;
+          for (const g of drag.group) {
+            snap = await moveClip(g.id, g.track, r2(Math.max(0, g.start + delta)));
+          }
+          if (snap) applyEdit(snap);
+        } else {
+          applyEdit(await moveClip(drag.clipId, drag.track, r2(drag.start)));
+        }
       } else {
         applyEdit(await trimClip(drag.clipId, r2(drag.start), r2(drag.len), r2(drag.srcIn)));
       }
@@ -1513,6 +1684,52 @@ export default function App() {
       setError(String(e));
     }
   }, [drag, applyEdit]);
+
+  // Marquee (rubber-band) select: pointer-down on empty lane space drags a box
+  // and selects every clip it touches. Clips stopPropagation, so this only
+  // fires on the background. Modifier held = add to the current selection.
+  const onLanesPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const lanes = lanesRef.current;
+    if (!lanes) return;
+    const rect = lanes.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+    const base = additive ? [...selectedIdsRef.current] : [];
+    if (!additive) setSelectedIds([]);
+    let dragged = false;
+    const move = (ev: PointerEvent) => {
+      const cx = ev.clientX - rect.left;
+      const cy = ev.clientY - rect.top;
+      const box = { x: Math.min(sx, cx), y: Math.min(sy, cy), w: Math.abs(cx - sx), h: Math.abs(cy - sy) };
+      if (box.w > 3 || box.h > 3) dragged = true;
+      setMarquee(box);
+      const hit = clipRectsRef.current
+        .filter(
+          (r) =>
+            r.left < box.x + box.w && r.left + r.width > box.x && r.top < box.y + box.h && r.top + r.height > box.y
+        )
+        .map((r) => r.id);
+      setSelectedIds([...new Set([...base, ...hit])]);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setMarquee(null);
+      if (!dragged && !additive) setSelectedIds([]); // a plain click clears
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }, []);
+
+  // Right-click a clip → context menu. If it isn't already selected, select it.
+  const onClipContextMenu = useCallback((e: React.MouseEvent, clip: Clip) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setSelectedIds((prev) => (prev.includes(clip.id) ? prev : [clip.id]));
+    setCtxMenu({ x: e.clientX, y: e.clientY, clipId: clip.id });
+  }, []);
 
   // ── transcript editing ──────────────────────────────────────────────
   const srcToTimeline = useCallback(
@@ -1755,8 +1972,8 @@ export default function App() {
   );
 
   // Load a chosen moment: retrim the timeline clip to that source range (so the
-  // whole timeline *is* that short and the normal Export renders just it), then
-  // auto-generate captions for it — the captions come WITH the clip.
+  // whole timeline *is* that short and the normal Export renders just it). Only
+  // burns captions onto it when the Captions toggle is on — never automatically.
   const onPickShort = useCallback(
     async (i: number) => {
       if (!createClip) return;
@@ -1766,12 +1983,40 @@ export default function App() {
       try {
         applyEdit(await trimClip(createClip.id, 0, s.end - s.start, s.start));
         setPlayhead(0);
-        await captionMoment(createClip.media, s.start, s.end);
+        if (captionsOn) await captionMoment(createClip.media, s.start, s.end);
       } catch (e) {
         setError(String(e));
       }
     },
-    [createClip, shorts, applyEdit, captionMoment]
+    [createClip, shorts, applyEdit, captionMoment, captionsOn]
+  );
+
+  // Toggle captions on the loaded clip. Turning on captions the clip's current
+  // source range; turning off strips the auto-caption clips. Persisted so the
+  // choice sticks — captions never get added unless you ask.
+  const onToggleCaptions = useCallback(
+    (on: boolean) => {
+      setCaptionsOn(on);
+      localStorage.setItem("cutlass-captions-on", on ? "1" : "0");
+      savePref("captionsOn", on).catch(() => {});
+      if (!createClip) return;
+      if (on) {
+        captionMoment(createClip.media, createClip.src_in, createClip.src_in + createClip.len);
+      } else {
+        (async () => {
+          try {
+            let snap: ProjectSnapshot | null = null;
+            for (const c of project.clips.filter((c) => c.text && c.name === "Caption")) {
+              snap = await removeClip(c.id, false);
+            }
+            if (snap) applyEdit(snap);
+          } catch (e) {
+            setError(String(e));
+          }
+        })();
+      }
+    },
+    [createClip, captionMoment, project.clips, applyEdit]
   );
 
   // Run the AI moment-finder on a media's transcript: Claude reads the whole
@@ -1903,6 +2148,8 @@ export default function App() {
               aiFinding={aiFinding}
               transcribeMode={transcribeMode}
               onTranscribeMode={chooseTranscribeMode}
+              captionsOn={captionsOn}
+              onToggleCaptions={onToggleCaptions}
               onFindHighlights={onFindHighlights}
               exporting={exportModal?.phase === "running"}
               onExport={exportClip}
@@ -1917,8 +2164,11 @@ export default function App() {
             media={Object.values(media)}
             transcripts={transcripts}
             transcribing={transcribing}
+            transcribeProgress={transcribeProgress}
+            transcribeMode={transcribeMode}
+            onTranscribeMode={chooseTranscribeMode}
             onImport={doImport}
-            onTranscribe={doTranscribe}
+            onTranscribe={(id) => doTranscribe(id, transcribeMode === "fast")}
             onMediaPointerDown={onMediaPointerDown}
             onRemoveMedia={onRemoveMedia}
             hasSelection={selected !== null}
@@ -2013,8 +2263,9 @@ export default function App() {
         onPps={setPps}
         playhead={playhead}
         peers={Object.values(peers)}
-        selected={selected}
+        selectedIds={selectedIds}
         dragClipId={drag?.clipId ?? null}
+        marquee={marquee}
         timelineEndS={timelineEndS}
         snap={snap}
         onSnap={setSnap}
@@ -2026,8 +2277,9 @@ export default function App() {
         scrollRef={scrollRef}
         onRulerPointerDown={onRulerPointerDown}
         onRulerPointerMove={onRulerPointerMove}
-        onLanesPointerDown={() => setSelected(null)}
+        onLanesPointerDown={onLanesPointerDown}
         onClipPointerDown={onClipPointerDown}
+        onClipContextMenu={onClipContextMenu}
         onClipPointerMove={onClipPointerMove}
         onClipPointerUp={onClipPointerUp}
         onSeek={setPlayhead}
@@ -2042,6 +2294,70 @@ export default function App() {
       {mediaGhost && (
         <div className="media-ghost" style={{ left: mediaGhost.x + 12, top: mediaGhost.y + 12 }}>
           {mediaGhost.name}
+        </div>
+      )}
+
+      {ctxMenu && (
+        <div
+          className="ctx-overlay"
+          onPointerDown={() => setCtxMenu(null)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setCtxMenu(null);
+          }}
+        >
+          <div
+            className="ctx-menu"
+            style={{ left: ctxMenu.x, top: ctxMenu.y }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <button
+              className="ctx-item danger"
+              onClick={() => {
+                doDeleteSel(false);
+                setCtxMenu(null);
+              }}
+            >
+              Delete{selectedIds.length > 1 ? ` ${selectedIds.length} clips` : ""}
+            </button>
+            <button
+              className="ctx-item"
+              onClick={() => {
+                doDeleteSel(true);
+                setCtxMenu(null);
+              }}
+            >
+              Ripple delete{selectedIds.length > 1 ? ` ${selectedIds.length} clips` : ""}
+            </button>
+            <button
+              className="ctx-item"
+              onClick={() => {
+                doSplit();
+                setCtxMenu(null);
+              }}
+            >
+              Split at playhead
+            </button>
+            <div className="ctx-sep" />
+            <button
+              className="ctx-item"
+              onClick={() => {
+                setSelectedIds(clipIdsRef.current);
+                setCtxMenu(null);
+              }}
+            >
+              Select all
+            </button>
+            <button
+              className="ctx-item"
+              onClick={() => {
+                setSelectedIds([]);
+                setCtxMenu(null);
+              }}
+            >
+              Deselect
+            </button>
+          </div>
         </div>
       )}
 
