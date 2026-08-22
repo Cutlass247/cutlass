@@ -273,6 +273,31 @@ pub fn ai_highlights(transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, 
     }
 }
 
+// ── AI usage (how much of the monthly AI allowance is left) ──────────────
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct AiUsage {
+    pub used_minutes: f64,
+    pub cap_minutes: f64,
+    pub credit_minutes: f64,
+    pub remaining_minutes: f64, // -1 = unlimited
+    pub unlimited: bool,
+    pub period: String,
+}
+
+/// Ask the server how much AI processing this machine has used / has left this
+/// month. Best-effort (the readout just hides on failure).
+pub fn ai_usage() -> Result<AiUsage, String> {
+    let hwid = machine_id();
+    let url = format!("{}/usage?hwid={}", server_url().trim_end_matches('/'), hwid);
+    match agent().get(&url).timeout(Duration::from_secs(15)).call() {
+        Ok(resp) => resp.into_json::<AiUsage>().map_err(|e| e.to_string()),
+        Err(ureq::Error::Status(code, r)) => {
+            Err(format!("{code}: {}", r.into_string().unwrap_or_default().chars().take(120).collect::<String>()))
+        }
+        Err(e) => Err(format!("Couldn't reach the usage service: {e}")),
+    }
+}
+
 // ── Cloud transcription (Groq Whisper — audio chunk → word timestamps) ───
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct SttWord {

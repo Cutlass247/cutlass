@@ -10,6 +10,8 @@ import {
   addClipFromMedia,
   addTitle,
   aiHighlights,
+  aiUsage,
+  AiUsage,
   audioClock,
   CaptionSpec,
   cloudTranscribe,
@@ -230,6 +232,14 @@ export default function App() {
   const [captionsOn, setCaptionsOn] = useState<boolean>(
     () => localStorage.getItem("cutlass-captions-on") === "1"
   );
+  // monthly AI allowance readout (null = unknown/hidden). Refreshed after AI ops.
+  const [usage, setUsage] = useState<AiUsage | null>(null);
+  const refreshUsage = useCallback(() => {
+    aiUsage().then(setUsage).catch(() => {});
+  }, []);
+  useEffect(() => {
+    refreshUsage();
+  }, [refreshUsage]);
 
   const lanesRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1039,9 +1049,10 @@ export default function App() {
         return null;
       } finally {
         setTranscribing(null);
+        if (cloud) refreshUsage(); // cloud transcription counts against the allowance
       }
     },
-    []
+    [refreshUsage]
   );
 
   const doImport = useCallback(async () => {
@@ -2067,9 +2078,10 @@ export default function App() {
         setError(`Couldn't find moments: ${String(e)}`);
       } finally {
         setAiFinding(false);
+        refreshUsage();
       }
     },
-    [transcripts]
+    [transcripts, refreshUsage]
   );
 
   // ONE button. Transcribe the clip on-device if needed (progress shows on the
@@ -2170,6 +2182,7 @@ export default function App() {
               onTranscribeMode={chooseTranscribeMode}
               captionsOn={captionsOn}
               onToggleCaptions={onToggleCaptions}
+              usage={usage}
               onFindHighlights={onFindHighlights}
               exporting={exportModal?.phase === "running"}
               onExport={exportClip}
