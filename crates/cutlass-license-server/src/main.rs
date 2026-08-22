@@ -18,6 +18,9 @@
 //!   CUTLASS_GROQ_KEY             Groq key for /transcribe (cloud STT)
 //!   CUTLASS_AI_MONTHLY_MINUTES   per-HWID monthly AI allowance (0/unset =
 //!                                unlimited, usage still tracked)
+//!   CUTLASS_AI_TRIAL_MINUTES     trial-licence AI allowance (0/unset = use the
+//!                                monthly cap); keeps a free trial from draining
+//!                                our API credits
 
 use axum::{
     body::Bytes,
@@ -55,6 +58,9 @@ struct Config {
     groq_key: Option<String>,
     /// Monthly AI processing allowance in SECONDS (0 = unlimited / track-only).
     ai_monthly_secs: f64,
+    /// Trial-license AI allowance in SECONDS (0 = fall back to the monthly cap).
+    /// Lets a trial taste the AI without draining our API credits.
+    ai_trial_secs: f64,
 }
 
 #[derive(Clone)]
@@ -130,44 +136,56 @@ fn ai_credit_secs(db: &Connection, hwid: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Entitlement + usage gate for the AI endpoints. Returns Ok(is_owner) when the
-/// call may proceed, or an error status. Owners are unlimited; a monthly cap of
+/// The AI allowance (seconds) for a licence status. Trials get their own,
+/// smaller cap (falling back to the monthly cap when unset) so a free trial
+/// can taste the AI without draining our credits.
+fn effective_cap(cfg: &Config, status: &str) -> f64 {
+    match status {
+        "trial" if cfg.ai_trial_secs > 0.0 => cfg.ai_trial_secs,
+        _ => cfg.ai_monthly_secs, // paid, or trial with no trial-specific cap
+    }
+}
+
+/// Entitlement + usage gate for the AI endpoints. Returns Ok((is_owner, cap))
+/// when the call may proceed, or an error status. Owners are unlimited; a cap of
 /// 0 means "track usage but never block" (the beta default).
 fn ai_gate(
     state: &AppState,
     hwid: &str,
     ver: Option<&str>,
     t: i64,
-) -> Result<bool, (StatusCode, String)> {
+) -> Result<(bool, f64), (StatusCode, String)> {
     let db = state.db.lock().unwrap();
     let row = get_or_create(&db, &state.cfg, hwid, ver, t);
     let is_owner = row.status == "owner";
     if !lease_for(&row, &state.cfg, t).is_active_at(t) {
         return Err((StatusCode::PAYMENT_REQUIRED, "no active licence for AI features".into()));
     }
-    if !is_owner && state.cfg.ai_monthly_secs > 0.0 {
+    let cap = effective_cap(&state.cfg, &row.status);
+    if !is_owner && cap > 0.0 {
         let period = year_month(t);
         let used = ai_used_secs(&db, hwid, &period);
         let credits = ai_credit_secs(&db, hwid);
-        if used >= state.cfg.ai_monthly_secs && credits <= 0.0 {
-            return Err((
-                StatusCode::TOO_MANY_REQUESTS,
-                "monthly AI limit reached — add credits or switch to Private (on-device) transcription".into(),
-            ));
+        if used >= cap && credits <= 0.0 {
+            let msg = if row.status == "trial" {
+                "trial AI limit reached — buy Cutlass for the full allowance, or use Private (on-device) transcription"
+            } else {
+                "monthly AI limit reached — add credits or use Private (on-device) transcription"
+            };
+            return Err((StatusCode::TOO_MANY_REQUESTS, msg.into()));
         }
     }
-    Ok(is_owner)
+    Ok((is_owner, cap))
 }
 
-/// Record `cost_secs` of AI media processing against the monthly allowance,
+/// Record `cost_secs` of AI media processing against the allowance (`cap`),
 /// spilling the overflow onto the persistent credit balance. No-op for owners.
-fn ai_charge(state: &AppState, hwid: &str, is_owner: bool, cost_secs: f64, t: i64) {
+fn ai_charge(state: &AppState, hwid: &str, is_owner: bool, cap: f64, cost_secs: f64, t: i64) {
     if is_owner || cost_secs <= 0.0 {
         return;
     }
     let db = state.db.lock().unwrap();
     let period = year_month(t);
-    let cap = state.cfg.ai_monthly_secs;
     let (from_monthly, from_credits) = if cap <= 0.0 {
         (cost_secs, 0.0) // track-only: everything visible in monthly, no drain
     } else {
@@ -550,7 +568,7 @@ async fn highlights(
     // gate on an active licence + monthly AI allowance
     let t = now();
     let hwid = req.hwid.trim().to_string();
-    let is_owner = ai_gate(&state, &hwid, req.app_version.as_deref(), t)?;
+    let (is_owner, cap) = ai_gate(&state, &hwid, req.app_version.as_deref(), t)?;
 
     let count = req.count.unwrap_or(8).clamp(1, 15);
     let prompt = build_prompt(&req.transcript, count);
@@ -575,7 +593,7 @@ async fn highlights(
     moments.retain(|m| m.end > m.start && m.end - m.start >= 5.0);
     // meter the analysed span (Claude cost is incurred on either transcribe path)
     let span = dur - req.transcript.first().map(|w| w.start).unwrap_or(0.0);
-    ai_charge(&state, &hwid, is_owner, span.max(0.0), t);
+    ai_charge(&state, &hwid, is_owner, cap, span.max(0.0), t);
     Ok(Json(moments))
 }
 
@@ -692,7 +710,7 @@ async fn transcribe(
     // same gate as /highlights — active licence + monthly AI allowance
     let t = now();
     let hwid = q.hwid.trim().to_string();
-    let is_owner = ai_gate(&state, &hwid, q.app_version.as_deref(), t)?;
+    let (is_owner, cap) = ai_gate(&state, &hwid, q.app_version.as_deref(), t)?;
 
     let audio = body.to_vec();
     let mut words = tokio::task::spawn_blocking(move || call_groq(&key, &audio))
@@ -702,7 +720,7 @@ async fn transcribe(
     // meter this chunk's audio length before stamping absolute time
     let chunk_secs = words.last().map(|w| w.end).unwrap_or(0.0)
         - words.first().map(|w| w.start).unwrap_or(0.0);
-    ai_charge(&state, &hwid, is_owner, chunk_secs.max(0.0), t);
+    ai_charge(&state, &hwid, is_owner, cap, chunk_secs.max(0.0), t);
     // stamp the chunk offset back so times are absolute over the whole video
     if q.offset != 0.0 {
         for w in words.iter_mut() {
@@ -726,11 +744,15 @@ async fn usage(State(state): State<AppState>, Query(q): Query<UsageQuery>) -> Js
     let period = year_month(t);
     let hwid = q.hwid.trim();
     let db = state.db.lock().unwrap();
+    // pick the cap for THIS licence's status (trial vs paid), defaulting to trial
+    let status: String = db
+        .query_row("SELECT status FROM licenses WHERE hwid=?1", [hwid], |r| r.get(0))
+        .unwrap_or_else(|_| "trial".to_string());
     let used = ai_used_secs(&db, hwid, &period);
     let credits = ai_credit_secs(&db, hwid);
     drop(db);
-    let cap = state.cfg.ai_monthly_secs;
-    let unlimited = state.cfg.owner_hwids.contains(hwid) || cap <= 0.0;
+    let cap = effective_cap(&state.cfg, &status);
+    let unlimited = state.cfg.owner_hwids.contains(hwid) || status == "owner" || cap <= 0.0;
     let remaining = if unlimited { -1.0 } else { ((cap - used).max(0.0) + credits) / 60.0 };
     Json(serde_json::json!({
         "period": period,
@@ -797,6 +819,11 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(0.0)
             * 60.0,
+        ai_trial_secs: env::var("CUTLASS_AI_TRIAL_MINUTES")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0)
+            * 60.0,
     };
 
     let db_path = env::var("CUTLASS_DB_PATH").unwrap_or_else(|_| "cutlass-license.db".into());
@@ -841,7 +868,7 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    fn test_state(cap_minutes: f64, owners: &[&str]) -> AppState {
+    fn test_state(cap_minutes: f64, trial_minutes: f64, owners: &[&str]) -> AppState {
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn);
         let cfg = Config {
@@ -853,6 +880,7 @@ mod tests {
             anthropic_key: None,
             groq_key: None,
             ai_monthly_secs: cap_minutes * 60.0,
+            ai_trial_secs: trial_minutes * 60.0,
         };
         // any valid 32-byte key — the signing key is unused by the metering path
         let key = signing_key_from_b64("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=").unwrap();
@@ -872,16 +900,16 @@ mod tests {
     #[test]
     fn charge_accumulates_and_cap_blocks() {
         let t = now();
-        let s = test_state(10.0, &[]); // 10-minute monthly cap
+        let s = test_state(10.0, 0.0, &[]); // 10-min cap (trial falls back to it)
         let hwid = "unittesthwid00";
-        assert!(ai_gate(&s, hwid, None, t).is_ok());
-        ai_charge(&s, hwid, false, 6.0 * 60.0, t); // 6 min
+        let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
+        ai_charge(&s, hwid, false, cap, 6.0 * 60.0, t); // 6 min
         {
             let db = s.db.lock().unwrap();
             assert!((ai_used_secs(&db, hwid, &year_month(t)) - 360.0).abs() < 1.0);
         }
         assert!(ai_gate(&s, hwid, None, t).is_ok()); // still under cap
-        ai_charge(&s, hwid, false, 5.0 * 60.0, t); // now 11 min, over cap
+        ai_charge(&s, hwid, false, cap, 5.0 * 60.0, t); // now 11 min, over cap
         let g = ai_gate(&s, hwid, None, t);
         assert_eq!(g.unwrap_err().0, StatusCode::TOO_MANY_REQUESTS);
     }
@@ -889,10 +917,10 @@ mod tests {
     #[test]
     fn credits_allow_past_cap_and_drain() {
         let t = now();
-        let s = test_state(1.0, &[]); // 1-minute cap
+        let s = test_state(1.0, 0.0, &[]); // 1-minute cap
         let hwid = "credittest0000";
-        ai_gate(&s, hwid, None, t).unwrap();
-        ai_charge(&s, hwid, false, 60.0, t); // exactly at cap
+        let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
+        ai_charge(&s, hwid, false, cap, 60.0, t); // exactly at cap
         {
             let db = s.db.lock().unwrap();
             db.execute(
@@ -902,7 +930,7 @@ mod tests {
             .unwrap();
         }
         assert!(ai_gate(&s, hwid, None, t).is_ok()); // at cap but has credits
-        ai_charge(&s, hwid, false, 90.0, t); // spills fully onto credits
+        ai_charge(&s, hwid, false, cap, 90.0, t); // spills fully onto credits
         let db = s.db.lock().unwrap();
         assert!((ai_credit_secs(&db, hwid) - 30.0).abs() < 1.0);
     }
@@ -910,11 +938,11 @@ mod tests {
     #[test]
     fn owner_is_unlimited() {
         let t = now();
-        let s = test_state(1.0, &["ownerhwid00000"]);
+        let s = test_state(1.0, 0.0, &["ownerhwid00000"]);
         let hwid = "ownerhwid00000";
-        let is_owner = ai_gate(&s, hwid, None, t).unwrap();
+        let (is_owner, cap) = ai_gate(&s, hwid, None, t).unwrap();
         assert!(is_owner);
-        ai_charge(&s, hwid, true, 9_999.0 * 60.0, t); // no-op for owners
+        ai_charge(&s, hwid, true, cap, 9_999.0 * 60.0, t); // no-op for owners
         {
             let db = s.db.lock().unwrap();
             assert_eq!(ai_used_secs(&db, hwid, &year_month(t)), 0.0);
@@ -925,13 +953,34 @@ mod tests {
     #[test]
     fn zero_cap_tracks_but_never_blocks() {
         let t = now();
-        let s = test_state(0.0, &[]); // 0 = unlimited / track-only
+        let s = test_state(0.0, 0.0, &[]); // 0 = unlimited / track-only
         let hwid = "betatrackonly0";
-        ai_charge(&s, hwid, false, 9_999.0 * 60.0, t);
+        let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
+        ai_charge(&s, hwid, false, cap, 9_999.0 * 60.0, t);
         {
             let db = s.db.lock().unwrap();
             assert!(ai_used_secs(&db, hwid, &year_month(t)) > 0.0); // usage recorded
         }
         assert!(ai_gate(&s, hwid, None, t).is_ok()); // never blocked
+    }
+
+    #[test]
+    fn trial_cap_is_separate_from_paid() {
+        let t = now();
+        let s = test_state(10.0, 1.0, &[]); // paid 10 min, trial 1 min
+        let hwid = "trialuser00001";
+        // a fresh HWID is a trial → gets the 1-minute cap
+        let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
+        assert!((cap - 60.0).abs() < 0.1);
+        ai_charge(&s, hwid, false, cap, 60.0, t); // hit the trial cap
+        assert_eq!(ai_gate(&s, hwid, None, t).unwrap_err().0, StatusCode::TOO_MANY_REQUESTS);
+        // promote to paid → the 10-minute monthly cap applies, so it's allowed again
+        {
+            let db = s.db.lock().unwrap();
+            db.execute("UPDATE licenses SET status='paid' WHERE hwid=?1", [hwid]).unwrap();
+        }
+        let (_, paid_cap) = ai_gate(&s, hwid, None, t).unwrap();
+        assert!((paid_cap - 600.0).abs() < 0.1);
+        assert!(ai_gate(&s, hwid, None, t).is_ok());
     }
 }
