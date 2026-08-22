@@ -1931,6 +1931,18 @@ export default function App() {
     setActiveShort(null);
   }, [createClip, media, transcripts]);
 
+  // Strip every auto-caption from the timeline. Reads the LIVE project from the
+  // backend (not a possibly-stale render snapshot) so a caption added moments
+  // ago is always seen and removed. Returns the resulting snapshot (or null).
+  const clearCaptions = useCallback(async (): Promise<ProjectSnapshot | null> => {
+    const cur = await getProject();
+    let snap: ProjectSnapshot | null = null;
+    for (const c of cur.clips.filter((c) => c.text && c.name === "Caption")) {
+      snap = await removeClip(c.id, false);
+    }
+    return snap;
+  }, []);
+
   // Caption a picked moment. The timeline clip is now the moment [from,to] with
   // src_in=from, start=0, so a transcript word at source time `w` maps to
   // timeline time `w - from`. Words are grouped into short lines. Replaces any
@@ -1958,17 +1970,15 @@ export default function App() {
         flush();
       }
       try {
-        let snap: ProjectSnapshot | null = null;
-        for (const c of project.clips.filter((c) => c.text && c.name === "Caption")) {
-          snap = await removeClip(c.id, false);
-        }
+        // replace any prior captions with the new set (live-project read)
+        let snap = await clearCaptions();
         if (specs.length) snap = await addCaptions(specs);
         if (snap) applyEdit(snap);
       } catch (e) {
         setError(String(e));
       }
     },
-    [transcripts, project.clips, applyEdit]
+    [transcripts, clearCaptions, applyEdit]
   );
 
   // Load a chosen moment: retrim the timeline clip to that source range (so the
@@ -1999,24 +2009,18 @@ export default function App() {
       setCaptionsOn(on);
       localStorage.setItem("cutlass-captions-on", on ? "1" : "0");
       savePref("captionsOn", on).catch(() => {});
-      if (!createClip) return;
       if (on) {
-        captionMoment(createClip.media, createClip.src_in, createClip.src_in + createClip.len);
+        if (createClip) {
+          captionMoment(createClip.media, createClip.src_in, createClip.src_in + createClip.len);
+        }
       } else {
-        (async () => {
-          try {
-            let snap: ProjectSnapshot | null = null;
-            for (const c of project.clips.filter((c) => c.text && c.name === "Caption")) {
-              snap = await removeClip(c.id, false);
-            }
-            if (snap) applyEdit(snap);
-          } catch (e) {
-            setError(String(e));
-          }
-        })();
+        // turning off ALWAYS strips captions (no clip guard) — live-project read
+        clearCaptions()
+          .then((snap) => snap && applyEdit(snap))
+          .catch((e) => setError(String(e)));
       }
     },
-    [createClip, captionMoment, project.clips, applyEdit]
+    [createClip, captionMoment, clearCaptions, applyEdit]
   );
 
   // Run the AI moment-finder on a media's transcript: Claude reads the whole
@@ -2133,7 +2137,10 @@ export default function App() {
       <main className="workspace">
         {/* the media bin is where imports land — shown in both modes so
             there's always something to drag onto the timeline */}
-        <div style={{ width: leftW, display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <div
+          className={mode === "create" ? "left-col create-left" : "left-col"}
+          style={{ width: leftW, display: "flex", flexDirection: "column", minWidth: 0 }}
+        >
           {mode === "create" && (
             <ClipFormat
               format={clipFormat}

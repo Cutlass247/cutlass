@@ -413,6 +413,25 @@ button {
   border-left: 1px solid var(--border);
 }
 
+/* Create tab: the clip maker + Media/Effects panel together can be taller than
+   the column, which was squishing the panel to a sliver. Scroll the whole
+   column as one unit so every option is reachable. */
+.create-left {
+  min-height: 0;
+  overflow-y: auto;
+}
+.create-left > .clip-format {
+  flex: 0 0 auto;
+}
+.create-left > .panel {
+  flex: 0 0 auto; /* natural height — never squished to nothing */
+  overflow: visible; /* the column scrolls, not the panel */
+}
+.create-left > .panel .bin-list,
+.create-left > .panel .fx-library {
+  overflow: visible; /* unbounded; the outer column handles scrolling */
+}
+
 .search {
   background: var(--panel-2);
   border: 1px solid var(--border);
