@@ -240,6 +240,8 @@ export default function App() {
   const switchMode = useCallback(
     (m: Mode) => {
     if (m === mode) return;
+    // remember the tab we're leaving so its save file + unsaved state come back
+    saveStateRef.current[mode] = { path: projectPathRef.current, dirty: dirtyRef.current };
     setPlaying(false);
     pauseAudio().catch(() => {});
     setWorkspaceMode(m)
@@ -258,10 +260,11 @@ export default function App() {
         setWordSel(null);
         setMarkers([]);
         setPlayhead(0);
-        // each workspace saves to its own file — forget the other tab's path so
-        // a Save here can't silently overwrite it (Save As prompts fresh)
-        setProjectPath(null);
-        setDirty(false);
+        // restore the tab we're entering — its own save file + unsaved state,
+        // so Save/auto-save keep working per workspace and can't cross over
+        const incoming = saveStateRef.current[m];
+        setProjectPath(incoming.path);
+        setDirty(incoming.dirty);
       })
       .catch((e) => setError(String(e)));
     },
@@ -459,6 +462,16 @@ export default function App() {
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
+  const projectPathRef = useRef(projectPath);
+  useEffect(() => {
+    projectPathRef.current = projectPath;
+  }, [projectPath]);
+  // each tab (Create/Studio) remembers its OWN save file + unsaved state, so
+  // switching workspaces doesn't lose where a project was saved.
+  const saveStateRef = useRef<Record<Mode, { path: string | null; dirty: boolean }>>({
+    create: { path: null, dirty: false },
+    studio: { path: null, dirty: false },
+  });
   // latest tracks / zoom / media for the pointer-drag drop closure
   const tracksRef = useRef(tracks);
   useEffect(() => {
