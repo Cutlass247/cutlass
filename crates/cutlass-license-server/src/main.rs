@@ -363,11 +363,11 @@ Transcript:\n{}",
     )
 }
 
-/// Call the Anthropic Messages API (blocking; run under spawn_blocking). We
-/// prefill the assistant turn with "[" so the model MUST return a JSON array
-/// (no prose/markdown to trip up parsing), and retry transient upstream errors
-/// (429 rate-limit, 529 overloaded, 5xx) a couple of times with backoff.
-/// Returns the full JSON array text (the prefilled "[" is prepended back).
+/// Call the Anthropic Messages API (blocking; run under spawn_blocking). Retry
+/// transient upstream errors (429 rate-limit, 529 overloaded, 5xx) a couple of
+/// times with backoff; genuine 4xx (bad key, no credits) fail fast. The model
+/// is asked for a bare JSON array in the prompt and the caller extracts the
+/// outermost [...] (tolerating any stray markdown fences).
 fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
     let connector = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
     let agent = ureq::AgentBuilder::new()
@@ -377,10 +377,7 @@ fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
     let body = serde_json::json!({
         "model": "claude-sonnet-5",
         "max_tokens": 3000,
-        "messages": [
-            { "role": "user", "content": prompt },
-            { "role": "assistant", "content": "[" }
-        ]
+        "messages": [{ "role": "user", "content": prompt }]
     });
 
     let mut last_err = String::new();
@@ -403,8 +400,7 @@ fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
                 if text.trim().is_empty() {
                     return Err("empty response from anthropic".into());
                 }
-                // re-attach the prefilled "[" so the caller gets the whole array
-                return Ok(format!("[{text}"));
+                return Ok(text);
             }
             Err(ureq::Error::Status(code, r)) => {
                 let msg = r.into_string().unwrap_or_default();
