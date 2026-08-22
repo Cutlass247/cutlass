@@ -363,7 +363,11 @@ Transcript:\n{}",
     )
 }
 
-/// Call the Anthropic Messages API (blocking; run under spawn_blocking).
+/// Call the Anthropic Messages API (blocking; run under spawn_blocking). We
+/// prefill the assistant turn with "[" so the model MUST return a JSON array
+/// (no prose/markdown to trip up parsing), and retry transient upstream errors
+/// (429 rate-limit, 529 overloaded, 5xx) a couple of times with backoff.
+/// Returns the full JSON array text (the prefilled "[" is prepended back).
 fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
     let connector = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
     let agent = ureq::AgentBuilder::new()
@@ -373,33 +377,54 @@ fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
     let body = serde_json::json!({
         "model": "claude-sonnet-5",
         "max_tokens": 3000,
-        "messages": [{ "role": "user", "content": prompt }]
+        "messages": [
+            { "role": "user", "content": prompt },
+            { "role": "assistant", "content": "[" }
+        ]
     });
-    let resp = match agent
-        .post("https://api.anthropic.com/v1/messages")
-        .set("x-api-key", key)
-        .set("anthropic-version", "2023-06-01")
-        .set("content-type", "application/json")
-        .send_json(body)
-    {
-        Ok(r) => r,
-        Err(ureq::Error::Status(code, r)) => {
-            let msg = r.into_string().unwrap_or_default();
-            return Err(format!("anthropic {code}: {}", msg.chars().take(300).collect::<String>()));
+
+    let mut last_err = String::new();
+    for attempt in 0..3 {
+        let resp = agent
+            .post("https://api.anthropic.com/v1/messages")
+            .set("x-api-key", key)
+            .set("anthropic-version", "2023-06-01")
+            .set("content-type", "application/json")
+            .send_json(body.clone());
+        match resp {
+            Ok(r) => {
+                let v: serde_json::Value = r.into_json().map_err(|e| e.to_string())?;
+                let text = v["content"]
+                    .as_array()
+                    .map(|blocks| {
+                        blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("")
+                    })
+                    .unwrap_or_default();
+                if text.trim().is_empty() {
+                    return Err("empty response from anthropic".into());
+                }
+                // re-attach the prefilled "[" so the caller gets the whole array
+                return Ok(format!("[{text}"));
+            }
+            Err(ureq::Error::Status(code, r)) => {
+                let msg = r.into_string().unwrap_or_default();
+                last_err = format!("anthropic {code}: {}", msg.chars().take(300).collect::<String>());
+                // only retry transient statuses; fail fast on 4xx like 400/401
+                let transient = code == 429 || code >= 500;
+                if !transient || attempt == 2 {
+                    return Err(last_err);
+                }
+            }
+            Err(e) => {
+                last_err = format!("anthropic transport error: {e}");
+                if attempt == 2 {
+                    return Err(last_err);
+                }
+            }
         }
-        Err(e) => return Err(format!("anthropic transport error: {e}")),
-    };
-    let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
-    let text = v["content"]
-        .as_array()
-        .map(|blocks| {
-            blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("")
-        })
-        .unwrap_or_default();
-    if text.is_empty() {
-        return Err("empty response from anthropic".into());
+        std::thread::sleep(std::time::Duration::from_millis(600 * (attempt as u64 + 1)));
     }
-    Ok(text)
+    Err(last_err)
 }
 
 /// Extract the outermost JSON array from a possibly-chatty model response.
