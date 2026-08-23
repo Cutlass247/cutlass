@@ -51,6 +51,7 @@ import {
   loadPrefs,
   savePref,
   openUrl,
+  openCheckout,
   pauseAudio,
   pickVideo,
   playAudio,
@@ -240,6 +241,16 @@ export default function App() {
   useEffect(() => {
     refreshUsage();
   }, [refreshUsage]);
+  // refresh the allowance when the user returns from the browser (e.g. after
+  // buying a credit top-up) so the readout reflects it without a restart.
+  useEffect(() => {
+    const onFocus = () => refreshUsage();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshUsage]);
+  const onBuyCredits = useCallback(() => {
+    openCheckout("credits").catch((e) => setError(String(e)));
+  }, []);
 
   const lanesRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -2183,6 +2194,7 @@ export default function App() {
               captionsOn={captionsOn}
               onToggleCaptions={onToggleCaptions}
               usage={usage}
+              onBuyCredits={onBuyCredits}
               onFindHighlights={onFindHighlights}
               exporting={exportModal?.phase === "running"}
               onExport={exportClip}

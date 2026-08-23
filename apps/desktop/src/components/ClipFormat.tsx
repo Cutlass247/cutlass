@@ -49,6 +49,7 @@ export function ClipFormat(p: {
   onToggleCaptions: (on: boolean) => void;
   // monthly AI allowance readout (null = unknown/hidden)
   usage: AiUsageInfo | null;
+  onBuyCredits: () => void;
   onFindHighlights: () => void;
   exporting: boolean;
   onExport: () => void;
@@ -172,7 +173,10 @@ export function ClipFormat(p: {
           </div>
         ) : (
           <div className={`cf-usage${p.usage.remaining_minutes <= 15 ? " low" : ""}`}>
-            {Math.max(0, Math.round(p.usage.remaining_minutes))} min of AI left this month
+            {Math.max(0, Math.round(p.usage.remaining_minutes))} min of AI left this month ·{" "}
+            <button className="cf-usage-buy" onClick={p.onBuyCredits}>
+              Buy more
+            </button>
           </div>
         ))}
       {!finding && p.shorts.length === 0 && (
