@@ -808,6 +808,26 @@ async fn grant(
     Ok(Json(serde_json::json!({ "hwid": hwid, "credit_minutes": (bal / 60.0).round() })))
 }
 
+/// POST /admin/reset {hwid} — wipe a machine's licence + credits + usage
+/// (token-gated). Support tool: undo a test grant, or reset a machine.
+async fn admin_reset(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<UsageQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let want = headers.get("x-admin-token").and_then(|v| v.to_str().ok()).unwrap_or("");
+    match &state.cfg.admin_token {
+        Some(tok) if !tok.is_empty() && want == tok => {}
+        _ => return Err((StatusCode::UNAUTHORIZED, "bad admin token".into())),
+    }
+    let hwid = req.hwid.trim();
+    let db = state.db.lock().unwrap();
+    let licenses = db.execute("DELETE FROM licenses WHERE hwid=?1", [hwid]).unwrap_or(0);
+    let credits = db.execute("DELETE FROM ai_credits WHERE hwid=?1", [hwid]).unwrap_or(0);
+    let usage = db.execute("DELETE FROM ai_usage WHERE hwid=?1", [hwid]).unwrap_or(0);
+    Ok(Json(serde_json::json!({ "hwid": hwid, "licenses": licenses, "credits": credits, "usage": usage })))
+}
+
 // ── Lemon Squeezy payment webhook ────────────────────────────────────
 // User buys a licence or a credit pack; Lemon Squeezy (merchant of record —
 // it handles tax/VAT) POSTs a signed order here. The buyer's machine id rides
@@ -969,6 +989,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/redeem", post(redeem))
         .route("/admin/mint", post(mint))
         .route("/admin/grant", post(grant))
+        .route("/admin/reset", post(admin_reset))
         .route("/webhook/lemonsqueezy", post(lemonsqueezy_webhook))
         .route("/usage", get(usage))
         .route("/highlights", post(highlights))
@@ -1128,6 +1149,30 @@ mod tests {
         assert!(!ls_verify(secret, body, "deadbeef")); // wrong signature fails
         assert!(!ls_verify(b"otherkey", body, &sig)); // wrong secret fails
         assert!(!ls_verify(secret, br#"{"tampered":true}"#, &sig)); // tampered body fails
+    }
+
+    #[test]
+    fn reset_returns_a_machine_to_a_clean_trial() {
+        let t = now();
+        let s = test_state(600.0, 30.0, &[]);
+        let hwid = "resetme000001";
+        {
+            let db = s.db.lock().unwrap();
+            mark_paid(&db, hwid, t);
+            db.execute("INSERT INTO ai_credits (hwid, seconds) VALUES (?1, 6000)", [hwid]).unwrap();
+        }
+        // reset (mirrors admin_reset's deletes)
+        {
+            let db = s.db.lock().unwrap();
+            db.execute("DELETE FROM licenses WHERE hwid=?1", [hwid]).unwrap();
+            db.execute("DELETE FROM ai_credits WHERE hwid=?1", [hwid]).unwrap();
+            db.execute("DELETE FROM ai_usage WHERE hwid=?1", [hwid]).unwrap();
+        }
+        // gone: recreated as a fresh trial (30-min cap), zero credits
+        let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
+        assert!((cap - 1800.0).abs() < 1.0);
+        let db = s.db.lock().unwrap();
+        assert_eq!(ai_credit_secs(&db, hwid), 0.0);
     }
 
     #[test]
