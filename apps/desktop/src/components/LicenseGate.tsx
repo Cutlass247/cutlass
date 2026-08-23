@@ -1,9 +1,5 @@
 import { ReactNode, useCallback, useEffect, useState } from "react";
-import { licenseStatus, licenseRedeem, openUrl, LicenseInfo } from "../ipc";
-
-// Where to send people who want to buy. Wire this to real checkout once
-// pricing lands; for now it points at the project page.
-const PURCHASE_URL = "https://github.com/Cutlass247/cutlass";
+import { licenseStatus, licenseRedeem, openCheckout, LicenseInfo } from "../ipc";
 
 /// Wraps the whole app: verifies entitlement on launch, shows a trial
 /// countdown while active, and blocks the editor behind a paywall once the
@@ -22,6 +18,13 @@ export function LicenseGate({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => {
     check();
+  }, [check]);
+  // re-check when the user returns from the browser (e.g. after buying), so a
+  // purchase flips them to paid without a manual re-check or restart.
+  useEffect(() => {
+    const onFocus = () => check();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [check]);
 
   if (checking && !info) {
@@ -82,7 +85,7 @@ function TrialBanner({ info, onUpgraded }: { info: LicenseInfo; onUpgraded: (i: 
         <button className="lic-banner-btn" onClick={() => setOpen(true)}>
           Enter license key
         </button>
-        <button className="lic-banner-buy" onClick={() => openUrl(PURCHASE_URL)}>
+        <button className="lic-banner-buy" onClick={() => openCheckout("license")}>
           Buy Cutlass
         </button>
       </div>
@@ -134,16 +137,9 @@ function LockScreen({
           </button>
         ) : (
           <>
-            <a
-              className="lic-primary"
-              href={PURCHASE_URL}
-              onClick={(e) => {
-                e.preventDefault();
-                openUrl(PURCHASE_URL);
-              }}
-            >
-              Buy a license
-            </a>
+            <button className="lic-primary" onClick={() => openCheckout("license")}>
+              Buy a license — $49
+            </button>
             <div className="lic-or">or enter a license key</div>
             <RedeemPanel machineId={info.machine_id} onUpgraded={onUpgraded} />
             <button className="lic-link" onClick={onRecheck}>

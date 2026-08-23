@@ -636,6 +636,20 @@ export async function openUrl(url: string): Promise<void> {
   }
 }
 
+/// Lemon Squeezy checkout links (store: cutlass.lemonsqueezy.com).
+export const LS_CHECKOUT = {
+  license: "https://cutlass.lemonsqueezy.com/buy/2305c6fb-2eb1-486d-b2ac-9990156365aa",
+  credits: "https://cutlass.lemonsqueezy.com/buy/045915cf-c5e1-4191-8c69-7a1a260c5c7f",
+} as const;
+
+/// Open a Lemon Squeezy checkout in the browser, carrying THIS machine's id as
+/// custom data so the payment webhook grants the licence/credits to it.
+export async function openCheckout(kind: "license" | "credits"): Promise<void> {
+  const hwid = await licenseMachineId();
+  const url = `${LS_CHECKOUT[kind]}?checkout[custom][hwid]=${encodeURIComponent(hwid)}`;
+  await openUrl(url);
+}
+
 /// Reveal the exported file in the OS file browser.
 export async function revealFile(path: string): Promise<void> {
   if (!inTauri) return;
