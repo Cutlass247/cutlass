@@ -21,6 +21,9 @@
 //!   CUTLASS_AI_TRIAL_MINUTES     trial-licence AI allowance (0/unset = use the
 //!                                monthly cap); keeps a free trial from draining
 //!                                our API credits
+//!   CUTLASS_LS_SIGNING_SECRET    Lemon Squeezy webhook HMAC secret (enables it)
+//!   CUTLASS_LS_LICENSE_VARIANTS  comma-sep LS variant ids that grant a licence
+//!   CUTLASS_LS_CREDIT_VARIANTS   "variantId:minutes,…" credit-pack top-ups
 
 use axum::{
     body::Bytes,
@@ -34,7 +37,7 @@ use cutlass_license::{issue, signing_key_from_b64, Lease, PrivateKey, SignedLeas
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -61,6 +64,12 @@ struct Config {
     /// Trial-license AI allowance in SECONDS (0 = fall back to the monthly cap).
     /// Lets a trial taste the AI without draining our API credits.
     ai_trial_secs: f64,
+    /// Lemon Squeezy webhook HMAC signing secret (None = webhook disabled).
+    ls_signing_secret: Option<String>,
+    /// Lemon Squeezy variant IDs that grant a paid licence.
+    ls_license_variants: HashSet<String>,
+    /// Lemon Squeezy credit-pack variant IDs → minutes granted.
+    ls_credit_variants: HashMap<String, f64>,
 }
 
 #[derive(Clone)]
@@ -98,10 +107,15 @@ fn init_db(conn: &Connection) {
             PRIMARY KEY (hwid, period)
          );
          -- persistent top-up balance (seconds) consumed only after the monthly
-         -- allowance is spent; granted via /admin/grant.
+         -- allowance is spent; granted via /admin/grant or a paid top-up.
          CREATE TABLE IF NOT EXISTS ai_credits (
             hwid         TEXT PRIMARY KEY,
             seconds      REAL NOT NULL DEFAULT 0
+         );
+         -- processed payment webhook ids, so retries don't double-grant.
+         CREATE TABLE IF NOT EXISTS webhook_events (
+            id           TEXT PRIMARY KEY,
+            processed_at INTEGER NOT NULL
          );",
     )
     .expect("init db");
@@ -794,6 +808,103 @@ async fn grant(
     Ok(Json(serde_json::json!({ "hwid": hwid, "credit_minutes": (bal / 60.0).round() })))
 }
 
+// ── Lemon Squeezy payment webhook ────────────────────────────────────
+// User buys a licence or a credit pack; Lemon Squeezy (merchant of record —
+// it handles tax/VAT) POSTs a signed order here. The buyer's machine id rides
+// along in the checkout's custom data, so we grant to the right machine.
+
+/// Constant-time verify of Lemon Squeezy's `X-Signature` (hex HMAC-SHA256).
+fn ls_verify(secret: &[u8], body: &[u8], sig_hex: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret) else {
+        return false;
+    };
+    mac.update(body);
+    let Ok(sig) = hex::decode(sig_hex) else {
+        return false;
+    };
+    mac.verify_slice(&sig).is_ok()
+}
+
+/// Mark an HWID as paid (create the row if it's the first we've seen it).
+fn mark_paid(db: &Connection, hwid: &str, t: i64) {
+    let updated = db
+        .execute(
+            "UPDATE licenses SET status='paid', paid_at=?2, last_seen=?2 WHERE hwid=?1",
+            rusqlite::params![hwid, t],
+        )
+        .unwrap_or(0);
+    if updated == 0 {
+        let _ = db.execute(
+            "INSERT INTO licenses (hwid, status, trial_start, paid_at, created_at, last_seen)
+             VALUES (?1, 'paid', ?2, ?2, ?2, ?2)",
+            rusqlite::params![hwid, t],
+        );
+    }
+}
+
+async fn lemonsqueezy_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let secret = state
+        .cfg
+        .ls_signing_secret
+        .clone()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "payment webhook not configured".into()))?;
+    let sig = headers.get("x-signature").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !ls_verify(secret.as_bytes(), &body, sig) {
+        return Err((StatusCode::UNAUTHORIZED, "bad signature".into()));
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|_| (StatusCode::BAD_REQUEST, "bad json".into()))?;
+
+    // only a genuinely paid one-time order does anything; ack everything else
+    if v["meta"]["event_name"].as_str() != Some("order_created")
+        || v["data"]["attributes"]["status"].as_str() != Some("paid")
+    {
+        return Ok(StatusCode::OK);
+    }
+    let order_id = v["data"]["id"].as_str().unwrap_or("").to_string();
+    let hwid = v["meta"]["custom_data"]["hwid"].as_str().unwrap_or("").trim().to_string();
+    let variant = {
+        let vid = &v["data"]["attributes"]["first_order_item"]["variant_id"];
+        vid.as_str()
+            .map(|s| s.to_string())
+            .or_else(|| vid.as_i64().map(|n| n.to_string()))
+            .unwrap_or_default()
+    };
+    if order_id.is_empty() || hwid.is_empty() || variant.is_empty() {
+        return Ok(StatusCode::OK);
+    }
+
+    let t = now();
+    let db = state.db.lock().unwrap();
+    // idempotency: a retried webhook must not double-grant (the mutex serialises
+    // the check + grant + record, so concurrent retries can't race either)
+    if db.query_row("SELECT 1 FROM webhook_events WHERE id=?1", [&order_id], |_| Ok(())).is_ok() {
+        return Ok(StatusCode::OK);
+    }
+    if state.cfg.ls_license_variants.contains(&variant) {
+        mark_paid(&db, &hwid, t);
+    } else if let Some(mins) = state.cfg.ls_credit_variants.get(&variant) {
+        let _ = db.execute(
+            "INSERT INTO ai_credits (hwid, seconds) VALUES (?1, ?2)
+             ON CONFLICT(hwid) DO UPDATE SET seconds = seconds + ?2",
+            rusqlite::params![hwid, mins * 60.0],
+        );
+    } else {
+        return Ok(StatusCode::OK); // unknown product — ack, grant nothing
+    }
+    let _ = db.execute(
+        "INSERT OR IGNORE INTO webhook_events (id, processed_at) VALUES (?1, ?2)",
+        rusqlite::params![order_id, t],
+    );
+    Ok(StatusCode::OK)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let key_b64 = env::var("CUTLASS_LICENSE_PRIVATE_KEY")
@@ -824,6 +935,22 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(0.0)
             * 60.0,
+        ls_signing_secret: env::var("CUTLASS_LS_SIGNING_SECRET").ok().filter(|s| !s.is_empty()),
+        ls_license_variants: env::var("CUTLASS_LS_LICENSE_VARIANTS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        // "variantId:minutes,variantId:minutes"
+        ls_credit_variants: env::var("CUTLASS_LS_CREDIT_VARIANTS")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|pair| {
+                let (id, mins) = pair.split_once(':')?;
+                Some((id.trim().to_string(), mins.trim().parse::<f64>().ok()?))
+            })
+            .collect(),
     };
 
     let db_path = env::var("CUTLASS_DB_PATH").unwrap_or_else(|_| "cutlass-license.db".into());
@@ -842,6 +969,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/redeem", post(redeem))
         .route("/admin/mint", post(mint))
         .route("/admin/grant", post(grant))
+        .route("/webhook/lemonsqueezy", post(lemonsqueezy_webhook))
         .route("/usage", get(usage))
         .route("/highlights", post(highlights))
         // audio chunks can be a few MB — lift axum's 2 MB default for this route
@@ -881,6 +1009,9 @@ mod tests {
             groq_key: None,
             ai_monthly_secs: cap_minutes * 60.0,
             ai_trial_secs: trial_minutes * 60.0,
+            ls_signing_secret: None,
+            ls_license_variants: HashSet::new(),
+            ls_credit_variants: HashMap::new(),
         };
         // any valid 32-byte key — the signing key is unused by the metering path
         let key = signing_key_from_b64("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=").unwrap();
@@ -982,5 +1113,35 @@ mod tests {
         let (_, paid_cap) = ai_gate(&s, hwid, None, t).unwrap();
         assert!((paid_cap - 600.0).abs() < 0.1);
         assert!(ai_gate(&s, hwid, None, t).is_ok());
+    }
+
+    #[test]
+    fn webhook_signature_verifies() {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let secret = b"whsec_test";
+        let body = br#"{"meta":{"event_name":"order_created"}}"#;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac.update(body);
+        let sig = hex::encode(mac.finalize().into_bytes());
+        assert!(ls_verify(secret, body, &sig)); // correct signature passes
+        assert!(!ls_verify(secret, body, "deadbeef")); // wrong signature fails
+        assert!(!ls_verify(b"otherkey", body, &sig)); // wrong secret fails
+        assert!(!ls_verify(secret, br#"{"tampered":true}"#, &sig)); // tampered body fails
+    }
+
+    #[test]
+    fn mark_paid_promotes_to_the_paid_cap() {
+        let t = now();
+        let s = test_state(600.0, 30.0, &[]); // paid 600 min, trial 30 min
+        let hwid = "paidbyhook0001";
+        {
+            let db = s.db.lock().unwrap();
+            mark_paid(&db, hwid, t); // as the webhook would on a licence purchase
+            assert_eq!(get_or_create(&db, &s.cfg, hwid, None, t).status, "paid");
+        }
+        // a paid machine gets the 600-min cap, not the 30-min trial cap
+        let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
+        assert!((cap - 36_000.0).abs() < 1.0);
     }
 }
