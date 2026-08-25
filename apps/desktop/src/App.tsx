@@ -1746,31 +1746,46 @@ export default function App() {
     const lanes = lanesRef.current;
     if (!lanes) return;
     const rect = lanes.getBoundingClientRect();
-    const sx = e.clientX - rect.left;
-    const sy = e.clientY - rect.top;
-    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
-    const base = additive ? [...selectedIdsRef.current] : [];
-    if (!additive) setSelectedIds([]);
-    let dragged = false;
-    const move = (ev: PointerEvent) => {
-      const cx = ev.clientX - rect.left;
-      const cy = ev.clientY - rect.top;
-      const box = { x: Math.min(sx, cx), y: Math.min(sy, cy), w: Math.abs(cx - sx), h: Math.abs(cy - sy) };
-      if (box.w > 3 || box.h > 3) dragged = true;
-      setMarquee(box);
-      const hit = clipRectsRef.current
-        .filter(
-          (r) =>
-            r.left < box.x + box.w && r.left + r.width > box.x && r.top < box.y + box.h && r.top + r.height > box.y
-        )
-        .map((r) => r.id);
-      setSelectedIds([...new Set([...base, ...hit])]);
-    };
+
+    // Alt+drag = marquee (rubber-band) multi-select; a plain drag scrubs the
+    // playhead (and grabbing the playhead line falls through to here too), so
+    // dragging in the timeline never draws a selection box by surprise.
+    if (e.altKey) {
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const base =
+        e.ctrlKey || e.metaKey || e.shiftKey ? [...selectedIdsRef.current] : (setSelectedIds([]), []);
+      const move = (ev: PointerEvent) => {
+        const cx = ev.clientX - rect.left;
+        const cy = ev.clientY - rect.top;
+        const box = { x: Math.min(sx, cx), y: Math.min(sy, cy), w: Math.abs(cx - sx), h: Math.abs(cy - sy) };
+        setMarquee(box);
+        const hit = clipRectsRef.current
+          .filter(
+            (r) =>
+              r.left < box.x + box.w && r.left + r.width > box.x && r.top < box.y + box.h && r.top + r.height > box.y
+          )
+          .map((r) => r.id);
+        setSelectedIds([...new Set([...base, ...hit])]);
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        setMarquee(null);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      return;
+    }
+
+    // plain: move the playhead to the click and scrub smoothly as you drag
+    setSelectedIds([]);
+    const scrub = (clientX: number) => setPlayhead(Math.max(0, (clientX - rect.left) / ppsRef.current));
+    scrub(e.clientX);
+    const move = (ev: PointerEvent) => scrub(ev.clientX);
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      setMarquee(null);
-      if (!dragged && !additive) setSelectedIds([]); // a plain click clears
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
