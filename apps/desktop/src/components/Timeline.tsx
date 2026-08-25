@@ -62,7 +62,7 @@ export function Timeline(p: {
       <div className="tl-toolbar">
         <Switch label="Snap" checked={p.snap} onChange={p.onSnap} />
         <span className="tl-hint">
-          M marker · drag edges to trim · Shift+Del ripple
+          drag to scrub · Alt+drag to select · drag edges to trim · S split · Shift+Del ripple
         </span>
         <span className="spacer" />
         <span className="tl-zoom-label">🔍</span>
