@@ -657,18 +657,10 @@ export default function App() {
   const [textDraft, setTextDraft] = useState<string | null>(null);
   useEffect(() => setTextDraft(null), [selected]);
 
-  // Selecting a clip parks the playhead on it (only when the playhead is
-  // outside the clip) so the monitor shows the very clip being inspected —
-  // this is what makes Inspector edits preview live, instead of against
-  // some other frame the selected clip isn't even under.
-  useEffect(() => {
-    if (!selected || playingRef.current) return; // never yank the playhead mid-play
-    const clip = clips.find((c) => c.id === selected);
-    if (!clip) return;
-    const ph = playheadRef.current;
-    if (ph < clip.start || ph >= clip.start + clip.len) setPlayhead(clip.start);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected]);
+  // Selecting a clip must NOT move the playhead — every pro NLE (Premiere,
+  // Resolve, CapCut) leaves the playhead put when you click a clip; only the
+  // ruler/scrub or transport moves it. (We used to park it on the clip's start
+  // to keep the monitor on the selected clip, but that jump felt wrong.)
 
   // fxStyle for a clip, merging the selected clip's live drag draft
   const layerStyle = useCallback(
@@ -1590,6 +1582,31 @@ export default function App() {
     [snap, pps, markers, project]
   );
 
+  // Snap a single edge time (used when trimming) to the playhead, other clips'
+  // edges, markers, or 0 — the magnetic feel pro NLEs give trim handles.
+  const snapTime = useCallback(
+    (t: number, excludeId: string): number => {
+      if (!snap) return t;
+      const tol = 8 / pps;
+      const cands = [0, playheadRef.current, ...markers];
+      for (const c of project.clips) {
+        if (c.id === excludeId) continue;
+        cands.push(c.start, c.start + c.len);
+      }
+      let best = t;
+      let bestD = tol;
+      for (const c of cands) {
+        const d = Math.abs(t - c);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
+      }
+      return best;
+    },
+    [snap, pps, markers, project]
+  );
+
   const onRulerPointerDown = useCallback(
     (e: React.PointerEvent) => {
       capture(e);
@@ -1681,13 +1698,14 @@ export default function App() {
       const { orig } = drag;
       const clip = project.clips.find((c) => c.id === drag.clipId);
       const srcLen = clip ? media[clip.media]?.duration_s ?? Infinity : Infinity;
+      const tt = snapTime(t, drag.clipId); // magnetic trim edges
       if (drag.kind === "trim-l") {
-        const d = Math.max(-orig.srcIn, Math.min(t - orig.start, orig.len - MIN_LEN_S));
+        const d = Math.max(-orig.srcIn, Math.min(tt - orig.start, orig.len - MIN_LEN_S));
         const start = orig.start + d;
         setDrag({ ...drag, start, len: orig.len - d, srcIn: orig.srcIn + d });
         setPlayhead(start);
       } else {
-        const len = Math.max(MIN_LEN_S, Math.min(t - orig.start, srcLen - orig.srcIn));
+        const len = Math.max(MIN_LEN_S, Math.min(tt - orig.start, srcLen - orig.srcIn));
         setDrag({ ...drag, len });
         setPlayhead(orig.start + len);
       }
