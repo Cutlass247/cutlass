@@ -1057,22 +1057,32 @@ fn run_export(
                 (
                     "yuva420p",
                     format!(
-                        ",colorkey=0x00D000:similarity={:.3}:blend=0.10",
+                        "colorkey=0x00D000:similarity={:.3}:blend=0.10,",
                         ov.fx.chroma_sim.clamp(0.01, 1.0)
                     ),
                 )
             } else {
                 ("yuv420p", String::new())
             };
+            // grade the overlay with the SAME LGPL-safe filters as the main
+            // program — `eq` is GPL-only and absent from the ffmpeg we ship,
+            // so use lutyuv (brightness/contrast) + hue (saturation).
+            let mut grade = String::new();
+            if ov.fx.brightness.abs() > 1e-9 || (ov.fx.contrast - 1.0).abs() > 1e-9 {
+                grade.push_str(&format!(
+                    "lutyuv=y='clip((val-(maxval+1)/2)*{c:.4}+(maxval+1)/2+({b:.4})*maxval,minval,maxval)',",
+                    c = ov.fx.contrast,
+                    b = ov.fx.brightness
+                ));
+            }
+            if (ov.fx.saturation - 1.0).abs() > 1e-9 || ov.fx.hue != 0.0 {
+                grade.push_str(&format!("hue=h={:.2}:s={:.4},", ov.fx.hue, ov.fx.saturation.max(0.0)));
+            }
             filters.push_str(&format!(
                 "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
                  pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format={pix},\
-                 eq=brightness={b}:contrast={c}:saturation={sat}{key},\
-                 setpts=PTS-STARTPTS+{t0:.3}/TB[ov{j}];\
+                 {grade}{key}setpts=PTS-STARTPTS+{t0:.3}/TB[ov{j}];\
                  [{base}][ov{j}]overlay=eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
-                b = ov.fx.brightness,
-                c = ov.fx.contrast,
-                sat = ov.fx.saturation
             ));
             base = format!("ovd{j}");
         }
