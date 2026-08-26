@@ -157,6 +157,66 @@ pub fn scrub_proxy(path: &Path, duration_s: f64) -> anyhow::Result<(Vec<PathBuf>
     Ok((frames, fps))
 }
 
+/// Transcode `src` to a constant-frame-rate working copy in its cache dir and
+/// return that copy's path. Variable-frame-rate sources (screen recordings
+/// especially) place their frames at irregular timestamps; once such a clip is
+/// cut and reassembled, timeline time no longer maps evenly onto frames and the
+/// audio drifts out of sync — in the preview and the export alike. Editing the
+/// conformed copy instead makes every downstream step (seek, preview, cut,
+/// concat) frame-regular. A prior copy is reused. Hardware encoders are tried
+/// first (they're fast and `-r` makes even QSV accept the stream), software
+/// last so the conform always succeeds somewhere.
+pub fn conform_to_cfr(src: &Path, fps: u32, bitrate: u64) -> anyhow::Result<PathBuf> {
+    ensure_ffmpeg()?;
+    let dir = cache_dir(src)?;
+    let out = dir.join(format!("cfr{fps}.mp4"));
+    if out.exists() {
+        return Ok(out);
+    }
+    // encode to a temp name first so a crash never leaves a half-written file
+    // that later looks like a valid cached conform.
+    let tmp = dir.join(format!("cfr{fps}.partial.mp4"));
+    let src_s = src.to_string_lossy().to_string();
+    let tmp_s = tmp.to_string_lossy().to_string();
+    let maxrate = (bitrate * 3 / 2).to_string();
+    let bufsize = (bitrate * 2).to_string();
+    let b = bitrate.to_string();
+    let r = fps.to_string();
+    for enc in ["h264_qsv", "h264_nvenc", "h264_amf", "libopenh264"] {
+        let _ = std::fs::remove_file(&tmp);
+        let mut cmd = FfmpegCommand::new();
+        cmd.input(src_s.as_str());
+        // -fps_mode cfr + explicit -r rewrites the irregular VFR cadence to a
+        // clean constant rate; audio is left on its own clock so the two align.
+        cmd.args(["-fps_mode", "cfr", "-r", r.as_str()]);
+        cmd.args(["-c:v", enc, "-b:v", b.as_str(), "-maxrate", maxrate.as_str(), "-bufsize", bufsize.as_str()]);
+        if enc.ends_with("_amf") {
+            // AMF only honours the bitrate in CBR; VBR emits a fraction of it.
+            cmd.args(["-rc", "cbr", "-minrate", b.as_str(), "-quality", "2"]);
+        }
+        cmd.args([
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-y",
+            tmp_s.as_str(),
+        ]);
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        // Drain the event stream so ffmpeg's progress spam on stderr can never
+        // fill the pipe and stall a long transcode; then read the exit status.
+        if let Ok(events) = child.iter() {
+            for _ in events {}
+        }
+        let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+        if ok && tmp.exists() {
+            std::fs::rename(&tmp, &out)?;
+            return Ok(out);
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+    anyhow::bail!("no working encoder to conform {}", src.display())
+}
+
 pub fn import(path: &Path) -> anyhow::Result<MediaInfo> {
     let duration_s = probe_duration_s(path)?;
     let (width, height) = probe_dimensions(path);

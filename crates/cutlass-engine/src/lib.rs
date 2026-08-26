@@ -36,6 +36,12 @@ pub struct MediaEngine {
     duration_s: f64,
     width: u32,
     height: u32,
+    /// average frame rate (total frames / duration) and the nominal base rate.
+    /// They match on constant-frame-rate sources and diverge on VFR ones
+    /// (screen recordings), which is how `is_vfr` decides whether the clip
+    /// needs conforming to CFR before editing.
+    avg_fps: f64,
+    r_fps: f64,
     /// streaming-playback cursor: last decoded frame held until the
     /// requested time passes it (avoids per-frame seeks during play).
     pending: Option<ffmpeg::frame::Video>,
@@ -58,6 +64,12 @@ impl MediaEngine {
             kind: ffmpeg::threading::Type::Frame,
             count: 0,
         });
+        // frame rates: average (real cadence) vs nominal base. A rational
+        // with a zero denominator means "unknown"; treat as 0 so is_vfr stays
+        // conservative and never flags a source we can't measure.
+        let rate_f64 = |r: ffmpeg::Rational| if r.denominator() != 0 { f64::from(r) } else { 0.0 };
+        let avg_fps = rate_f64(stream.avg_frame_rate());
+        let r_fps = rate_f64(stream.rate());
         let decoder = ctx.decoder().video()?;
         let duration_s = ictx.duration() as f64 / AV_TIME_BASE as f64;
         let (width, height) = (decoder.width(), decoder.height());
@@ -69,9 +81,28 @@ impl MediaEngine {
             duration_s,
             width,
             height,
+            avg_fps,
+            r_fps,
             pending: None,
             stream_pts: None,
         })
+    }
+
+    /// Average frames-per-second over the whole clip (0 when unknown).
+    pub fn avg_fps(&self) -> f64 {
+        self.avg_fps
+    }
+
+    /// True when the source is variable-frame-rate enough to need conforming
+    /// to constant frame rate before editing. CFR sources report equal average
+    /// and base rates; VFR sources (screen recordings especially) diverge —
+    /// their frames sit at irregular timestamps, which throws audio out of sync
+    /// once the clip is cut and reassembled. A 5% gap is well clear of the
+    /// sub-percent noise a clean CFR file can show from duration rounding.
+    pub fn is_vfr(&self) -> bool {
+        self.avg_fps > 0.5
+            && self.r_fps > 0.5
+            && (self.r_fps - self.avg_fps).abs() > 0.05 * self.r_fps.max(self.avg_fps)
     }
 
     pub fn duration_s(&self) -> f64 {
