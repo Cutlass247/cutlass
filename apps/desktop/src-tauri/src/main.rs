@@ -1219,11 +1219,6 @@ fn play(
             })
             .unwrap_or_default()
     };
-    if !video_clips.is_empty() {
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        *state.video_stop.lock().unwrap() = Some(stop.clone());
-        start_video_thread(app, video_clips, from_t, stop);
-    }
     let tracks: Vec<Vec<cutlass_engine::player::AudioClip>> = {
         let project = state.project.lock().unwrap();
         let media = state.media.lock().unwrap();
@@ -1265,24 +1260,34 @@ fn play(
             })
             .collect()
     };
-    // If nothing has playable audio at all (e.g. the only clip under way
-    // is retimed, so it's filtered out above), don't start the audio
-    // engine — an empty stream reports "ended" immediately and would stop
-    // playback. Returning false makes the UI run its silent local clock so
-    // the video thread keeps streaming to the end of the content.
-    if tracks.iter().all(|t| t.is_empty()) {
-        return false;
+    // Start audio first, then lock the video thread to the audio clock. That
+    // sample-driven clock is the transport's single source of truth; if the
+    // video instead free-runs on wall-clock time it slips ahead of the audio by
+    // the output device's start-up/buffer latency, which is heard as delayed
+    // audio in the preview. (Nothing audible — e.g. every clip under way is
+    // retimed and filtered out — runs silent: the UI's local clock drives the
+    // playhead and the video thread free-runs to the content end.)
+    let audio: Option<cutlass_engine::player::PlaybackHandle> =
+        if tracks.iter().all(|t| t.is_empty()) {
+            None
+        } else {
+            match cutlass_engine::player::start(tracks, from_t) {
+                Ok(handle) => {
+                    *state.playback.lock().unwrap() = Some(handle.clone());
+                    Some(handle)
+                }
+                Err(e) => {
+                    eprintln!("audio unavailable, playing silent: {e:#}");
+                    None
+                }
+            }
+        };
+    if !video_clips.is_empty() {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *state.video_stop.lock().unwrap() = Some(stop.clone());
+        start_video_thread(app, video_clips, from_t, stop, audio.clone());
     }
-    match cutlass_engine::player::start(tracks, from_t) {
-        Ok(handle) => {
-            *state.playback.lock().unwrap() = Some(handle);
-            true
-        }
-        Err(e) => {
-            eprintln!("audio unavailable, playing silent: {e:#}");
-            false
-        }
-    }
+    audio.is_some()
 }
 
 /// Stop audio + video playback; returns where audio stopped.
@@ -1344,6 +1349,7 @@ fn start_video_thread(
     clips: Vec<PlayClip>,
     from_t: f64,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    audio: Option<cutlass_engine::player::PlaybackHandle>,
 ) {
     use std::sync::atomic::Ordering;
     use std::time::{Duration, Instant};
@@ -1356,7 +1362,13 @@ fn start_video_thread(
             let start = Instant::now();
             let mut next = start + frame_dur;
             while !stop.load(Ordering::Relaxed) {
-                let t = from_t + start.elapsed().as_secs_f64();
+                // Follow the audio clock when there's sound (it only advances as
+                // samples reach the device, so video can't outrun audio); fall
+                // back to wall-clock time for silent playback.
+                let t = match &audio {
+                    Some(h) => h.clock(),
+                    None => from_t + start.elapsed().as_secs_f64(),
+                };
                 // topmost visible clip under the playhead (V2 over V1)
                 let active = clips
                     .iter()

@@ -52,6 +52,7 @@ struct Shared {
     base_t: f64,
 }
 
+#[derive(Clone)]
 pub struct PlaybackHandle {
     shared: Arc<Shared>,
 }
