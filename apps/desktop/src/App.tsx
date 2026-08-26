@@ -455,6 +455,14 @@ export default function App() {
     () => clips.find((c) => c.id === selected) ?? null,
     [clips, selected]
   );
+  // With several clips selected, the colour-grade panel binds to the first of
+  // them (its slider values + live preview), and a grade commits to the whole
+  // selection — so you can grade many clips at once. Falls back to the single
+  // selected clip.
+  const primaryClip = useMemo(
+    () => selectedClip ?? clips.find((c) => c.id === selectedIds[0]) ?? null,
+    [clips, selectedClip, selectedIds]
+  );
   // keep clip rectangles (lanes content coords) current for marquee hit-testing
   useEffect(() => {
     clipRectsRef.current = clips.map((c) => {
@@ -651,7 +659,7 @@ export default function App() {
 
   // ── effects: live preview draft for the selected clip ───────────────
   const [fxDraft, setFxDraft] = useState<Record<string, number>>({});
-  useEffect(() => setFxDraft({}), [selected]); // reset when selection changes
+  useEffect(() => setFxDraft({}), [selectedIds]); // reset when selection changes
   // live title-text draft: typing previews on the monitor before the blur
   // commit, so titles read WYSIWYG just like the effect sliders
   const [textDraft, setTextDraft] = useState<string | null>(null);
@@ -665,13 +673,13 @@ export default function App() {
   // fxStyle for a clip, merging the selected clip's live drag draft
   const layerStyle = useCallback(
     (clip: Clip): React.CSSProperties => {
-      const draftApplies = clip.id === selected && Object.keys(fxDraft).length > 0;
+      const draftApplies = selectedIds.includes(clip.id) && Object.keys(fxDraft).length > 0;
       const effClip = draftApplies
         ? { ...clip, fx: { ...(clip.fx ?? {}), ...fxDraft } }
         : clip;
       return fxStyle(effClip, playhead);
     },
-    [selected, fxDraft, playhead]
+    [selectedIds, fxDraft, playhead]
   );
 
   // what the monitor renders, bottom→top. While playing, the real-time
@@ -682,7 +690,7 @@ export default function App() {
       const top = i === videoLayers.length - 1;
       const live = playing && playFrame && top ? playFrame : null;
       const settled = top && hq && hq.key === hqKey ? hq.src : null;
-      const draft = l.clip.id === selected ? fxDraft : {};
+      const draft = selectedIds.includes(l.clip.id) ? fxDraft : {};
       return {
         key: l.clip.id,
         src: live ?? settled ?? thumbAt(l.media, l.srcT),
@@ -692,47 +700,50 @@ export default function App() {
         lut: l.clip.lut ? lutCache[l.clip.lut] ?? null : null,
       };
     });
-  }, [videoLayers, playing, playFrame, hq, hqKey, layerStyle, selected, fxDraft, lutCache]);
+  }, [videoLayers, playing, playFrame, hq, hqKey, layerStyle, selectedIds, fxDraft, lutCache]);
 
   // vignette is a monitor overlay (not a CSS filter) — driven by the
   // topmost clip, honouring the selected clip's live drag draft
   const monitorOverlay = useMemo(() => {
     const clip = underPlayhead?.clip;
     if (!clip) return { vignette: 0, grain: 0 };
-    const draft = clip.id === selected ? fxDraft : {};
+    const draft = selectedIds.includes(clip.id) ? fxDraft : {};
     const val = (k: string) => draft[k] ?? clip.fx?.[k] ?? 0;
     return { vignette: val("vignette"), grain: val("grain") };
-  }, [underPlayhead, selected, fxDraft]);
+  }, [underPlayhead, selectedIds, fxDraft]);
 
   const onFxPreview = useCallback(
     (key: string, v: number) => setFxDraft((d) => ({ ...d, [key]: v })),
     []
   );
-  const onFxCommit = useCallback(
-    (key: string, v: number) => {
-      if (!selected) return;
-      setEffect(selected, key, v)
-        .then((snap) => {
-          applyEdit(snap);
-          setFxDraft({}); // drop the drag draft so real/keyframed values show
-        })
-        .catch((e) => setError(String(e)));
+  // Apply a grade/effect edit to every selected clip in turn (each backend
+  // call mutates the shared doc, so the final snapshot carries them all), then
+  // commit once. One selected clip → just that clip; many → grade them together.
+  const commitToSelection = useCallback(
+    async (edit: (id: string) => Promise<ProjectSnapshot>) => {
+      const ids = selectedIdsRef.current;
+      if (!ids.length) return;
+      let snap: ProjectSnapshot | null = null;
+      for (const id of ids) snap = await edit(id);
+      if (snap) applyEdit(snap);
+      setFxDraft({}); // drop the drag draft so real/keyframed values show
     },
-    [selected, applyEdit]
+    [applyEdit]
   );
 
-  // Effects tab: drop a Look / effect preset (a bundle of fx) on the clip
+  const onFxCommit = useCallback(
+    (key: string, v: number) => {
+      commitToSelection((id) => setEffect(id, key, v)).catch((e) => setError(String(e)));
+    },
+    [commitToSelection]
+  );
+
+  // Effects tab: drop a Look / effect preset (a bundle of fx) on the clip(s)
   const onApplyEffect = useCallback(
     (params: Record<string, number>) => {
-      if (!selected) return;
-      setEffects(selected, params)
-        .then((snap) => {
-          applyEdit(snap);
-          setFxDraft({});
-        })
-        .catch((e) => setError(String(e)));
+      commitToSelection((id) => setEffects(id, params)).catch((e) => setError(String(e)));
     },
-    [selected, applyEdit]
+    [commitToSelection]
   );
 
   // Is this effect currently engaged on the selected clip? True when every
@@ -741,7 +752,7 @@ export default function App() {
   // opposite presets (Warmer vs Cooler) stay mutually exclusive.
   const effectActive = useCallback(
     (params: Record<string, number>) => {
-      const fx = selectedClip?.fx ?? {};
+      const fx = primaryClip?.fx ?? {};
       return Object.entries(params).every(([k, v]) => {
         const def = FX_DEFAULTS[k] ?? 0;
         if (v === def) return true; // this param doesn't distinguish the effect
@@ -749,20 +760,20 @@ export default function App() {
         return v > def ? cur > def + 1e-6 : cur < def - 1e-6;
       });
     },
-    [selectedClip]
+    [primaryClip]
   );
 
   // Click an effect chip: apply it, or — if it's already on — toggle it off
   // by resetting its params to their defaults. No more undo-to-remove.
   const onToggleEffect = useCallback(
     (params: Record<string, number>) => {
-      if (!selected) return;
+      if (!selectedIdsRef.current.length) return;
       const next = effectActive(params)
         ? Object.fromEntries(Object.keys(params).map((k) => [k, FX_DEFAULTS[k] ?? 0]))
         : params;
       onApplyEffect(next);
     },
-    [selected, effectActive, onApplyEffect]
+    [effectActive, onApplyEffect]
   );
 
   // load (parse) any .cube LUT a clip references, once, for the GPU preview
@@ -778,11 +789,14 @@ export default function App() {
   }, [project.clips]);
 
   const onImportLut = useCallback(async () => {
-    if (!selected) return;
+    const ids = selectedIdsRef.current;
+    if (!ids.length) return;
     const path = await pickLut();
     if (!path) return;
     try {
-      applyEdit(await setLut(selected, path));
+      let snap: ProjectSnapshot | null = null;
+      for (const id of ids) snap = await setLut(id, path);
+      if (snap) applyEdit(snap);
       if (!lutLoading.current.has(path)) {
         lutLoading.current.add(path);
         readTextFile(path)
@@ -792,15 +806,18 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
-  }, [selected, applyEdit]);
+  }, [applyEdit]);
   const onRemoveLut = useCallback(async () => {
-    if (!selected) return;
+    const ids = selectedIdsRef.current;
+    if (!ids.length) return;
     try {
-      applyEdit(await setLut(selected, ""));
+      let snap: ProjectSnapshot | null = null;
+      for (const id of ids) snap = await setLut(id, "");
+      if (snap) applyEdit(snap);
     } catch (e) {
       setError(String(e));
     }
-  }, [selected, applyEdit]);
+  }, [applyEdit]);
 
   // Custom Looks: save the selected clip's colour grade as a reusable Look
   const LOOK_KEYS = ["brightness", "contrast", "saturation", "temperature", "tint", "hue", "vignette"];
@@ -809,14 +826,14 @@ export default function App() {
     localStorage.setItem("cutlass-looks", JSON.stringify(looks));
   }, []);
   const onSaveLook = useCallback(() => {
-    if (!selectedClip) return;
+    if (!primaryClip) return;
     const params: Record<string, number> = {};
-    for (const k of LOOK_KEYS) params[k] = selectedClip.fx?.[k] ?? FX_DEFAULTS[k] ?? 0;
+    for (const k of LOOK_KEYS) params[k] = primaryClip.fx?.[k] ?? FX_DEFAULTS[k] ?? 0;
     const name = window.prompt("Name this Look:", `My Look ${customLooks.length + 1}`);
     if (!name) return;
     persistLooks([...customLooks.filter((l) => l.name !== name), { name: name.trim(), params }]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedClip, customLooks, persistLooks]);
+  }, [primaryClip, customLooks, persistLooks]);
   const onDeleteLook = useCallback(
     (name: string) => persistLooks(customLooks.filter((l) => l.name !== name)),
     [customLooks, persistLooks]
@@ -1609,6 +1626,10 @@ export default function App() {
 
   const onRulerPointerDown = useCallback(
     (e: React.PointerEvent) => {
+      // the playhead grab-strip lives inside .lanes, so without this the same
+      // press would bubble to onLanesPointerDown and start a marquee on top of
+      // the scrub. (The ruler is a sibling of .lanes, so this is a no-op there.)
+      e.stopPropagation();
       capture(e);
       scrubTo(e.clientX);
     },
@@ -1747,45 +1768,32 @@ export default function App() {
     if (!lanes) return;
     const rect = lanes.getBoundingClientRect();
 
-    // Alt+drag = marquee (rubber-band) multi-select; a plain drag scrubs the
-    // playhead (and grabbing the playhead line falls through to here too), so
-    // dragging in the timeline never draws a selection box by surprise.
-    if (e.altKey) {
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      const base =
-        e.ctrlKey || e.metaKey || e.shiftKey ? [...selectedIdsRef.current] : (setSelectedIds([]), []);
-      const move = (ev: PointerEvent) => {
-        const cx = ev.clientX - rect.left;
-        const cy = ev.clientY - rect.top;
-        const box = { x: Math.min(sx, cx), y: Math.min(sy, cy), w: Math.abs(cx - sx), h: Math.abs(cy - sy) };
-        setMarquee(box);
-        const hit = clipRectsRef.current
-          .filter(
-            (r) =>
-              r.left < box.x + box.w && r.left + r.width > box.x && r.top < box.y + box.h && r.top + r.height > box.y
-          )
-          .map((r) => r.id);
-        setSelectedIds([...new Set([...base, ...hit])]);
-      };
-      const up = () => {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-        setMarquee(null);
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
-      return;
-    }
-
-    // plain: move the playhead to the click and scrub smoothly as you drag
-    setSelectedIds([]);
-    const scrub = (clientX: number) => setPlayhead(Math.max(0, (clientX - rect.left) / ppsRef.current));
-    scrub(e.clientX);
-    const move = (ev: PointerEvent) => scrub(ev.clientX);
+    // A plain mouse-drag on empty lane space draws a marquee (rubber-band)
+    // selection — like Premiere / Resolve / CapCut. Ctrl/Shift/Cmd extends the
+    // current selection. Scrubbing lives on the ruler and the playhead line
+    // (see .playhead-grab), so dragging here never moves the playhead by
+    // surprise, and a bare click on empty space clears the selection.
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+    const base = additive ? [...selectedIdsRef.current] : (setSelectedIds([]), []);
+    const move = (ev: PointerEvent) => {
+      const cx = ev.clientX - rect.left;
+      const cy = ev.clientY - rect.top;
+      const box = { x: Math.min(sx, cx), y: Math.min(sy, cy), w: Math.abs(cx - sx), h: Math.abs(cy - sy) };
+      setMarquee(box);
+      const hit = clipRectsRef.current
+        .filter(
+          (r) =>
+            r.left < box.x + box.w && r.left + r.width > box.x && r.top < box.y + box.h && r.top + r.height > box.y
+        )
+        .map((r) => r.id);
+      setSelectedIds([...new Set([...base, ...hit])]);
+    };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      setMarquee(null);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -2249,7 +2257,7 @@ export default function App() {
             onTranscribe={(id) => doTranscribe(id, transcribeMode === "fast")}
             onMediaPointerDown={onMediaPointerDown}
             onRemoveMedia={onRemoveMedia}
-            hasSelection={selected !== null}
+            hasSelection={selectedIds.length > 0}
             onApplyEffect={onApplyEffect}
             onToggleEffect={onToggleEffect}
             effectActive={effectActive}
@@ -2260,7 +2268,7 @@ export default function App() {
             customLooks={customLooks}
             onSaveLook={onSaveLook}
             onDeleteLook={onDeleteLook}
-            selectedLut={selectedClip?.lut || ""}
+            selectedLut={primaryClip?.lut || ""}
             onImportLut={onImportLut}
             onRemoveLut={onRemoveLut}
             busy={busy !== null}
@@ -2295,7 +2303,7 @@ export default function App() {
         <div style={{ width: rightW, display: "flex", minWidth: 0 }}>
           <Inspector
             mode={mode}
-            clip={selectedClip}
+            clip={primaryClip}
             media={media}
             onMove={(id, track, start) =>
               moveClip(id, track, Math.max(0, start)).then(applyEdit).catch((e) => setError(String(e)))

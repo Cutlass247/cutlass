@@ -62,7 +62,7 @@ export function Timeline(p: {
       <div className="tl-toolbar">
         <Switch label="Snap" checked={p.snap} onChange={p.onSnap} />
         <span className="tl-hint">
-          drag to scrub · Alt+drag to select · drag edges to trim · S split · Shift+Del ripple
+          drag empty space to select · drag the playhead to scrub · drag edges to trim · S split · Shift+Del ripple
         </span>
         <span className="spacer" />
         <span className="tl-zoom-label">🔍</span>
@@ -221,6 +221,14 @@ export function Timeline(p: {
                 </div>
               ))}
               <div className="playhead" style={{ left: p.playhead * p.pps }}>
+                {/* grab the whole playhead line to scrub — dragging it never
+                    draws a marquee (empty-lane drag does that instead) */}
+                <div
+                  className="playhead-grab"
+                  title="Drag to move the playhead"
+                  onPointerDown={p.onRulerPointerDown}
+                  onPointerMove={p.onRulerPointerMove}
+                />
                 <div
                   className="playhead-head"
                   title="Drag to move the playhead"
