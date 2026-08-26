@@ -548,7 +548,7 @@ export default function App() {
         (c) =>
           `${c.id}|${c.track}|${c.start}|${c.len}|${c.src_in}|${c.media}|${c.text ? "t" : ""}|${
             c.fx?.volume ?? 1
-          }|${c.fx?.speed ?? 1}`
+          }|${c.fx?.speed ?? 1}|${c.fx?.audio_offset ?? 0}`
       )
       .join(",");
     const mutes = Object.entries(trackCtl)

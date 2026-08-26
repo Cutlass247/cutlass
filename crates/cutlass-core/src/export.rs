@@ -82,6 +82,7 @@ pub struct ClipFx {
     pub fade_out: f64,   // seconds
     pub volume: f64,     // 1
     pub speed: f64,      // 1 (2 = 2× faster, 0.5 = slow-mo)
+    pub audio_offset: f64, // 0 — seconds to slip audio vs video (+later, -earlier)
     // up to 3 censor regions. Each field is keyframeable (censor_x,
     // censor2_x, censor3_x …) so a box can follow a moving subject.
     pub censor: [CensorSlot; 3],
@@ -113,6 +114,7 @@ impl Default for ClipFx {
             fade_out: 0.0,
             volume: 1.0,
             speed: 1.0,
+            audio_offset: 0.0,
             censor: [CensorSlot::default(), CensorSlot::default(), CensorSlot::default()],
         }
     }
@@ -160,6 +162,7 @@ impl ClipFx {
             "fade_in" => self.fade_in = v,
             "fade_out" => self.fade_out = v,
             "volume" => self.volume = v,
+            "audio_offset" => self.audio_offset = v,
             _ => {
                 if let Some((i, f)) = parse_censor(key) {
                     let s = &mut self.censor[i];
@@ -216,6 +219,7 @@ impl ClipFx {
             fade_in: g("fade_in", d.fade_in),
             fade_out: g("fade_out", d.fade_out),
             volume: g("volume", d.volume),
+            audio_offset: g("audio_offset", d.audio_offset),
             speed: {
                 let s = g("speed", d.speed);
                 if s > 0.05 { s } else { 1.0 }
@@ -573,6 +577,24 @@ fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
             (len - fx.fade_out).max(0.0),
             fx.fade_out
         ));
+    }
+    // audio offset: slip the audio against the video to fix baked-in A/V sync
+    // (e.g. an OBS recording whose audio lags the picture). Applied last, on the
+    // already-`len`-long audio, and re-pinned to exactly `len` so the segment
+    // stays frame-locked to its video and the downstream concat never drifts.
+    // Negative pulls audio earlier (drop the head, pad the tail); positive
+    // pushes it later (pad the head, trim the tail).
+    if fx.audio_offset.abs() > 1e-4 {
+        if fx.audio_offset < 0.0 {
+            c.push_str(&format!(
+                ",atrim=start={:.4},asetpts=PTS-STARTPTS,apad",
+                -fx.audio_offset
+            ));
+        } else {
+            let ms = (fx.audio_offset * 1000.0).round().max(0.0) as i64;
+            c.push_str(&format!(",adelay={ms}|{ms}"));
+        }
+        c.push_str(&format!(",atrim=end={len:.4},asetpts=PTS-STARTPTS"));
     }
     c.push_str(&format!("[a{k}];"));
     c
