@@ -37,6 +37,10 @@ pub struct AudioClip {
     /// resample (pitch follows speed); export is atempo pitch-corrected.
     #[serde(default = "unity_gain")]
     pub speed: f64,
+    /// seconds to slip this clip's audio against its video (+ later, - earlier)
+    /// to correct baked-in A/V sync; 0 when absent.
+    #[serde(default)]
+    pub audio_offset: f64,
 }
 
 fn unity_gain() -> f64 {
@@ -137,7 +141,11 @@ impl TrackReader {
                     let clip_end = clip.start + clip.len;
                     let speed = clip.speed.max(0.01);
                     if self.active.as_ref().map(|a| a.idx) != Some(idx) {
-                        let src_t = clip.src_in + (self.t - clip.start) * speed;
+                        // audio_offset slips the source read point so the audio
+                        // plays earlier/later than the picture (baked-in A/V fix).
+                        let src_t = (clip.src_in + (self.t - clip.start) * speed
+                            - clip.audio_offset * speed)
+                            .max(0.0);
                         let dec = AudioDecoder::open(&clip.path, self.rate)
                             .and_then(|mut d| {
                                 d.seek(src_t)?;

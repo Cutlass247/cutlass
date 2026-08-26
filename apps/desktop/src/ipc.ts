@@ -91,6 +91,7 @@ export const FX_DEFAULTS: Record<string, number> = {
   fade_out: 0,
   volume: 1,
   speed: 1,
+  audio_offset: 0, // seconds to slip audio vs video (+later, -earlier)
   // censor boxes (up to 3): 0 off / 1 blur / 2 pixelate / 3 solid; x/y = box
   // centre, w/h = box size (fraction of frame), str = 0..1 strength.
   censor: 0,

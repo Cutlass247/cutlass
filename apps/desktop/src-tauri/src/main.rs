@@ -1252,6 +1252,7 @@ fn play(
                                     src_in: c["src_in"].as_f64()?,
                                     volume: c["fx"]["volume"].as_f64().unwrap_or(1.0),
                                     speed: c["fx"]["speed"].as_f64().unwrap_or(1.0),
+                                    audio_offset: c["fx"]["audio_offset"].as_f64().unwrap_or(0.0),
                                 })
                             })
                             .collect()
