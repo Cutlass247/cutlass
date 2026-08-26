@@ -786,6 +786,14 @@ fn output_args(
     // export time and made the progress bar fill then reset.
     let cbr = cbr || encoder.ends_with("_amf");
     let mut a = vec![s("-c:v"), s(encoder)];
+    // Constant frame rate + explicit output rate. Two reasons:
+    //  1. h264_qsv/hevc_qsv reject the filtergraph's timebase outright
+    //     ("Current frame rate is unsupported") unless an explicit -r is given,
+    //     so without this the Intel path silently fails and falls back.
+    //  2. CFR stops audio drifting against video: at higher resolutions the
+    //     encoder lags and a variable frame cadence lets the two clocks slip,
+    //     which is what surfaced as "audio delayed" on 4K exports.
+    a.extend([s("-fps_mode"), s("cfr"), s("-r"), fps.to_string()]);
     match format {
         ExportFormat::Mp4H264 => {
             a.extend(rate_args(width, height, fps, quality, false, cbr));
@@ -1099,11 +1107,15 @@ fn run_export(
             overlay_audio.push(format!("[oa{j}]"));
         }
     }
+    // Final audio tap. aresample=async=1:first_pts=0 pins the first sample to
+    // PTS 0 and lets the resampler absorb any gap by (de)stretching rather than
+    // shifting, so audio can't slide out from under the video — the other half
+    // of the CFR fix for A/V drift on heavier (4K) exports.
     if overlay_audio.is_empty() {
-        filters.push_str("[cata]anull[outa];");
+        filters.push_str("[cata]aresample=async=1:first_pts=0[outa];");
     } else {
         filters.push_str(&format!(
-            "[cata]{}amix=inputs={}:duration=first:normalize=0[outa];",
+            "[cata]{}amix=inputs={}:duration=first:normalize=0,aresample=async=1:first_pts=0[outa];",
             overlay_audio.join(""),
             overlay_audio.len() + 1
         ));
