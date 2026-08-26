@@ -7,7 +7,7 @@
 mod license;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -234,13 +234,57 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
     })
 }
 
+/// Variable-frame-rate sources (screen recordings, many phone clips) place
+/// their frames at irregular timestamps; cutting and reassembling them drifts
+/// the audio out of sync in both the preview and the export. Detect that on
+/// import and transcode a constant-frame-rate working copy to edit against.
+/// Returns the conformed path, or None to keep using the original as-is.
+fn conform_if_vfr(path: &Path) -> Option<PathBuf> {
+    let (vfr, avg, w, h) = {
+        let eng = cutlass_engine::MediaEngine::open(&path.to_string_lossy()).ok()?;
+        let (w, h) = eng.dimensions();
+        (eng.is_vfr(), eng.avg_fps(), w, h)
+    };
+    if !vfr {
+        return None;
+    }
+    // 30 for typical screen recordings, 60 when the average cadence is high.
+    let fps = if avg > 40.0 { 60 } else { 30 };
+    // generous bitrate so the working copy doesn't cap the final export's
+    // quality; screen content compresses well, so this is rarely the ceiling.
+    let bitrate = ((w as u64 * h as u64 * fps as u64) / 5).max(12_000_000);
+    match media::conform_to_cfr(path, fps, bitrate) {
+        Ok(p) => {
+            eprintln!("conformed VFR source to {fps}fps CFR: {}", p.display());
+            Some(p)
+        }
+        Err(e) => {
+            eprintln!("VFR conform failed ({e:#}); importing original");
+            None
+        }
+    }
+}
+
 /// Engine first; ffmpeg-CLI fallback for containers libav chokes on.
 fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
-    import_with_engine(path).or_else(|e| {
+    let conformed = conform_if_vfr(path);
+    let working = conformed.as_deref().unwrap_or(path);
+    let mut info = import_with_engine(working).or_else(|e| {
         eprintln!("engine import failed ({e:#}); falling back to ffmpeg CLI");
         media::ensure_ffmpeg()?;
-        media::import(path)
-    })
+        media::import(working)
+    })?;
+    // Keep the media's identity tied to the ORIGINAL file: the bin shows its
+    // real name and re-importing the same source stays idempotent. `path`
+    // (used for preview + export) points at the conformed CFR copy.
+    if conformed.is_some() {
+        info.id = format!("m{:016x}", media::path_hash(path));
+        info.name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "clip".into());
+    }
+    Ok(info)
 }
 
 /// Import a video: probe, build scrub proxy, register it in the media
