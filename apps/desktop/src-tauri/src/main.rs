@@ -1044,6 +1044,97 @@ async fn transcribe_media(
     Ok(words)
 }
 
+/// Find the MDX vocal-separation model, same layered lookup as the whisper one:
+/// env override, then beside the exe (where the bundler drops it), then — in
+/// dev — walking up to vendor/mdx/.
+fn mdx_model_path() -> Result<std::path::PathBuf, String> {
+    if let Ok(p) = std::env::var("CUTLASS_MDX_MODEL") {
+        return Ok(p.into());
+    }
+    const NAME: &str = "UVR-MDX-NET-Voc_FT.onnx";
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for cand in [dir.join(NAME), dir.join("mdx").join(NAME)] {
+                if cand.is_file() {
+                    return Ok(cand);
+                }
+            }
+        }
+    }
+    let mut dir = std::env::current_dir().map_err(err_str)?;
+    loop {
+        let candidate = dir.join("vendor").join("mdx").join(NAME);
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        if !dir.pop() {
+            return Err("music-removal model not found (looked beside the app and in vendor/mdx/)".into());
+        }
+    }
+}
+
+/// On-device "remove background music": separate a source media's audio into
+/// vocals vs. the rest and cache the vocals as vocals.wav next to its proxies.
+/// Clips that reference this media can then flip fx.music_removed to play/export
+/// the vocals track. Runs on a worker thread, streaming progress; reuses a prior
+/// separation. Private and free — the audio never leaves the machine.
+#[tauri::command]
+async fn remove_music(
+    media_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use tauri::Emitter;
+    let path = state
+        .media
+        .lock()
+        .unwrap()
+        .get(&media_id)
+        .map(|m| m.path.clone())
+        .ok_or_else(|| format!("unknown media {media_id}"))?;
+    let out = cutlass_core::media::vocals_path(Path::new(&path)).map_err(err_str)?;
+    // reuse an existing separation (idempotent — toggling off then on is free)
+    if out.exists() {
+        let _ = app.emit("remove-music-progress", serde_json::json!({ "media": media_id, "pct": 100 }));
+        return Ok(());
+    }
+    let model = mdx_model_path()?;
+    let out_s = out.to_string_lossy().to_string();
+    let app2 = app.clone();
+    let mid = media_id.clone();
+    let last = std::sync::Arc::new(AtomicI32::new(-1));
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        // Decode the source to a clean 44.1 kHz stereo WAV first (ffmpeg handles
+        // any container/layout), then separate. Write the result to a partial
+        // file and rename, so a crash never leaves a truncated vocals.wav that
+        // later looks like a valid cached separation.
+        let tmp_in = format!("{out_s}.src.wav");
+        let tmp_out = format!("{out_s}.partial.wav");
+        cutlass_core::media::decode_audio_wav(
+            std::path::Path::new(&path),
+            std::path::Path::new(&tmp_in),
+            44_100,
+        )?;
+        let res =
+            cutlass_engine::separate::remove_music(&tmp_in, &model.to_string_lossy(), &tmp_out, move |p| {
+                let pct = (p * 100.0) as i32;
+                if last.swap(pct, Ordering::Relaxed) != pct {
+                    let _ = app2.emit("remove-music-progress", serde_json::json!({ "media": mid, "pct": pct }));
+                }
+            });
+        let _ = std::fs::remove_file(&tmp_in);
+        res?;
+        std::fs::rename(&tmp_out, &out_s)?;
+        Ok(())
+    })
+    .await
+    .map_err(err_str)?
+    .map_err(err_str)?;
+    let _ = app.emit("remove-music-progress", serde_json::json!({ "media": media_id, "pct": 100 }));
+    Ok(())
+}
+
 /// Cloud transcription (the OpusClip speed path): extract the audio into
 /// ~10-min FLAC chunks with the bundled ffmpeg, upload them to the server (→
 /// Groq GPUs) in PARALLEL, and merge the word timestamps. Minutes of on-device
@@ -1817,6 +1908,7 @@ fn main() {
             pause,
             playback_clock,
             transcribe_media,
+            remove_music,
             razor_out,
             save_project,
             take_startup_file,

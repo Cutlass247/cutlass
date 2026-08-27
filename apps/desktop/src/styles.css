@@ -1807,6 +1807,33 @@ button {
   z-index: 6;
 }
 
+/* Remove-music control in the Inspector */
+.music-removal {
+  margin: 8px 0 4px;
+}
+.music-btn {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.music-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.music-btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.music-btn:disabled {
+  opacity: 0.75;
+  cursor: default;
+}
+
 /* invisible grab strip over the full playhead line — drag anywhere on the
    line to scrub. Kept narrow so it barely eats into clip click area. */
 .playhead-grab {

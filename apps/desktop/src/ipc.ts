@@ -488,6 +488,33 @@ export async function onTranscribeProgress(
   );
 }
 
+/// On-device background-music removal for a source media: separates the audio
+/// and caches a vocals-only track. Clips from that media then set fx.music_removed
+/// to use it. Streams progress via onRemoveMusicProgress.
+const mockMusicCbs = new Set<(media: string, pct: number) => void>();
+export async function removeMusic(mediaId: string): Promise<void> {
+  if (!inTauri) {
+    for (let p = 0; p <= 100; p += 10) {
+      mockMusicCbs.forEach((cb) => cb(mediaId, p));
+      await new Promise((r) => setTimeout(r, 80));
+    }
+    return;
+  }
+  return invoke<void>("remove_music", { mediaId });
+}
+export async function onRemoveMusicProgress(
+  cb: (media: string, pct: number) => void
+): Promise<() => void> {
+  if (!inTauri) {
+    mockMusicCbs.add(cb);
+    return () => mockMusicCbs.delete(cb);
+  }
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ media: string; pct: number }>("remove-music-progress", (e) =>
+    cb(e.payload.media, e.payload.pct)
+  );
+}
+
 /// Add a title clip on V2 at `start` (default lower-third style).
 export async function addTitle(start: number): Promise<ProjectSnapshot> {
   if (!inTauri) {

@@ -40,6 +40,8 @@ import {
   onExportProgress,
   onTrackProgress,
   onTranscribeProgress,
+  removeMusic,
+  onRemoveMusicProgress,
   onPlaybackFrame,
   onPresence,
   onProjectChanged,
@@ -170,6 +172,9 @@ export default function App() {
   const [transcribing, setTranscribing] = useState<string | null>(null);
   // per-media transcription progress (0..100), shown on the Add captions button
   const [transcribeProgress, setTranscribeProgress] = useState<Record<string, number>>({});
+  // per-media music-removal progress (0..100) while a separation job runs; the
+  // key is absent when idle.
+  const [musicPct, setMusicPct] = useState<Record<string, number>>({});
   const [wordSel, setWordSel] = useState<{ media: string; a: number; b: number } | null>(null);
   const [room, setRoom] = useState<string | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -388,6 +393,9 @@ export default function App() {
     const unTx = onTranscribeProgress((media, pct) =>
       setTranscribeProgress((prev) => ({ ...prev, [media]: pct }))
     );
+    const unMusic = onRemoveMusicProgress((media, pct) =>
+      setMusicPct((prev) => ({ ...prev, [media]: pct }))
+    );
     const unFrame = onPlaybackFrame((_t, src) => setPlayFrame(src));
     const unPresence = onPresence((p) =>
       setPeers((prev) => ({ ...prev, [p.id]: { ...p, ts: Date.now() } }))
@@ -407,6 +415,7 @@ export default function App() {
       unTrack.then((f) => f());
       unTx.then((f) => f());
       unFrame.then((f) => f());
+      unMusic.then((f) => f());
       unPresence.then((f) => f());
       clearInterval(prune);
     };
@@ -818,6 +827,36 @@ export default function App() {
       setError(String(e));
     }
   }, [applyEdit]);
+
+  // Remove music: on first use, separate this clip's source into a vocals track
+  // (cached per media, so re-toggling and other cuts of the same source are
+  // free), then flip fx.music_removed so preview + export use it. When already
+  // on, just clear the flag to restore the original audio.
+  const onRemoveMusic = useCallback(
+    (clip: Clip) => {
+      if (!clip.media) return;
+      if ((clip.fx?.music_removed ?? 0) > 0.5) {
+        setEffect(clip.id, "music_removed", 0)
+          .then(applyEdit)
+          .catch((e) => setError(String(e)));
+        return;
+      }
+      const media = clip.media;
+      setMusicPct((p) => ({ ...p, [media]: 0 }));
+      removeMusic(media)
+        .then(() => setEffect(clip.id, "music_removed", 1))
+        .then(applyEdit)
+        .catch((e) => setError(String(e)))
+        .finally(() =>
+          setMusicPct((p) => {
+            const n = { ...p };
+            delete n[media];
+            return n;
+          })
+        );
+    },
+    [applyEdit]
+  );
 
   // Custom Looks: save the selected clip's colour grade as a reusable Look
   const LOOK_KEYS = ["brightness", "contrast", "saturation", "temperature", "tint", "hue", "vignette"];
@@ -2313,6 +2352,9 @@ export default function App() {
             }
             onFxPreview={onFxPreview}
             onFxCommit={onFxCommit}
+            onRemoveMusic={() => primaryClip && onRemoveMusic(primaryClip)}
+            musicRemoved={(primaryClip?.fx?.music_removed ?? 0) > 0.5}
+            musicPct={primaryClip?.media ? musicPct[primaryClip.media] : undefined}
             clipTime={clipTime}
             onSetKeyframe={onSetKeyframe}
             onClearKeyframes={onClearKeyframes}

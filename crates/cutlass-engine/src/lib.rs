@@ -11,6 +11,7 @@
 
 pub mod audio;
 pub mod player;
+pub mod separate;
 pub mod transcribe;
 
 use anyhow::{anyhow, Context as _};

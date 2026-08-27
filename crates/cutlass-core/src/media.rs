@@ -217,6 +217,31 @@ pub fn conform_to_cfr(src: &Path, fps: u32, bitrate: u64) -> anyhow::Result<Path
     anyhow::bail!("no working encoder to conform {}", src.display())
 }
 
+/// Decode any source's audio to a clean float WAV at `rate`, stereo. Used to
+/// feed the music-separation model from a uniform, well-formed input — ffmpeg
+/// normalises odd channel layouts and containers that the in-process decoder
+/// chokes on. Drains the event stream so a long decode never stalls on a full
+/// stderr pipe.
+pub fn decode_audio_wav(src: &Path, out: &Path, rate: u32) -> anyhow::Result<()> {
+    ensure_ffmpeg()?;
+    let src_s = src.to_string_lossy().to_string();
+    let out_s = out.to_string_lossy().to_string();
+    let rate_s = rate.to_string();
+    let mut cmd = FfmpegCommand::new();
+    cmd.input(src_s.as_str());
+    cmd.args(["-vn", "-ac", "2", "-ar", rate_s.as_str(), "-c:a", "pcm_f32le", "-y", out_s.as_str()]);
+    let mut child = cmd.spawn()?;
+    if let Ok(events) = child.iter() {
+        for _ in events {}
+    }
+    anyhow::ensure!(
+        child.wait().map(|s| s.success()).unwrap_or(false),
+        "audio decode failed for {}",
+        src.display()
+    );
+    Ok(())
+}
+
 /// Where the "remove music" separation writes (and later reads) a source's
 /// vocals-only audio: `vocals.wav` in the source's cache dir. Derived purely
 /// from the source path, so preview and export can find it without threading a
