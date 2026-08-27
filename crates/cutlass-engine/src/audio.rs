@@ -3,10 +3,9 @@
 
 use anyhow::{anyhow, Context as _};
 use ffmpeg_the_third as ffmpeg;
-use ffmpeg::ffi::AV_TIME_BASE;
 use ffmpeg::media::Type;
 use ffmpeg::software::resampling;
-use ffmpeg::util::channel_layout::ChannelLayout;
+use ffmpeg::util::channel_layout::{ChannelLayout, ChannelLayoutMask};
 use ffmpeg::util::format::sample::{Sample, Type as SampleType};
 
 /// Normalized peak waveform (~`buckets` values) decoded in-process at
@@ -46,7 +45,9 @@ pub struct AudioDecoder {
     stream_index: usize,
     time_base: f64,
     out_channels: usize,
+    out_rate: u32,
     eof: bool,
+    drained: bool, // resampler tail flushed after input EOF
 }
 
 impl AudioDecoder {
@@ -105,18 +106,23 @@ impl AudioDecoder {
             stream_index,
             time_base,
             out_channels,
+            out_rate: target_rate,
             eof: false,
+            drained: false,
         })
     }
 
     /// Coarse seek; decode resumes at the nearest packet before `t` and the
     /// caller-visible drift is at most one audio frame (~21 ms for AAC).
+    /// Seeks by the AUDIO stream in its own time base — seeking by the container
+    /// default (the video stream) can land far from `t` when video keyframes are
+    /// sparse, which garbled audio-offset seeks on some sources.
     pub fn seek(&mut self, t: f64) -> anyhow::Result<()> {
-        let ts = (t.max(0.0) * AV_TIME_BASE as f64) as i64;
+        let ts = (t.max(0.0) / self.time_base).round() as i64;
         let ret = unsafe {
             ffmpeg::ffi::av_seek_frame(
                 self.ictx.as_mut_ptr(),
-                -1,
+                self.stream_index as i32,
                 ts,
                 ffmpeg::ffi::AVSEEK_FLAG_BACKWARD,
             )
@@ -126,6 +132,7 @@ impl AudioDecoder {
         }
         self.decoder.flush();
         self.eof = false;
+        self.drained = false;
         // drop frames wholly before t
         loop {
             let Some(frame) = self.next_raw_frame()? else { break };
@@ -163,22 +170,50 @@ impl AudioDecoder {
         }
     }
 
+    fn out_layout(&self) -> ChannelLayoutMask {
+        if self.out_channels == 1 {
+            ChannelLayoutMask::MONO
+        } else {
+            ChannelLayoutMask::STEREO
+        }
+    }
+
+    fn pack(&self, out: &ffmpeg::frame::Audio) -> Vec<f32> {
+        if out.samples() == 0 {
+            return Vec::new();
+        }
+        let n = out.samples() * self.out_channels; // interleaved
+        out.data(0)[..n * 4]
+            .chunks_exact(4)
+            .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+            .collect()
+    }
+
     /// Next chunk of interleaved f32 stereo at the target rate. None = EOF.
     pub fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<f32>>> {
         let Some(frame) = self.next_raw_frame()? else {
-            return Ok(None);
+            // Input ended: drain the resampler's buffered tail once. Without
+            // this, up-sampled audio (in_rate != target) loses its last
+            // ~(target/in - 1) fraction — the "sound cuts off" at clip ends.
+            if self.drained {
+                return Ok(None);
+            }
+            self.drained = true;
+            let mut out = ffmpeg::frame::Audio::empty();
+            unsafe { out.alloc(Sample::F32(SampleType::Packed), 1 << 15, self.out_layout()) };
+            self.resampler.flush(&mut out)?;
+            return Ok(Some(self.pack(&out)));
         };
+        // Size the output for the rate ratio (+headroom) so swr returns every
+        // sample now. Leaving the frame empty makes the library size it to the
+        // INPUT sample count, so up-sampling buffers the surplus every frame and
+        // eventually drops the accumulated tail at EOF.
+        let in_rate = self.decoder.rate().max(1);
+        let cap =
+            (frame.samples() as u64 * self.out_rate as u64 / in_rate as u64) as usize + 1024;
         let mut out = ffmpeg::frame::Audio::empty();
+        unsafe { out.alloc(Sample::F32(SampleType::Packed), cap, self.out_layout()) };
         self.resampler.run(&frame, &mut out)?;
-        if out.samples() == 0 {
-            return Ok(Some(Vec::new()));
-        }
-        let n = out.samples() * self.out_channels; // interleaved
-        let bytes = &out.data(0)[..n * 4];
-        let samples = bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
-            .collect();
-        Ok(Some(samples))
+        Ok(Some(self.pack(&out)))
     }
 }
