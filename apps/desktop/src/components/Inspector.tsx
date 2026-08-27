@@ -614,6 +614,37 @@ function NumField(p: {
   );
 }
 
+/// One-click background-music removal (on-device vocal separation). Idle →
+/// "Remove background music"; while separating → a live percentage; done →
+/// a restore toggle. Hidden when the clip has no audio.
+function MusicRemovalControl(p: {
+  removed: boolean;
+  pct: number | undefined;
+  hasAudio: boolean;
+  onToggle: () => void;
+}) {
+  if (!p.hasAudio) return null;
+  const working = p.pct !== undefined;
+  return (
+    <div className="music-removal">
+      <button
+        className={`music-btn${p.removed ? " on" : ""}`}
+        disabled={working}
+        onClick={p.onToggle}
+        title="Separate the audio and drop the background music, keeping the voice. Runs once per source, on your machine — nothing is uploaded."
+      >
+        {working ? (
+          <>Removing music… {Math.round(p.pct as number)}%</>
+        ) : p.removed ? (
+          <>♪ Music removed — click to restore</>
+        ) : (
+          <>♪ Remove background music</>
+        )}
+      </button>
+    </div>
+  );
+}
+
 export function Inspector(p: {
   mode: "create" | "studio";
   clip: Clip | null;
@@ -622,6 +653,9 @@ export function Inspector(p: {
   onTrim: (id: string, start: number, len: number, srcIn: number) => void;
   onFxPreview: (key: string, v: number) => void;
   onFxCommit: (key: string, v: number) => void;
+  onRemoveMusic: () => void;
+  musicRemoved: boolean;
+  musicPct: number | undefined; // 0..100 while separating, undefined when idle
   clipTime: number;
   onSetKeyframe: (key: string, t: number, v: number) => void;
   onClearKeyframes: (key: string) => void;
@@ -728,6 +762,12 @@ export function Inspector(p: {
               ) : (
                 <>
                   <RetimeControl clip={p.clip} onPreview={p.onFxPreview} onCommit={p.onFxCommit} />
+                  <MusicRemovalControl
+                    removed={p.musicRemoved}
+                    pct={p.musicPct}
+                    hasAudio={(clipMedia?.waveform.length ?? 0) > 0}
+                    onToggle={p.onRemoveMusic}
+                  />
                   {p.hasLeftNeighbor && (
                     <TransitionControl clip={p.clip} onSet={p.onSetTransition} />
                   )}

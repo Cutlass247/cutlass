@@ -72,9 +72,23 @@ impl AudioDecoder {
         let decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())?
             .decoder()
             .audio()?;
+        // Some containers (raw WAV, a few odd captures) report a channel count
+        // with no layout mask; swr's Rust wrapper unwraps that mask and panics.
+        // Substitute the standard mono/stereo layout for the channel count so
+        // any source decodes instead of crashing the separation/playback.
+        let src_layout = {
+            let l = decoder.ch_layout();
+            if l.mask().is_some() {
+                l.clone()
+            } else if l.channels() >= 2 {
+                ChannelLayout::STEREO
+            } else {
+                ChannelLayout::MONO
+            }
+        };
         let resampler = resampling::Context::get2(
             decoder.format(),
-            decoder.ch_layout().clone(),
+            src_layout,
             decoder.rate(),
             Sample::F32(SampleType::Packed),
             if out_channels == 1 {
