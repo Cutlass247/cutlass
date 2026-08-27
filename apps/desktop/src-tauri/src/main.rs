@@ -1245,8 +1245,21 @@ fn play(
                             .filter(|c| c["text"].as_str().unwrap_or("").is_empty()) // titles are silent
                             .filter_map(|c| {
                                 let m = media.get(c["media"].as_str()?)?;
+                                // "Remove music": play the separated vocals
+                                // track when the flag is on and it exists.
+                                let apath = if c["fx"]["music_removed"].as_f64().unwrap_or(0.0)
+                                    > 0.5
+                                {
+                                    cutlass_core::media::vocals_path(Path::new(&m.path))
+                                        .ok()
+                                        .filter(|p| p.exists())
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| m.path.clone())
+                                } else {
+                                    m.path.clone()
+                                };
                                 Some(cutlass_engine::player::AudioClip {
-                                    path: m.path.clone(),
+                                    path: apath,
                                     start: c["start"].as_f64()?,
                                     len: c["len"].as_f64()?,
                                     src_in: c["src_in"].as_f64()?,
