@@ -83,6 +83,7 @@ pub struct ClipFx {
     pub volume: f64,     // 1
     pub speed: f64,      // 1 (2 = 2× faster, 0.5 = slow-mo)
     pub audio_offset: f64, // 0 — seconds to slip audio vs video (+later, -earlier)
+    pub music_removed: f64, // 0 or 1 — use the separated vocals audio (remove music)
     // up to 3 censor regions. Each field is keyframeable (censor_x,
     // censor2_x, censor3_x …) so a box can follow a moving subject.
     pub censor: [CensorSlot; 3],
@@ -115,6 +116,7 @@ impl Default for ClipFx {
             volume: 1.0,
             speed: 1.0,
             audio_offset: 0.0,
+            music_removed: 0.0,
             censor: [CensorSlot::default(), CensorSlot::default(), CensorSlot::default()],
         }
     }
@@ -163,6 +165,7 @@ impl ClipFx {
             "fade_out" => self.fade_out = v,
             "volume" => self.volume = v,
             "audio_offset" => self.audio_offset = v,
+            "music_removed" => self.music_removed = v,
             _ => {
                 if let Some((i, f)) = parse_censor(key) {
                     let s = &mut self.censor[i];
@@ -220,6 +223,7 @@ impl ClipFx {
             fade_out: g("fade_out", d.fade_out),
             volume: g("volume", d.volume),
             audio_offset: g("audio_offset", d.audio_offset),
+            music_removed: g("music_removed", d.music_removed),
             speed: {
                 let s = g("speed", d.speed);
                 if s > 0.05 { s } else { 1.0 }
@@ -995,7 +999,24 @@ fn run_export(
                     vi, k, *len, w, h, fps, fx, lut,
                     s.reframe, s.reframe_x, s.reframe_y,
                 ));
-                if has_audio(path) {
+                // "Remove music": when the flag is on and a separated vocals
+                // track exists for this source, take the clip's audio from that
+                // WAV (same timeline as the source) instead of the file's own
+                // mixed audio. Falls back to the original if no separation ran.
+                let vocals = if fx.music_removed > 0.5 {
+                    crate::media::vocals_path(std::path::Path::new(path))
+                        .ok()
+                        .filter(|p| p.exists())
+                } else {
+                    None
+                };
+                if let Some(vp) = vocals {
+                    cmd.args(["-ss", &format!("{src_in:.3}"), "-t", &format!("{src_dur:.3}")]);
+                    cmd.input(vp.to_string_lossy());
+                    let ai = input_idx;
+                    input_idx += 1;
+                    filters.push_str(&clip_audio_chain(ai, k, *len, fx));
+                } else if has_audio(path) {
                     filters.push_str(&clip_audio_chain(vi, k, *len, fx));
                 } else {
                     cmd.args(["-f", "lavfi", "-t", &format!("{len:.3}")]);

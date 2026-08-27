@@ -217,6 +217,15 @@ pub fn conform_to_cfr(src: &Path, fps: u32, bitrate: u64) -> anyhow::Result<Path
     anyhow::bail!("no working encoder to conform {}", src.display())
 }
 
+/// Where the "remove music" separation writes (and later reads) a source's
+/// vocals-only audio: `vocals.wav` in the source's cache dir. Derived purely
+/// from the source path, so preview and export can find it without threading a
+/// path through the document. Callers check `.exists()` — it's present only
+/// after a separation pass has run for that source.
+pub fn vocals_path(src: &Path) -> anyhow::Result<PathBuf> {
+    Ok(cache_dir(src)?.join("vocals.wav"))
+}
+
 pub fn import(path: &Path) -> anyhow::Result<MediaInfo> {
     let duration_s = probe_duration_s(path)?;
     let (width, height) = probe_dimensions(path);
