@@ -6,6 +6,8 @@ The video editor you don't have to learn. Drop in a long video and **AI finds yo
 
 > **Windows 10/11 · 64-bit.** Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
 
+> **🆕 New in this build:** **remove copyrighted background music** on-device (keeps your voice) · first-class **screen-recording / OBS** support (variable-frame-rate captures conform on import, so cuts and audio stay in sync) · **audio-sync slip** to fix recordings that came in a touch off · **grade several clips at once** · and a stack of A/V-sync and export fixes.
+
 ---
 
 ## ✨ What's in this build
@@ -22,11 +24,14 @@ The video editor you don't have to learn. Drop in a long video and **AI finds yo
 ### ✂️ Edit fast
 - **Edit by talking.** Delete a sentence in the transcript and the video cuts with it — frame-accurate, rippled shut, undoable.
 - **Kill the ums in one click.** Filler words and dead-air silences are found automatically. Two clicks and they're gone.
+- **Remove background music.** Strip copyrighted music off a clip while keeping your voice — **on-device** AI vocal separation, one click. Made for gameplay, streams, and screen recordings.
+- **Made for screen recordings.** OBS and other variable-frame-rate captures are conformed on import, so cuts and audio stay perfectly in sync.
 - **Blur out anything.** Blur, pixelate, or black-box a face, screen, or name — with **motion tracking** so it follows the subject.
 - **A timeline that obeys.** In Studio, marquee-select clips, move or delete them together, right-click for quick actions, and Ctrl+A to grab everything.
 
 ### 🎨 Grade & finish
-- **Grade in one click.** Live-preview Looks (Cinematic, Warm, Noir, and more), drop in a `.cube` LUT, pull green screen, punch in, or dial color by hand.
+- **Grade in one click.** Live-preview Looks (Cinematic, Warm, Noir, and more), drop in a `.cube` LUT, pull green screen, punch in, or dial color by hand — and **grade several clips at once**.
+- **Fix out-of-sync audio.** Slip a clip's audio earlier or later to line it up with the picture.
 - Transitions, titles and lower-thirds, keyframe any effect, speed/retime, and **live multiplayer** timelines in Studio.
 - **Fast, native export.** Hardware-accelerated H.264, plus ProRes and WebM.
 

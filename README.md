@@ -27,11 +27,14 @@ The video editor you don't have to learn. Drop in a long video and **AI finds yo
 ### ✂️ Edit fast
 - **Edit by talking.** Delete a sentence in the transcript and the video cuts with it — frame-accurate, rippled shut, undoable.
 - **Kill the ums in one click.** Filler words and dead-air silences are found automatically. Two clicks and they're gone.
+- **Remove background music.** Strip copyrighted music off a clip while keeping your voice — **on-device** AI vocal separation, one click. Perfect for gameplay, streams, and screen recordings.
+- **Made for screen recordings.** OBS and other variable-frame-rate captures are conformed on import, so cuts and audio stay perfectly in sync — no more drift.
 - **Blur out anything.** Cover a face, screen, or name with blur, pixelate, or a solid box — and **motion tracking** makes it follow the subject as they move.
 - **A timeline that obeys.** In Studio, drag a box to select a bunch of clips, move or delete them together, right-click for quick actions, and Ctrl+A to grab everything.
 
 ### 🎨 Grade & finish
-- **Grade in one click.** One-click Looks (Cinematic, Warm, Noir, and more) preview live on your footage. Drop in a `.cube` LUT, pull green screen, punch in, or dial color by hand.
+- **Grade in one click.** One-click Looks (Cinematic, Warm, Noir, and more) preview live on your footage. Drop in a `.cube` LUT, pull green screen, punch in, or dial color by hand — grade several clips at once.
+- **Fix out-of-sync audio.** Slip a clip's audio earlier or later to line it up with the picture when a recording came in a touch off.
 - Transitions, titles and lower-thirds, keyframe any effect, speed/retime, and **live multiplayer** timelines in Studio mode.
 
 ## Two independent editors, one app
