@@ -172,7 +172,7 @@ export default function App() {
   const [transcribing, setTranscribing] = useState<string | null>(null);
   // per-media transcription progress (0..100), shown on the Add captions button
   const [transcribeProgress, setTranscribeProgress] = useState<Record<string, number>>({});
-  // per-media music-removal progress (0..100) while a separation job runs; the
+  // per-clip music-removal progress (0..100) while a separation job runs; the
   // key is absent when idle.
   const [musicPct, setMusicPct] = useState<Record<string, number>>({});
   const [wordSel, setWordSel] = useState<{ media: string; a: number; b: number } | null>(null);
@@ -393,8 +393,8 @@ export default function App() {
     const unTx = onTranscribeProgress((media, pct) =>
       setTranscribeProgress((prev) => ({ ...prev, [media]: pct }))
     );
-    const unMusic = onRemoveMusicProgress((media, pct) =>
-      setMusicPct((prev) => ({ ...prev, [media]: pct }))
+    const unMusic = onRemoveMusicProgress((clip, pct) =>
+      setMusicPct((prev) => ({ ...prev, [clip]: pct }))
     );
     const unFrame = onPlaybackFrame((_t, src) => setPlayFrame(src));
     const unPresence = onPresence((p) =>
@@ -828,10 +828,10 @@ export default function App() {
     }
   }, [applyEdit]);
 
-  // Remove music: on first use, separate this clip's source into a vocals track
-  // (cached per media, so re-toggling and other cuts of the same source are
-  // free), then flip fx.music_removed so preview + export use it. When already
-  // on, just clear the flag to restore the original audio.
+  // Remove music: on first use, separate just this clip's span of its source
+  // into a vocals track (cached, so re-toggling and overlapping cuts are free),
+  // then flip fx.music_removed so preview + export use it. When already on,
+  // just clear the flag to restore the original audio.
   const onRemoveMusic = useCallback(
     (clip: Clip) => {
       if (!clip.media) return;
@@ -841,16 +841,16 @@ export default function App() {
           .catch((e) => setError(String(e)));
         return;
       }
-      const media = clip.media;
-      setMusicPct((p) => ({ ...p, [media]: 0 }));
-      removeMusic(media)
-        .then(() => setEffect(clip.id, "music_removed", 1))
+      const id = clip.id;
+      setMusicPct((p) => ({ ...p, [id]: 0 }));
+      removeMusic(id)
+        .then(() => setEffect(id, "music_removed", 1))
         .then(applyEdit)
         .catch((e) => setError(String(e)))
         .finally(() =>
           setMusicPct((p) => {
             const n = { ...p };
-            delete n[media];
+            delete n[id];
             return n;
           })
         );
@@ -2354,7 +2354,7 @@ export default function App() {
             onFxCommit={onFxCommit}
             onRemoveMusic={() => primaryClip && onRemoveMusic(primaryClip)}
             musicRemoved={(primaryClip?.fx?.music_removed ?? 0) > 0.5}
-            musicPct={primaryClip?.media ? musicPct[primaryClip.media] : undefined}
+            musicPct={primaryClip ? musicPct[primaryClip.id] : undefined}
             clipTime={clipTime}
             onSetKeyframe={onSetKeyframe}
             onClearKeyframes={onClearKeyframes}

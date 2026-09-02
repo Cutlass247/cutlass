@@ -222,12 +222,29 @@ pub fn conform_to_cfr(src: &Path, fps: u32, bitrate: u64) -> anyhow::Result<Path
 /// normalises odd channel layouts and containers that the in-process decoder
 /// chokes on. Drains the event stream so a long decode never stalls on a full
 /// stderr pipe.
-pub fn decode_audio_wav(src: &Path, out: &Path, rate: u32) -> anyhow::Result<()> {
+/// `start_s`/`dur_s` limit the decode to one span of the source (0/None = whole
+/// file) — separation only ever needs the span a clip actually uses.
+pub fn decode_audio_wav(
+    src: &Path,
+    out: &Path,
+    rate: u32,
+    start_s: f64,
+    dur_s: Option<f64>,
+) -> anyhow::Result<()> {
     ensure_ffmpeg()?;
     let src_s = src.to_string_lossy().to_string();
     let out_s = out.to_string_lossy().to_string();
     let rate_s = rate.to_string();
+    let start_str = format!("{:.3}", start_s.max(0.0));
+    let dur_str = dur_s.map(|d| format!("{:.3}", d.max(0.0)));
     let mut cmd = FfmpegCommand::new();
+    // input-level seek so ffmpeg skips straight to the span
+    if start_s > 0.0 {
+        cmd.args(["-ss", start_str.as_str()]);
+    }
+    if let Some(d) = dur_str.as_deref() {
+        cmd.args(["-t", d]);
+    }
     cmd.input(src_s.as_str());
     cmd.args(["-vn", "-ac", "2", "-ar", rate_s.as_str(), "-c:a", "pcm_f32le", "-y", out_s.as_str()]);
     let mut child = cmd.spawn()?;
@@ -242,13 +259,50 @@ pub fn decode_audio_wav(src: &Path, out: &Path, rate: u32) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Where the "remove music" separation writes (and later reads) a source's
-/// vocals-only audio: `vocals.wav` in the source's cache dir. Derived purely
-/// from the source path, so preview and export can find it without threading a
-/// path through the document. Callers check `.exists()` — it's present only
-/// after a separation pass has run for that source.
-pub fn vocals_path(src: &Path) -> anyhow::Result<PathBuf> {
-    Ok(cache_dir(src)?.join("vocals.wav"))
+/// Where a "remove music" separation writes its vocals for one span of a
+/// source: `vocals_<startMs>_<endMs>.wav` in the source's cache dir. Separating
+/// only the span a clip uses keeps the job proportional to the edit rather than
+/// to the whole recording (an hour-long source is otherwise ~40 min of work and
+/// gigabytes of RAM to use five minutes of it).
+pub fn vocals_range_path(src: &Path, start_s: f64, end_s: f64) -> anyhow::Result<PathBuf> {
+    let a = (start_s.max(0.0) * 1000.0).round() as i64;
+    let b = (end_s.max(start_s.max(0.0)) * 1000.0).round() as i64;
+    Ok(cache_dir(src)?.join(format!("vocals_{a}_{b}.wav")))
+}
+
+/// Find a cached separation that fully covers `[start_s, end_s]`, returning its
+/// path and the source time its first sample corresponds to (so callers can
+/// offset into it). Falls back to the legacy whole-source `vocals.wav`. None =
+/// nothing covers this span, so callers should use the original audio — a clip
+/// trimmed outside its separated span quietly gets its music back rather than
+/// the wrong audio.
+pub fn vocals_covering(src: &Path, start_s: f64, end_s: f64) -> Option<(PathBuf, f64)> {
+    let dir = cache_dir(src).ok()?;
+    // legacy: a whole-source separation covers everything
+    let legacy = dir.join("vocals.wav");
+    if legacy.is_file() {
+        return Some((legacy, 0.0));
+    }
+    const TOL_MS: i64 = 50; // float/rounding slack
+    let want_a = (start_s.max(0.0) * 1000.0).round() as i64;
+    let want_b = (end_s.max(start_s.max(0.0)) * 1000.0).round() as i64;
+    let mut best: Option<(PathBuf, i64)> = None;
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(mid) = name.strip_prefix("vocals_").and_then(|n| n.strip_suffix(".wav")) else {
+            continue;
+        };
+        let Some((a, b)) = mid.split_once('_') else { continue };
+        let (Ok(a), Ok(b)) = (a.parse::<i64>(), b.parse::<i64>()) else { continue };
+        if a <= want_a + TOL_MS && b >= want_b - TOL_MS {
+            // prefer the tightest covering span
+            if best.as_ref().is_none_or(|(_, ba)| a > *ba) {
+                best = Some((entry.path(), a));
+            }
+        }
+    }
+    best.map(|(p, a)| (p, a as f64 / 1000.0))
 }
 
 pub fn import(path: &Path) -> anyhow::Result<MediaInfo> {
@@ -297,4 +351,36 @@ pub fn read_frames(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
         .collect();
     frames.sort();
     Ok(frames)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The "remove music" cache must only be used when it fully covers the span
+    /// a clip asks for, and must report where its first sample sits in source
+    /// time — a wrong offset would play audio from the wrong part of the clip.
+    #[test]
+    fn vocals_covering_matches_span_and_reports_start() {
+        let src = std::env::temp_dir().join(format!("cutlass_vocals_test_{}.mp4", std::process::id()));
+        std::fs::write(&src, b"x").unwrap();
+        let dir = cache_dir(&src).unwrap();
+        std::fs::write(dir.join("vocals_8000_12000.wav"), b"x").unwrap();
+
+        // fully inside the separated span -> used, with its start reported
+        let (path, start) = vocals_covering(&src, 9.0, 11.0).expect("span is covered");
+        assert!(path.ends_with("vocals_8000_12000.wav"));
+        assert!((start - 8.0).abs() < 1e-6, "start was {start}");
+
+        // exact bounds still count
+        assert!(vocals_covering(&src, 8.0, 12.0).is_some());
+
+        // reaching outside it -> no coverage, so callers fall back to the
+        // original audio rather than playing the wrong range
+        assert!(vocals_covering(&src, 5.0, 11.0).is_none(), "starts before");
+        assert!(vocals_covering(&src, 9.0, 15.0).is_none(), "ends after");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&src);
+    }
 }

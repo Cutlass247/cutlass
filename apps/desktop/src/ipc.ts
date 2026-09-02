@@ -488,30 +488,31 @@ export async function onTranscribeProgress(
   );
 }
 
-/// On-device background-music removal for a source media: separates the audio
-/// and caches a vocals-only track. Clips from that media then set fx.music_removed
-/// to use it. Streams progress via onRemoveMusicProgress.
-const mockMusicCbs = new Set<(media: string, pct: number) => void>();
-export async function removeMusic(mediaId: string): Promise<void> {
+/// On-device background-music removal for one clip: separates just the span
+/// that clip uses (plus padding) and caches a vocals-only track beside the
+/// source's proxies. The clip then sets fx.music_removed to use it. Streams
+/// progress via onRemoveMusicProgress, keyed by clip id.
+const mockMusicCbs = new Set<(clip: string, pct: number) => void>();
+export async function removeMusic(clipId: string): Promise<void> {
   if (!inTauri) {
     for (let p = 0; p <= 100; p += 10) {
-      mockMusicCbs.forEach((cb) => cb(mediaId, p));
+      mockMusicCbs.forEach((cb) => cb(clipId, p));
       await new Promise((r) => setTimeout(r, 80));
     }
     return;
   }
-  return invoke<void>("remove_music", { mediaId });
+  return invoke<void>("remove_music", { clipId });
 }
 export async function onRemoveMusicProgress(
-  cb: (media: string, pct: number) => void
+  cb: (clip: string, pct: number) => void
 ): Promise<() => void> {
   if (!inTauri) {
     mockMusicCbs.add(cb);
     return () => mockMusicCbs.delete(cb);
   }
   const { listen } = await import("@tauri-apps/api/event");
-  return listen<{ media: string; pct: number }>("remove-music-progress", (e) =>
-    cb(e.payload.media, e.payload.pct)
+  return listen<{ clip: string; pct: number }>("remove-music-progress", (e) =>
+    cb(e.payload.clip, e.payload.pct)
   );
 }
 
