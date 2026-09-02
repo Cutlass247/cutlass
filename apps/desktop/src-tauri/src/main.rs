@@ -1073,54 +1073,76 @@ fn mdx_model_path() -> Result<std::path::PathBuf, String> {
     }
 }
 
-/// On-device "remove background music": separate a source media's audio into
-/// vocals vs. the rest and cache the vocals as vocals.wav next to its proxies.
-/// Clips that reference this media can then flip fx.music_removed to play/export
-/// the vocals track. Runs on a worker thread, streaming progress; reuses a prior
-/// separation. Private and free — the audio never leaves the machine.
+/// On-device "remove background music": separate one clip's span of its source
+/// into vocals vs. the rest, cached beside that source's proxies as
+/// `vocals_<start>_<end>.wav`. The clip then flips fx.music_removed to
+/// play/export the vocals track. Runs on a worker thread, streaming progress;
+/// reuses any cached separation that already covers the span (so re-toggling,
+/// and other cuts within it, are free). Private and free — audio never leaves
+/// the machine.
 #[tauri::command]
 async fn remove_music(
-    media_id: String,
+    clip_id: String,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     use std::sync::atomic::{AtomicI32, Ordering};
     use tauri::Emitter;
-    let path = state
-        .media
-        .lock()
-        .unwrap()
-        .get(&media_id)
-        .map(|m| m.path.clone())
-        .ok_or_else(|| format!("unknown media {media_id}"))?;
-    let out = cutlass_core::media::vocals_path(Path::new(&path)).map_err(err_str)?;
-    // reuse an existing separation (idempotent — toggling off then on is free)
-    if out.exists() {
-        let _ = app.emit("remove-music-progress", serde_json::json!({ "media": media_id, "pct": 100 }));
+    // Separate only the span this clip actually uses, plus a little padding so
+    // small re-trims still hit the cache. Whole-source separation on a long
+    // recording is minutes of work and gigabytes of RAM for footage you cut out.
+    const PAD_S: f64 = 3.0;
+    let (path, start_s, end_s) = {
+        let project = state.project.lock().unwrap();
+        let media = state.media.lock().unwrap();
+        let snap = project.snapshot();
+        let clip = snap["clips"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["id"].as_str() == Some(clip_id.as_str())))
+            .ok_or_else(|| format!("unknown clip {clip_id}"))?;
+        let m = media
+            .get(clip["media"].as_str().unwrap_or(""))
+            .ok_or_else(|| "clip has no media".to_string())?;
+        let src_in = clip["src_in"].as_f64().unwrap_or(0.0);
+        let speed = clip["fx"]["speed"].as_f64().unwrap_or(1.0).max(0.01);
+        let used = clip["len"].as_f64().unwrap_or(0.0) * speed;
+        (
+            m.path.clone(),
+            (src_in - PAD_S).max(0.0),
+            src_in + used + PAD_S,
+        )
+    };
+    // reuse any cached separation that already covers this span
+    if cutlass_core::media::vocals_covering(Path::new(&path), start_s, end_s).is_some() {
+        let _ = app.emit("remove-music-progress", serde_json::json!({ "clip": clip_id, "pct": 100 }));
         return Ok(());
     }
+    let out = cutlass_core::media::vocals_range_path(Path::new(&path), start_s, end_s)
+        .map_err(err_str)?;
     let model = mdx_model_path()?;
     let out_s = out.to_string_lossy().to_string();
     let app2 = app.clone();
-    let mid = media_id.clone();
+    let cid = clip_id.clone();
     let last = std::sync::Arc::new(AtomicI32::new(-1));
     tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
-        // Decode the source to a clean 44.1 kHz stereo WAV first (ffmpeg handles
-        // any container/layout), then separate. Write the result to a partial
-        // file and rename, so a crash never leaves a truncated vocals.wav that
-        // later looks like a valid cached separation.
+        // Decode just this span to a clean 44.1 kHz stereo WAV (ffmpeg handles
+        // any container/layout), then separate. Write to a partial file and
+        // rename, so a crash never leaves a truncated file that later looks
+        // like a valid cached separation.
         let tmp_in = format!("{out_s}.src.wav");
         let tmp_out = format!("{out_s}.partial.wav");
         cutlass_core::media::decode_audio_wav(
             std::path::Path::new(&path),
             std::path::Path::new(&tmp_in),
             44_100,
+            start_s,
+            Some(end_s - start_s),
         )?;
         let res =
             cutlass_engine::separate::remove_music(&tmp_in, &model.to_string_lossy(), &tmp_out, move |p| {
                 let pct = (p * 100.0) as i32;
                 if last.swap(pct, Ordering::Relaxed) != pct {
-                    let _ = app2.emit("remove-music-progress", serde_json::json!({ "media": mid, "pct": pct }));
+                    let _ = app2.emit("remove-music-progress", serde_json::json!({ "clip": cid, "pct": pct }));
                 }
             });
         let _ = std::fs::remove_file(&tmp_in);
@@ -1131,7 +1153,7 @@ async fn remove_music(
     .await
     .map_err(err_str)?
     .map_err(err_str)?;
-    let _ = app.emit("remove-music-progress", serde_json::json!({ "media": media_id, "pct": 100 }));
+    let _ = app.emit("remove-music-progress", serde_json::json!({ "clip": clip_id, "pct": 100 }));
     Ok(())
 }
 
@@ -1336,24 +1358,34 @@ fn play(
                             .filter(|c| c["text"].as_str().unwrap_or("").is_empty()) // titles are silent
                             .filter_map(|c| {
                                 let m = media.get(c["media"].as_str()?)?;
-                                // "Remove music": play the separated vocals
-                                // track when the flag is on and it exists.
-                                let apath = if c["fx"]["music_removed"].as_f64().unwrap_or(0.0)
-                                    > 0.5
-                                {
-                                    cutlass_core::media::vocals_path(Path::new(&m.path))
-                                        .ok()
-                                        .filter(|p| p.exists())
-                                        .map(|p| p.to_string_lossy().to_string())
-                                        .unwrap_or_else(|| m.path.clone())
-                                } else {
-                                    m.path.clone()
-                                };
+                                // "Remove music": play the separated vocals when
+                                // the flag is on and a cached separation covers
+                                // this clip's span; src_in shifts to the offset
+                                // inside that file. No coverage → original audio.
+                                let src_in0 = c["src_in"].as_f64()?;
+                                let speed0 = c["fx"]["speed"].as_f64().unwrap_or(1.0);
+                                let span_end = src_in0 + c["len"].as_f64()? * speed0.max(0.01);
+                                let (apath, asrc_in) =
+                                    if c["fx"]["music_removed"].as_f64().unwrap_or(0.0) > 0.5 {
+                                        match cutlass_core::media::vocals_covering(
+                                            Path::new(&m.path),
+                                            src_in0,
+                                            span_end,
+                                        ) {
+                                            Some((p, file_start)) => (
+                                                p.to_string_lossy().to_string(),
+                                                (src_in0 - file_start).max(0.0),
+                                            ),
+                                            None => (m.path.clone(), src_in0),
+                                        }
+                                    } else {
+                                        (m.path.clone(), src_in0)
+                                    };
                                 Some(cutlass_engine::player::AudioClip {
                                     path: apath,
                                     start: c["start"].as_f64()?,
                                     len: c["len"].as_f64()?,
-                                    src_in: c["src_in"].as_f64()?,
+                                    src_in: asrc_in,
                                     volume: c["fx"]["volume"].as_f64().unwrap_or(1.0),
                                     speed: c["fx"]["speed"].as_f64().unwrap_or(1.0),
                                     audio_offset: c["fx"]["audio_offset"].as_f64().unwrap_or(0.0),

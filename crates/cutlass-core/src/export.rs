@@ -1004,14 +1004,18 @@ fn run_export(
                 // WAV (same timeline as the source) instead of the file's own
                 // mixed audio. Falls back to the original if no separation ran.
                 let vocals = if fx.music_removed > 0.5 {
-                    crate::media::vocals_path(std::path::Path::new(path))
-                        .ok()
-                        .filter(|p| p.exists())
+                    crate::media::vocals_covering(
+                        std::path::Path::new(path),
+                        *src_in,
+                        src_in + src_dur,
+                    )
                 } else {
                     None
                 };
-                if let Some(vp) = vocals {
-                    cmd.args(["-ss", &format!("{src_in:.3}"), "-t", &format!("{src_dur:.3}")]);
+                if let Some((vp, file_start)) = vocals {
+                    // the vocals file starts at `file_start` in source time
+                    let off = (src_in - file_start).max(0.0);
+                    cmd.args(["-ss", &format!("{off:.3}"), "-t", &format!("{src_dur:.3}")]);
                     cmd.input(vp.to_string_lossy());
                     let ai = input_idx;
                     input_idx += 1;
