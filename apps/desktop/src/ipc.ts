@@ -93,6 +93,7 @@ export const FX_DEFAULTS: Record<string, number> = {
   speed: 1,
   audio_offset: 0, // seconds to slip audio vs video (+later, -earlier)
   music_removed: 0, // 1 = use the separated vocals track (remove background music)
+  music_strength: 1, // 0..1 — how much of the music to remove (1 = all, lower = duck it)
   // censor boxes (up to 3): 0 off / 1 blur / 2 pixelate / 3 solid; x/y = box
   // centre, w/h = box size (fraction of frame), str = 0..1 strength.
   censor: 0,

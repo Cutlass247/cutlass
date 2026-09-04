@@ -858,6 +858,27 @@ export default function App() {
     [applyEdit]
   );
 
+  // Music-removal strength: write it, then re-run the job — which re-mixes from
+  // the cached stem (no model inference), so dragging this is quick.
+  const onMusicStrength = useCallback(
+    (clip: Clip, v: number) => {
+      const id = clip.id;
+      setMusicPct((p) => ({ ...p, [id]: 0 }));
+      setEffect(id, "music_strength", v)
+        .then(applyEdit)
+        .then(() => removeMusic(id))
+        .catch((e) => setError(String(e)))
+        .finally(() =>
+          setMusicPct((p) => {
+            const n = { ...p };
+            delete n[id];
+            return n;
+          })
+        );
+    },
+    [applyEdit]
+  );
+
   // Custom Looks: save the selected clip's colour grade as a reusable Look
   const LOOK_KEYS = ["brightness", "contrast", "saturation", "temperature", "tint", "hue", "vignette"];
   const persistLooks = useCallback((looks: typeof customLooks) => {
@@ -2353,7 +2374,9 @@ export default function App() {
             onFxPreview={onFxPreview}
             onFxCommit={onFxCommit}
             onRemoveMusic={() => primaryClip && onRemoveMusic(primaryClip)}
+            onMusicStrength={(v) => primaryClip && onMusicStrength(primaryClip, v)}
             musicRemoved={(primaryClip?.fx?.music_removed ?? 0) > 0.5}
+            musicStrength={primaryClip?.fx?.music_strength ?? 1}
             musicPct={primaryClip ? musicPct[primaryClip.id] : undefined}
             clipTime={clipTime}
             onSetKeyframe={onSetKeyframe}

@@ -169,6 +169,71 @@ fn reflect_pad(seg: &[[f32; 2]], ch: usize) -> Vec<f32> {
     out
 }
 
+/// Mix the separated vocals back over the original at `strength` and write the
+/// result. strength 1.0 = vocals only (music gone), 0.0 = the original
+/// untouched, in between ducks the music instead of removing it — which keeps
+/// the voice full when separation isn't clean on a given recording.
+///
+/// Then apply makeup gain: pulling loud music out of a mix leaves whatever
+/// remains much quieter than the original (a voice sitting well under the music
+/// stays at its own low level), which sounds like "the audio disappeared". The
+/// gain only ever boosts, targets a normal speech level, and is capped so it
+/// can't clip or amplify near-silence into noise.
+pub fn blend_and_write(
+    raw_vocals_wav: &str,
+    original_wav: &str,
+    out_wav: &str,
+    strength: f32,
+) -> Result<()> {
+    const TARGET_RMS: f32 = 0.06; // comfortable speech level
+    const MAX_GAIN: f32 = 12.0;
+    const PEAK_CEIL: f32 = 0.98;
+
+    let [vl, vr] = read_wav_stereo(raw_vocals_wav)?;
+    let [ol, or_] = read_wav_stereo(original_wav)?;
+    let n = vl.len().min(ol.len());
+    let s = strength.clamp(0.0, 1.0);
+    let mut l = Vec::with_capacity(n);
+    let mut r = Vec::with_capacity(n);
+    for i in 0..n {
+        l.push(s * vl[i] + (1.0 - s) * ol[i]);
+        r.push(s * vr[i] + (1.0 - s) * or_[i]);
+    }
+
+    let mut sq = 0.0f64;
+    let mut peak = 0.0f32;
+    for i in 0..n {
+        sq += (l[i] * l[i] + r[i] * r[i]) as f64;
+        peak = peak.max(l[i].abs()).max(r[i].abs());
+    }
+    let rms = if n > 0 { (sq / (2.0 * n as f64)).sqrt() as f32 } else { 0.0 };
+    let mut gain = if rms > 1e-6 { (TARGET_RMS / rms).clamp(1.0, MAX_GAIN) } else { 1.0 };
+    if peak * gain > PEAK_CEIL && peak > 1e-6 {
+        gain = PEAK_CEIL / peak; // never clip
+    }
+    gain = gain.max(1.0);
+
+    write_wav(out_wav, &l, &r, gain)
+}
+
+fn write_wav(path: &str, l: &[f32], r: &[f32], gain: f32) -> Result<()> {
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: SR,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w =
+        hound::WavWriter::create(path, spec).with_context(|| format!("create {path}"))?;
+    let to_i16 = |v: f32| ((v * gain).clamp(-1.0, 1.0) * 32767.0) as i16;
+    for i in 0..l.len().min(r.len()) {
+        w.write_sample(to_i16(l[i]))?;
+        w.write_sample(to_i16(r[i]))?;
+    }
+    w.finalize().context("finalize wav")?;
+    Ok(())
+}
+
 /// Separate the vocals from `in_wav` (44.1 kHz stereo, from
 /// media::decode_audio_wav) and write them to `out_wav` (44.1 kHz stereo,
 /// 16-bit). `progress(0..=1)` is called as segments finish.
@@ -219,19 +284,55 @@ pub fn remove_music(
         progress((s + 1) as f32 / segments as f32);
     }
 
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: SR,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut w = hound::WavWriter::create(out_wav, spec)
-        .with_context(|| format!("create {out_wav}"))?;
-    let to_i16 = |v: f32| (v.clamp(-1.0, 1.0) * 32767.0) as i16;
-    for i in 0..n {
-        w.write_sample(to_i16(voc_l[i]))?;
-        w.write_sample(to_i16(voc_r[i]))?;
+    // raw stem, unity gain — strength blending and makeup happen in
+    // blend_and_write so changing them never re-runs the model
+    write_wav(out_wav, &voc_l, &voc_r, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Strength must control how much of the original is mixed back, and quiet
+    /// output (what's left after loud music is pulled out) must be lifted to a
+    /// usable level without ever clipping.
+    #[test]
+    fn blend_respects_strength_and_lifts_quiet_audio() {
+        let d = std::env::temp_dir();
+        let p = |n: &str| d.join(format!("cutlass_blend_{}_{}.wav", std::process::id(), n));
+        let (voc, orig, out) = (p("voc"), p("orig"), p("out"));
+        let (v_path, o_path, out_path) = (
+            voc.to_str().unwrap().to_string(),
+            orig.to_str().unwrap().to_string(),
+            out.to_str().unwrap().to_string(),
+        );
+        let n = 44_100usize;
+        // a very quiet "vocal" stem and a loud original
+        let v: Vec<f32> = (0..n).map(|i| 0.014 * (i as f32 * 0.05).sin()).collect();
+        let o: Vec<f32> = (0..n).map(|i| 0.30 * (i as f32 * 0.05).sin()).collect();
+        write_wav(&v_path, &v, &v, 1.0).unwrap();
+        write_wav(&o_path, &o, &o, 1.0).unwrap();
+        let rms = |s: &[f32]| (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt();
+        let peak = |s: &[f32]| s.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+
+        // full strength: vocals only, lifted toward a normal speech level
+        blend_and_write(&v_path, &o_path, &out_path, 1.0).unwrap();
+        let [l, _] = read_wav_stereo(&out_path).unwrap();
+        assert!(rms(&l) > 0.03, "quiet stem should be lifted, got {}", rms(&l));
+        assert!(peak(&l) <= 0.99, "must not clip, peak {}", peak(&l));
+
+        // zero strength: the original, and already loud enough to leave alone
+        blend_and_write(&v_path, &o_path, &out_path, 0.0).unwrap();
+        let [l0, _] = read_wav_stereo(&out_path).unwrap();
+        assert!((rms(&l0) - rms(&o)).abs() < 0.02, "should pass the original through, got {}", rms(&l0));
+
+        // halfway sits between the two
+        blend_and_write(&v_path, &o_path, &out_path, 0.5).unwrap();
+        let [lh, _] = read_wav_stereo(&out_path).unwrap();
+        assert!(rms(&lh) > rms(&l) * 0.5 && rms(&lh) < rms(&l0), "mid blend out of range: {}", rms(&lh));
+
+        for f in [voc, orig, out] {
+            let _ = std::fs::remove_file(f);
+        }
     }
-    w.finalize().context("finalize vocals wav")?;
-    Ok(())
 }

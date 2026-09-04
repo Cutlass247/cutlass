@@ -621,8 +621,12 @@ function MusicRemovalControl(p: {
   removed: boolean;
   pct: number | undefined;
   hasAudio: boolean;
+  strength: number;
   onToggle: () => void;
+  onStrength: (v: number) => void;
 }) {
+  const [draft, setDraft] = useState(p.strength);
+  useEffect(() => setDraft(p.strength), [p.strength]);
   if (!p.hasAudio) return null;
   const working = p.pct !== undefined;
   return (
@@ -631,7 +635,7 @@ function MusicRemovalControl(p: {
         className={`music-btn${p.removed ? " on" : ""}`}
         disabled={working}
         onClick={p.onToggle}
-        title="Separate the audio and drop the background music, keeping the voice. Runs once per source, on your machine — nothing is uploaded."
+        title="Separate the audio and drop the background music, keeping the voice. Runs on your machine — nothing is uploaded."
       >
         {working ? (
           <>Removing music… {Math.round(p.pct as number)}%</>
@@ -641,6 +645,26 @@ function MusicRemovalControl(p: {
           <>♪ Remove background music</>
         )}
       </button>
+      {p.removed && (
+        // Lower this when separation isn't clean on a recording: it ducks the
+        // music instead of removing it outright, which keeps the voice full.
+        // Re-mixes from the cached stem, so it never re-runs the model.
+        <div className="fx-row active" title="How much of the music to remove. Lower keeps more of the original, which can sound more natural when separation is imperfect.">
+          <span className="fx-label">Strength</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={draft}
+            disabled={working}
+            onChange={(e) => setDraft(Number(e.target.value))}
+            onPointerUp={() => p.onStrength(draft)}
+            onKeyUp={() => p.onStrength(draft)}
+          />
+          <span className="fx-val">{Math.round(draft * 100)}%</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -654,7 +678,9 @@ export function Inspector(p: {
   onFxPreview: (key: string, v: number) => void;
   onFxCommit: (key: string, v: number) => void;
   onRemoveMusic: () => void;
+  onMusicStrength: (v: number) => void;
   musicRemoved: boolean;
+  musicStrength: number;
   musicPct: number | undefined; // 0..100 while separating, undefined when idle
   clipTime: number;
   onSetKeyframe: (key: string, t: number, v: number) => void;
@@ -764,6 +790,8 @@ export function Inspector(p: {
                   <RetimeControl clip={p.clip} onPreview={p.onFxPreview} onCommit={p.onFxCommit} />
                   <MusicRemovalControl
                     removed={p.musicRemoved}
+                    strength={p.musicStrength}
+                    onStrength={p.onMusicStrength}
                     pct={p.musicPct}
                     // An empty waveform only means "no audio" for shorter media:
                     // import skips waveform generation past 30 min to stay

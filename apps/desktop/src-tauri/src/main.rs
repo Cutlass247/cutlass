@@ -1092,7 +1092,7 @@ async fn remove_music(
     // small re-trims still hit the cache. Whole-source separation on a long
     // recording is minutes of work and gigabytes of RAM for footage you cut out.
     const PAD_S: f64 = 3.0;
-    let (path, start_s, end_s) = {
+    let (path, start_s, end_s, strength) = {
         let project = state.project.lock().unwrap();
         let media = state.media.lock().unwrap();
         let snap = project.snapshot();
@@ -1106,29 +1106,28 @@ async fn remove_music(
         let src_in = clip["src_in"].as_f64().unwrap_or(0.0);
         let speed = clip["fx"]["speed"].as_f64().unwrap_or(1.0).max(0.01);
         let used = clip["len"].as_f64().unwrap_or(0.0) * speed;
+        let strength = clip["fx"]["music_strength"].as_f64().unwrap_or(1.0) as f32;
         (
             m.path.clone(),
             (src_in - PAD_S).max(0.0),
             src_in + used + PAD_S,
+            strength,
         )
     };
-    // reuse any cached separation that already covers this span
-    if cutlass_core::media::vocals_covering(Path::new(&path), start_s, end_s).is_some() {
-        let _ = app.emit("remove-music-progress", serde_json::json!({ "clip": clip_id, "pct": 100 }));
-        return Ok(());
-    }
     let out = cutlass_core::media::vocals_range_path(Path::new(&path), start_s, end_s)
+        .map_err(err_str)?;
+    let raw = cutlass_core::media::vocals_raw_path(Path::new(&path), start_s, end_s)
         .map_err(err_str)?;
     let model = mdx_model_path()?;
     let out_s = out.to_string_lossy().to_string();
+    let raw_s = raw.to_string_lossy().to_string();
     let app2 = app.clone();
     let cid = clip_id.clone();
     let last = std::sync::Arc::new(AtomicI32::new(-1));
     tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
         // Decode just this span to a clean 44.1 kHz stereo WAV (ffmpeg handles
-        // any container/layout), then separate. Write to a partial file and
-        // rename, so a crash never leaves a truncated file that later looks
-        // like a valid cached separation.
+        // any container/layout). We need it for the blend even when the model
+        // output is already cached.
         let tmp_in = format!("{out_s}.src.wav");
         let tmp_out = format!("{out_s}.partial.wav");
         cutlass_core::media::decode_audio_wav(
@@ -1138,13 +1137,29 @@ async fn remove_music(
             start_s,
             Some(end_s - start_s),
         )?;
-        let res =
-            cutlass_engine::separate::remove_music(&tmp_in, &model.to_string_lossy(), &tmp_out, move |p| {
-                let pct = (p * 100.0) as i32;
-                if last.swap(pct, Ordering::Relaxed) != pct {
-                    let _ = app2.emit("remove-music-progress", serde_json::json!({ "clip": cid, "pct": pct }));
-                }
-            });
+        // Run the model only if this span hasn't been separated yet — changing
+        // strength then costs a quick re-mix instead of minutes of inference.
+        if !std::path::Path::new(&raw_s).is_file() {
+            let raw_tmp = format!("{raw_s}.partial.wav");
+            let res = cutlass_engine::separate::remove_music(
+                &tmp_in,
+                &model.to_string_lossy(),
+                &raw_tmp,
+                move |p| {
+                    let pct = (p * 100.0) as i32;
+                    if last.swap(pct, Ordering::Relaxed) != pct {
+                        let _ = app2
+                            .emit("remove-music-progress", serde_json::json!({ "clip": cid, "pct": pct }));
+                    }
+                },
+            );
+            if let Err(e) = res {
+                let _ = std::fs::remove_file(&tmp_in);
+                return Err(e);
+            }
+            std::fs::rename(&raw_tmp, &raw_s)?;
+        }
+        let res = cutlass_engine::separate::blend_and_write(&raw_s, &tmp_in, &tmp_out, strength);
         let _ = std::fs::remove_file(&tmp_in);
         res?;
         std::fs::rename(&tmp_out, &out_s)?;
