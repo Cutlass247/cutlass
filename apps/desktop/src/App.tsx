@@ -842,6 +842,9 @@ export default function App() {
         return;
       }
       const id = clip.id;
+      // stop playback first: the job rewrites the clip's audio file, and on
+      // Windows a file the preview still has open can't be replaced.
+      setPlaying(false);
       setMusicPct((p) => ({ ...p, [id]: 0 }));
       removeMusic(id)
         .then(() => setEffect(id, "music_removed", 1))
@@ -863,6 +866,7 @@ export default function App() {
   const onMusicStrength = useCallback(
     (clip: Clip, v: number) => {
       const id = clip.id;
+      setPlaying(false); // same reason: the re-mix replaces the clip's audio file
       setMusicPct((p) => ({ ...p, [id]: 0 }));
       setEffect(id, "music_strength", v)
         .then(applyEdit)
