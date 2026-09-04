@@ -1073,6 +1073,29 @@ fn mdx_model_path() -> Result<std::path::PathBuf, String> {
     }
 }
 
+/// Replace `to` with `from`, retrying briefly. On Windows a file that was just
+/// written — or one the preview is still reading — is often held for a moment
+/// (antivirus scanning the new file is the usual culprit), and the rename comes
+/// back as "Access is denied (os error 5)". Retrying with a short backoff clears
+/// it; renaming onto a path nothing holds succeeds on the first try.
+fn replace_file(from: &str, to: &str) -> std::io::Result<()> {
+    let mut last: Option<std::io::Error> = None;
+    for attempt in 0..12 {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+        // the destination may be the thing that's locked; try clearing it
+        let _ = std::fs::remove_file(to);
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(80 * (attempt + 1)));
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("could not replace file")))
+}
+
 /// On-device "remove background music": separate one clip's span of its source
 /// into vocals vs. the rest, cached beside that source's proxies as
 /// `vocals_<start>_<end>.wav`. The clip then flips fx.music_removed to
@@ -1157,12 +1180,12 @@ async fn remove_music(
                 let _ = std::fs::remove_file(&tmp_in);
                 return Err(e);
             }
-            std::fs::rename(&raw_tmp, &raw_s)?;
+            replace_file(&raw_tmp, &raw_s)?;
         }
         let res = cutlass_engine::separate::blend_and_write(&raw_s, &tmp_in, &tmp_out, strength);
         let _ = std::fs::remove_file(&tmp_in);
         res?;
-        std::fs::rename(&tmp_out, &out_s)?;
+        replace_file(&tmp_out, &out_s)?;
         Ok(())
     })
     .await
