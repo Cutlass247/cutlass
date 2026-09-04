@@ -270,6 +270,16 @@ pub fn vocals_range_path(src: &Path, start_s: f64, end_s: f64) -> anyhow::Result
     Ok(cache_dir(src)?.join(format!("vocals_{a}_{b}.wav")))
 }
 
+/// The *raw* separated vocals for a span, before strength-blending and makeup
+/// gain. Kept so changing the strength only re-mixes (fast) instead of re-running
+/// the model. Named "vocalsraw_" so it can't be picked up by `vocals_covering`,
+/// which matches the "vocals_" prefix.
+pub fn vocals_raw_path(src: &Path, start_s: f64, end_s: f64) -> anyhow::Result<PathBuf> {
+    let a = (start_s.max(0.0) * 1000.0).round() as i64;
+    let b = (end_s.max(start_s.max(0.0)) * 1000.0).round() as i64;
+    Ok(cache_dir(src)?.join(format!("vocalsraw_{a}_{b}.wav")))
+}
+
 /// Find a cached separation that fully covers `[start_s, end_s]`, returning its
 /// path and the source time its first sample corresponds to (so callers can
 /// offset into it). Falls back to the legacy whole-source `vocals.wav`. None =
