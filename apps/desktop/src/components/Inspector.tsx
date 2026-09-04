@@ -765,7 +765,15 @@ export function Inspector(p: {
                   <MusicRemovalControl
                     removed={p.musicRemoved}
                     pct={p.musicPct}
-                    hasAudio={(clipMedia?.waveform.length ?? 0) > 0}
+                    // An empty waveform only means "no audio" for shorter media:
+                    // import skips waveform generation past 30 min to stay
+                    // responsive, so for long recordings we can't tell from it
+                    // and assume audio (otherwise this hides on exactly the
+                    // long captures that most need music removed).
+                    hasAudio={
+                      (clipMedia?.waveform.length ?? 0) > 0 ||
+                      (clipMedia?.duration_s ?? 0) > 1800
+                    }
                     onToggle={p.onRemoveMusic}
                   />
                   {p.hasLeftNeighbor && (
