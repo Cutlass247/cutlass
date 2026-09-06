@@ -23,6 +23,7 @@ fn main() -> anyhow::Result<()> {
             fps: 30,
             format: fmt,
             quality: Quality::Medium,
+            ..Default::default()
         };
         let enc = export(&segs, &[], &[], &out, &settings, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false))?;
         let dur = probe_duration_s(&out)?;
