@@ -8,6 +8,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use anyhow::Context as _;
+
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 
@@ -27,7 +29,15 @@ pub struct CensorSlot {
 
 impl Default for CensorSlot {
     fn default() -> Self {
-        Self { style: 0.0, x: 0.5, y: 0.5, w: 0.25, h: 0.25, strength: 0.4, color: 0.0 }
+        Self {
+            style: 0.0,
+            x: 0.5,
+            y: 0.5,
+            w: 0.25,
+            h: 0.25,
+            strength: 0.4,
+            color: 0.0,
+        }
     }
 }
 
@@ -59,30 +69,30 @@ fn parse_censor(key: &str) -> Option<(usize, char)> {
 /// same vocabulary the preview (CSS) and playback (gain) speak.
 #[derive(Debug, Clone)]
 pub struct ClipFx {
-    pub brightness: f64,  // 0, range -1..1
-    pub contrast: f64,    // 1
-    pub saturation: f64,  // 1
-    pub temperature: f64, // 0, -100 (cool) .. 100 (warm)
-    pub tint: f64,        // 0, -100 (green) .. 100 (magenta)
-    pub hue: f64,         // 0, degrees -180..180
-    pub blur: f64,        // 0, gaussian sigma
-    pub sharpen: f64,     // 0, 0..1 amount
-    pub grain: f64,       // 0, 0..1 film-grain strength
-    pub vignette: f64,    // 0, 0..1 strength
-    pub flip_h: f64,      // 0 or 1
-    pub flip_v: f64,      // 0 or 1
-    pub chroma: f64,      // 0 or 1 — green-screen key (overlay tracks)
-    pub chroma_sim: f64,  // 0.30 — key similarity
-    pub denoise: f64,     // 0 or 1 — audio voice cleanup
-    pub scale: f64,      // 1
-    pub rot: f64,        // degrees
-    pub pos_x: f64,      // fraction of width
-    pub pos_y: f64,      // fraction of height
-    pub fade_in: f64,    // seconds
-    pub fade_out: f64,   // seconds
-    pub volume: f64,     // 1
-    pub speed: f64,      // 1 (2 = 2× faster, 0.5 = slow-mo)
-    pub audio_offset: f64, // 0 — seconds to slip audio vs video (+later, -earlier)
+    pub brightness: f64,    // 0, range -1..1
+    pub contrast: f64,      // 1
+    pub saturation: f64,    // 1
+    pub temperature: f64,   // 0, -100 (cool) .. 100 (warm)
+    pub tint: f64,          // 0, -100 (green) .. 100 (magenta)
+    pub hue: f64,           // 0, degrees -180..180
+    pub blur: f64,          // 0, gaussian sigma
+    pub sharpen: f64,       // 0, 0..1 amount
+    pub grain: f64,         // 0, 0..1 film-grain strength
+    pub vignette: f64,      // 0, 0..1 strength
+    pub flip_h: f64,        // 0 or 1
+    pub flip_v: f64,        // 0 or 1
+    pub chroma: f64,        // 0 or 1 — green-screen key (overlay tracks)
+    pub chroma_sim: f64,    // 0.30 — key similarity
+    pub denoise: f64,       // 0 or 1 — audio voice cleanup
+    pub scale: f64,         // 1
+    pub rot: f64,           // degrees
+    pub pos_x: f64,         // fraction of width
+    pub pos_y: f64,         // fraction of height
+    pub fade_in: f64,       // seconds
+    pub fade_out: f64,      // seconds
+    pub volume: f64,        // 1
+    pub speed: f64,         // 1 (2 = 2× faster, 0.5 = slow-mo)
+    pub audio_offset: f64,  // 0 — seconds to slip audio vs video (+later, -earlier)
     pub music_removed: f64, // 0 or 1 — use the separated vocals audio (remove music)
     // up to 3 censor regions. Each field is keyframeable (censor_x,
     // censor2_x, censor3_x …) so a box can follow a moving subject.
@@ -117,7 +127,11 @@ impl Default for ClipFx {
             speed: 1.0,
             audio_offset: 0.0,
             music_removed: 0.0,
-            censor: [CensorSlot::default(), CensorSlot::default(), CensorSlot::default()],
+            censor: [
+                CensorSlot::default(),
+                CensorSlot::default(),
+                CensorSlot::default(),
+            ],
         }
     }
 }
@@ -226,7 +240,11 @@ impl ClipFx {
             music_removed: g("music_removed", d.music_removed),
             speed: {
                 let s = g("speed", d.speed);
-                if s > 0.05 { s } else { 1.0 }
+                if s > 0.05 {
+                    s
+                } else {
+                    1.0
+                }
             },
             censor: {
                 let slot = |p: &str| CensorSlot {
@@ -249,8 +267,16 @@ impl ClipFx {
 
 #[derive(Debug, Clone)]
 pub enum Segment {
-    Clip { path: String, src_in: f64, len: f64, fx: ClipFx, lut: String },
-    Gap { len: f64 },
+    Clip {
+        path: String,
+        src_in: f64,
+        len: f64,
+        fx: ClipFx,
+        lut: String,
+    },
+    Gap {
+        len: f64,
+    },
     /// A `dur`-second dissolve (or dip-to-black) from A's tail into B's
     /// head. Both windows are fitted then combined with xfade/acrossfade.
     Transition {
@@ -281,7 +307,7 @@ pub struct ExportClip {
     pub src_in: f64,
     pub path: String,
     pub fx: ClipFx,
-    pub lut: String, // .cube LUT path, empty = none
+    pub lut: String,    // .cube LUT path, empty = none
     pub trans_dur: f64, // 0 = hard cut
     pub trans_dip: bool,
     /// param → sorted (clip-relative time, value); empty = no animation.
@@ -312,8 +338,8 @@ pub struct Title {
     pub text: String,
     pub start: f64,
     pub len: f64,
-    pub pos_x: f64,    // fraction of width, 0 = centered
-    pub pos_y: f64,    // fraction of height, 0 = centered
+    pub pos_x: f64,     // fraction of width, 0 = centered
+    pub pos_y: f64,     // fraction of height, 0 = centered
     pub font_size: f64, // px at 1080p, scaled to output height
     pub bg: f64,        // background band opacity, 0 = none
 }
@@ -354,7 +380,14 @@ fn title_font() -> String {
 /// blur / pixelate / black it, and overlay it back exactly in place. Returns
 /// the appended filter string and the new `cur` label, or None when off.
 /// LGPL-safe filters only (crop, gblur, scale-mosaic, drawbox, overlay).
-fn censor_chain(k: usize, slot: usize, c: &CensorSlot, w: u32, h: u32, cur: &str) -> Option<(String, String)> {
+fn censor_chain(
+    k: usize,
+    slot: usize,
+    c: &CensorSlot,
+    w: u32,
+    h: u32,
+    cur: &str,
+) -> Option<(String, String)> {
     let cen = c.style.round() as i32;
     if !(1..=3).contains(&cen) || c.w <= 0.01 || c.h <= 0.01 {
         return None;
@@ -489,7 +522,10 @@ fn clip_video_chain(
     }
     if fx.grain > 0.01 {
         // temporal noise = animated film grain
-        stylize.push_str(&format!("noise=alls={}:allf=t,", (fx.grain * 22.0).round() as i64));
+        stylize.push_str(&format!(
+            "noise=alls={}:allf=t,",
+            (fx.grain * 22.0).round() as i64
+        ));
     }
     if fx.flip_h > 0.5 {
         stylize.push_str("hflip,");
@@ -504,7 +540,10 @@ fn clip_video_chain(
     }
     if fx.has_transform() {
         let (px, py) = (fx.pos_x * w as f64, fx.pos_y * h as f64);
-        s.push_str(&format!("[{cur}]scale=iw*{sc}:ih*{sc}[sc{k}];", sc = fx.scale));
+        s.push_str(&format!(
+            "[{cur}]scale=iw*{sc}:ih*{sc}[sc{k}];",
+            sc = fx.scale
+        ));
         s.push_str(&format!(
             "color=c=black:s={w}x{h}:r={fps}:d={len:.3},format=yuv420p[bg{k}];"
         ));
@@ -804,6 +843,11 @@ fn output_args(
     height: u32,
     fps: u32,
     cbr: bool,
+    // Writing a chunk of a long export rather than the deliverable: the parts
+    // are Matroska and get stream-copied into the real output, so they carry
+    // uncompressed audio (AAC's encoder padding would put a small gap at every
+    // join, and those accumulate into audible drift) and no MP4-only flags.
+    intermediate: bool,
 ) -> Vec<String> {
     let s = |x: &str| x.to_string();
     // AMD's AMF encoders honour -b:v only in CBR; their VBR modes emit a
@@ -837,8 +881,10 @@ fn output_args(
             }
             a.extend([s("-pix_fmt"), s("yuv420p")]);
             a.extend(color_tag_args());
-            a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
-            a.extend([s("-movflags"), s("+faststart")]);
+            a.extend(audio_args(format, intermediate));
+            if !intermediate {
+                a.extend([s("-movflags"), s("+faststart")]);
+            }
         }
         ExportFormat::Mp4H265 => {
             a.extend(rate_args(width, height, fps, quality, true, cbr));
@@ -855,8 +901,10 @@ fn output_args(
             a.extend([s("-pix_fmt"), s("yuv420p")]);
             a.extend([s("-tag:v"), s("hvc1")]); // QuickTime-playable HEVC
             a.extend(color_tag_args());
-            a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
-            a.extend([s("-movflags"), s("+faststart")]);
+            a.extend(audio_args(format, intermediate));
+            if !intermediate {
+                a.extend([s("-movflags"), s("+faststart")]);
+            }
         }
         ExportFormat::MovProres => {
             let p = match quality {
@@ -874,7 +922,14 @@ fn output_args(
                 Quality::Medium => 31,
                 Quality::High => 24,
             };
-            a.extend([s("-crf"), q.to_string(), s("-b:v"), s("0"), s("-row-mt"), s("1")]);
+            a.extend([
+                s("-crf"),
+                q.to_string(),
+                s("-b:v"),
+                s("0"),
+                s("-row-mt"),
+                s("1"),
+            ]);
             a.extend([s("-pix_fmt"), s("yuv420p")]);
             a.extend([s("-c:a"), s("libopus"), s("-b:a"), s("160k")]);
         }
@@ -882,8 +937,97 @@ fn output_args(
     a
 }
 
+/// The delivery audio codec for a format — or uncompressed, for a chunk that
+/// is going to be stream-copied into the real output.
+fn audio_args(format: ExportFormat, intermediate: bool) -> Vec<String> {
+    let s = |x: &str| x.to_string();
+    if intermediate {
+        return vec![s("-c:a"), s("pcm_s16le")];
+    }
+    match format {
+        ExportFormat::Mp4H264 | ExportFormat::Mp4H265 => {
+            vec![s("-c:a"), s("aac"), s("-b:a"), s("192k")]
+        }
+        ExportFormat::MovProres => vec![s("-c:a"), s("pcm_s16le")],
+        ExportFormat::WebmVp9 => vec![s("-c:a"), s("libopus"), s("-b:a"), s("160k")],
+    }
+}
+
+/// Segments rendered per ffmpeg process when a timeline is long enough to be
+/// staged. Every clip is a separate `-i`, and each open input costs roughly
+/// 0.3 GB at 4K (decoder DPB plus frame-threading buffers), so a single-pass
+/// hour-long edit measured 2.4 GB at 4 cuts, 10.9 GB at 20 and 18.4 GB at 60 —
+/// past which the machine pages itself to a standstill and the progress bar
+/// appears frozen. Staging holds the peak flat instead: 4.5 GB at both 60 and
+/// 160 cuts, and slightly *faster* overall despite the extra join.
+const CHUNK_SEGMENTS: usize = 8;
+
+/// Below this a single pass is comfortably within memory, so don't pay for
+/// temp files and a join.
+const CHUNK_MIN_SEGMENTS: usize = 16;
+
+/// Where the progress bar hands over from rendering parts to joining them.
+/// The join only copies, but over an hour of 4K that is still long enough
+/// that a bar parked at 100% would read as a hang.
+const JOIN_START: f64 = 0.95;
+
+/// Clip `ov` to the timeline window `[t0, t1)` and rebase it to chunk-local
+/// time, so a chunk renders its own overlays and the join stays a copy.
+/// `None` when the overlay doesn't reach into this chunk.
+fn slice_overlay(ov: &Overlay, t0: f64, t1: f64) -> Option<Overlay> {
+    let start = ov.start.max(t0);
+    let end = (ov.start + ov.len).min(t1);
+    if end - start <= 1e-6 {
+        return None;
+    }
+    Some(Overlay {
+        path: ov.path.clone(),
+        // if the overlay began before this chunk, enter its source that far in
+        src_in: ov.src_in + (start - ov.start),
+        len: end - start,
+        start: start - t0,
+        fx: ov.fx.clone(),
+        audio_only: ov.audio_only,
+    })
+}
+
+/// As [`slice_overlay`], for a title's `enable=between(t,..)` window.
+fn slice_title(t: &Title, t0: f64, t1: f64) -> Option<Title> {
+    let start = t.start.max(t0);
+    let end = (t.start + t.len).min(t1);
+    if end - start <= 1e-6 {
+        return None;
+    }
+    Some(Title {
+        text: t.text.clone(),
+        start: start - t0,
+        len: end - start,
+        ..*t
+    })
+}
+
 /// Does the file have an audio stream? (stderr probe)
 pub fn has_audio(path: &str) -> bool {
+    // Memoised: this is called once per segment while building the filtergraph,
+    // and the whole graph is rebuilt for each encoder the export falls back
+    // through — so a many-cut timeline would otherwise spawn hundreds of probe
+    // processes before a single frame is encoded.
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, bool>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
+    if let Ok(c) = cache.lock() {
+        if let Some(&hit) = c.get(path) {
+            return hit;
+        }
+    }
+    let found = probe_has_audio(path);
+    if let Ok(mut c) = cache.lock() {
+        c.insert(path.to_string(), found);
+    }
+    found
+}
+
+fn probe_has_audio(path: &str) -> bool {
     let Ok(mut child) = FfmpegCommand::new()
         .input(path)
         .args(["-t", "0.01", "-f", "null", "-"])
@@ -917,24 +1061,46 @@ pub fn export(
     anyhow::ensure!(!segments.is_empty(), "nothing to export");
     let total: f64 = segments.iter().map(|s| s.len()).sum();
 
+    // Long timelines are rendered in stages so peak memory stays flat; MP4 is
+    // the only format staged, since it's what long exports actually use and a
+    // copy-join needs the part codec to be legal in the delivery container.
+    let staged = segments.len() >= CHUNK_MIN_SEGMENTS
+        && matches!(
+            settings.format,
+            ExportFormat::Mp4H264 | ExportFormat::Mp4H265
+        );
+    let run = |encoder: &str, progress: &mut dyn FnMut(f32), cbr: bool| -> anyhow::Result<()> {
+        if staged {
+            run_export_chunked(
+                segments, overlays, titles, out, settings, encoder, total, progress, cancel, cbr,
+            )
+        } else {
+            run_export(
+                segments, overlays, titles, out, settings, encoder, total, progress, cancel, cbr,
+                false,
+            )
+        }
+    };
+
     let encoders = settings.format.encoders();
     for (i, encoder) in encoders.iter().enumerate() {
         progress(0.0);
-        let mut res = run_export(
-            segments, overlays, titles, out, settings, encoder, total, progress, cancel, false,
-        );
+        let mut res = run(encoder, progress, false);
         // If it accepted -b:v but emitted a fraction of it, retry the same
         // encoder pinned to CBR, which obliges it to hit the rate. Hardware
         // encoders honour -b:v inconsistently depending on driver/context,
         // and for H.265 there is no software fallback to fall back to.
+        // `{:#}` walks the whole cause chain — a staged run wraps the failure
+        // in which part it came from, which would otherwise hide this.
         if !cancel.load(Ordering::Relaxed)
-            && res.as_ref().err().is_some_and(|e| e.to_string().contains("ignored the requested"))
+            && res
+                .as_ref()
+                .err()
+                .is_some_and(|e| format!("{e:#}").contains("ignored the requested"))
         {
             eprintln!("{encoder} under-delivered; retrying pinned to CBR");
             progress(0.0);
-            res = run_export(
-                segments, overlays, titles, out, settings, encoder, total, progress, cancel, true,
-            );
+            res = run(encoder, progress, true);
         }
         match res {
             Ok(()) => return Ok(encoder.to_string()),
@@ -944,7 +1110,10 @@ pub fn export(
                     return Err(e);
                 }
                 if i + 1 < encoders.len() {
-                    eprintln!("{encoder} encode failed ({e:#}); trying {}", encoders[i + 1]);
+                    eprintln!(
+                        "{encoder} encode failed ({e:#}); trying {}",
+                        encoders[i + 1]
+                    );
                 } else if matches!(settings.format, ExportFormat::Mp4H265) {
                     // Every HEVC encoder is hardware-backed here (x265 is GPL,
                     // so there's no software fallback). Plenty of GPUs encode
@@ -965,7 +1134,15 @@ pub fn export(
     unreachable!()
 }
 
-fn run_export(
+/// Render a long timeline as a series of bounded ffmpeg runs and join them.
+///
+/// Each stage renders `CHUNK_SEGMENTS` segments — with the overlays and titles
+/// that fall in its window, rebased to chunk-local time — to a Matroska part
+/// using the same encoder and settings. The parts are then concatenated with
+/// the video stream *copied*, so joining costs no quality and no second encode.
+/// Only the audio is encoded at the join, once, over the whole program.
+#[allow(clippy::too_many_arguments)]
+fn run_export_chunked(
     segments: &[Segment],
     overlays: &[Overlay],
     titles: &[Title],
@@ -977,6 +1154,145 @@ fn run_export(
     cancel: &std::sync::atomic::AtomicBool,
     cbr: bool,
 ) -> anyhow::Result<()> {
+    use std::sync::atomic::Ordering;
+    // Parts live beside the output so they land on the volume the user already
+    // chose to have room on, and a cancelled export doesn't strand them in temp.
+    let parent = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    // Unique per attempt, not just per process: export() calls this again for
+    // each encoder it falls back through, and on Windows a directory that has
+    // just been removed lingers in a delete-pending state where creating it
+    // appears to succeed but creating files inside it fails.
+    static ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let work = parent.join(format!(
+        ".cutlass_export_{}_{}",
+        std::process::id(),
+        ATTEMPT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&work)
+        .with_context(|| format!("couldn't create a working folder in {}", parent.display()))?;
+
+    let mut render = || -> anyhow::Result<()> {
+        let mut parts: Vec<std::path::PathBuf> = Vec::new();
+        let mut elapsed = 0.0f64; // timeline seconds already rendered
+        for (ci, batch) in segments.chunks(CHUNK_SEGMENTS).enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                anyhow::bail!("export cancelled");
+            }
+            let span: f64 = batch.iter().map(|x| x.len()).sum();
+            let (t0, t1) = (elapsed, elapsed + span);
+            let ovs: Vec<Overlay> = overlays
+                .iter()
+                .filter_map(|o| slice_overlay(o, t0, t1))
+                .collect();
+            let tls: Vec<Title> = titles
+                .iter()
+                .filter_map(|t| slice_title(t, t0, t1))
+                .collect();
+            let part = work.join(format!("part{ci:05}.mkv"));
+            // Map this chunk's 0..1 onto its slice of the whole timeline,
+            // leaving the tail of the bar for the join so it doesn't sit
+            // pinned at 100% while the parts are still being stitched.
+            let mut sub = |x: f32| {
+                progress(
+                    (((t0 + x as f64 * span) / total.max(0.001)).clamp(0.0, 1.0) * JOIN_START)
+                        as f32,
+                )
+            };
+            run_export(
+                batch, &ovs, &tls, &part, s, encoder, span, &mut sub, cancel, cbr, true,
+            )
+            .with_context(|| {
+                format!(
+                    "part {} of {}",
+                    ci + 1,
+                    segments.len().div_ceil(CHUNK_SEGMENTS)
+                )
+            })?;
+            parts.push(part);
+            elapsed = t1;
+        }
+
+        // concat demuxer: opens one part at a time, so the join is cheap
+        let list = work.join("parts.txt");
+        let mut txt = String::new();
+        for p in &parts {
+            // Bare file names, resolved relative to this list — the parts sit
+            // next to it. A full Windows path here would be read with its
+            // backslashes as escapes ("D:\Videos" -> "D:Videos") and the join
+            // would fail on any normal output folder.
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            txt.push_str(&format!("file '{}'\n", name.replace('\'', r"'\''")));
+        }
+        std::fs::write(&list, txt)?;
+
+        let mut cmd = FfmpegCommand::new();
+        let mut child = cmd
+            .args(["-f", "concat", "-safe", "0"])
+            .input(list.to_string_lossy())
+            .args(["-c:v", "copy"])
+            .args(audio_args(s.format, false).iter())
+            .args(["-movflags", "+faststart", "-y"])
+            .output(out.to_string_lossy())
+            .spawn()?;
+        let mut saw_error = None;
+        for event in child.iter()? {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = std::fs::remove_file(out);
+                anyhow::bail!("export cancelled");
+            }
+            match event {
+                FfmpegEvent::Progress(p) => {
+                    let done = parse_time_s(&p.time).unwrap_or(0.0);
+                    let frac = (done / total.max(0.001)).clamp(0.0, 1.0);
+                    progress((JOIN_START + (1.0 - JOIN_START) * frac) as f32);
+                }
+                FfmpegEvent::Log(level, line)
+                    if format!("{level:?}").contains("Error") && saw_error.is_none() =>
+                {
+                    saw_error = Some(line);
+                }
+                _ => {}
+            }
+        }
+        if !child.wait()?.success() {
+            anyhow::bail!(
+                "joining the rendered parts failed{}",
+                saw_error.map(|e| format!(": {e}")).unwrap_or_default()
+            );
+        }
+        // judge the delivered bitrate once, on the whole program
+        check_delivered_bitrate(out, s, encoder, total)?;
+        progress(1.0);
+        Ok(())
+    };
+
+    let res = render();
+    // Parts are large; clear them whether we finished, failed or were cancelled.
+    let _ = std::fs::remove_dir_all(&work);
+    res
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_export(
+    segments: &[Segment],
+    overlays: &[Overlay],
+    titles: &[Title],
+    out: &Path,
+    s: &ExportSettings,
+    encoder: &str,
+    total: f64,
+    progress: &mut dyn FnMut(f32),
+    cancel: &std::sync::atomic::AtomicBool,
+    cbr: bool,
+    intermediate: bool,
+) -> anyhow::Result<()> {
     let (w, h, fps) = (s.width, s.height, s.fps);
     let mut cmd = FfmpegCommand::new();
     let mut filters = String::new();
@@ -985,19 +1301,39 @@ fn run_export(
 
     for (k, seg) in segments.iter().enumerate() {
         match seg {
-            Segment::Clip { path, src_in, len, fx, lut } => {
+            Segment::Clip {
+                path,
+                src_in,
+                len,
+                fx,
+                lut,
+            } => {
                 // input-level seek: ffmpeg decodes from the prior keyframe
                 // and discards up to the exact point — frame-accurate.
                 // With speed, consume `len*speed` of source (retimed to
                 // `len` on the timeline by setpts/atempo in the chains).
                 let src_dur = len * fx.speed;
-                cmd.args(["-ss", &format!("{src_in:.3}"), "-t", &format!("{src_dur:.3}")]);
+                cmd.args([
+                    "-ss",
+                    &format!("{src_in:.3}"),
+                    "-t",
+                    &format!("{src_dur:.3}"),
+                ]);
                 cmd.input(path.as_str());
                 let vi = input_idx;
                 input_idx += 1;
                 filters.push_str(&clip_video_chain(
-                    vi, k, *len, w, h, fps, fx, lut,
-                    s.reframe, s.reframe_x, s.reframe_y,
+                    vi,
+                    k,
+                    *len,
+                    w,
+                    h,
+                    fps,
+                    fx,
+                    lut,
+                    s.reframe,
+                    s.reframe_x,
+                    s.reframe_y,
                 ));
                 // "Remove music": when the flag is on and a separated vocals
                 // track exists for this source, take the clip's audio from that
@@ -1039,7 +1375,14 @@ fn run_export(
                 filters.push_str(&format!("[{input_idx}:a]acopy[a{k}];"));
                 input_idx += 1;
             }
-            Segment::Transition { a_path, a_src, b_path, b_src, dur, dip } => {
+            Segment::Transition {
+                a_path,
+                a_src,
+                b_path,
+                b_src,
+                dur,
+                dip,
+            } => {
                 let fit = |vi: u32, tag: &str| {
                     format!(
                         "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
@@ -1099,7 +1442,12 @@ fn run_export(
     let mut base = "catv".to_string();
     let mut overlay_audio: Vec<String> = Vec::new();
     for (j, ov) in overlays.iter().enumerate() {
-        cmd.args(["-ss", &format!("{:.3}", ov.src_in), "-t", &format!("{:.3}", ov.len)]);
+        cmd.args([
+            "-ss",
+            &format!("{:.3}", ov.src_in),
+            "-t",
+            &format!("{:.3}", ov.len),
+        ]);
         cmd.input(ov.path.as_str());
         let vi = input_idx;
         input_idx += 1;
@@ -1131,7 +1479,11 @@ fn run_export(
                 ));
             }
             if (ov.fx.saturation - 1.0).abs() > 1e-9 || ov.fx.hue != 0.0 {
-                grade.push_str(&format!("hue=h={:.2}:s={:.4},", ov.fx.hue, ov.fx.saturation.max(0.0)));
+                grade.push_str(&format!(
+                    "hue=h={:.2}:s={:.4},",
+                    ov.fx.hue,
+                    ov.fx.saturation.max(0.0)
+                ));
             }
             filters.push_str(&format!(
                 "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
@@ -1186,7 +1538,10 @@ fn run_export(
                 format!("(h-text_h)/2+({:.0})", title.pos_y * h as f64)
             };
             let boxpart = if title.bg > 0.0 {
-                format!(":box=1:boxcolor=black@{:.2}:boxborderw=14", title.bg.min(1.0))
+                format!(
+                    ":box=1:boxcolor=black@{:.2}:boxborderw=14",
+                    title.bg.min(1.0)
+                )
             } else {
                 String::new()
             };
@@ -1203,7 +1558,16 @@ fn run_export(
         filters.push_str(&format!("[{cur}]null[outv]"));
     }
 
-    let out_args = output_args(s.format, s.quality, encoder, s.width, s.height, s.fps, cbr);
+    let out_args = output_args(
+        s.format,
+        s.quality,
+        encoder,
+        s.width,
+        s.height,
+        s.fps,
+        cbr,
+        intermediate,
+    );
     // CUTLASS_DEBUG_FFMPEG=1 dumps the graph + output args — the fastest way
     // to see what the export actually asked ffmpeg to do.
     if std::env::var("CUTLASS_DEBUG_FFMPEG").is_ok() {
@@ -1245,25 +1609,42 @@ fn run_export(
         );
     }
 
-    // Some encoders accept -b:v and then silently emit a small fraction of
-    // it (driver/Media-Foundation dependent), which looks terrible even
-    // though ffmpeg reports success. Treat a wildly-under-target file as a
-    // failure so export() falls through to the next encoder.
-    if matches!(s.format, ExportFormat::Mp4H264 | ExportFormat::Mp4H265) {
-        let hevc = matches!(s.format, ExportFormat::Mp4H265);
-        let target = target_bitrate_bps(s.width, s.height, s.fps, s.quality, hevc);
-        if let Ok(meta) = std::fs::metadata(out) {
-            let actual = (meta.len() as f64 * 8.0 / total.max(0.1)) as u64;
-            if actual * 5 < target * 2 {
-                anyhow::bail!(
-                    "{encoder} ignored the requested bitrate ({} kbps of {} kbps)",
-                    actual / 1000,
-                    target / 1000
-                );
-            }
-        }
+    // Judged on the finished file only. A single part of a staged export is a
+    // few seconds of one scene, and a dark or static stretch legitimately
+    // encodes far under target — judging parts would abort whole exports over
+    // nothing.
+    if !intermediate {
+        check_delivered_bitrate(out, s, encoder, total)?;
     }
     progress(1.0);
+    Ok(())
+}
+
+/// Some encoders accept `-b:v` and then silently emit a small fraction of it
+/// (driver/Media-Foundation dependent), which looks terrible even though
+/// ffmpeg reports success. Treat a wildly-under-target file as a failure so
+/// `export()` falls through to the next encoder.
+fn check_delivered_bitrate(
+    out: &Path,
+    s: &ExportSettings,
+    encoder: &str,
+    total: f64,
+) -> anyhow::Result<()> {
+    if !matches!(s.format, ExportFormat::Mp4H264 | ExportFormat::Mp4H265) {
+        return Ok(());
+    }
+    let hevc = matches!(s.format, ExportFormat::Mp4H265);
+    let target = target_bitrate_bps(s.width, s.height, s.fps, s.quality, hevc);
+    if let Ok(meta) = std::fs::metadata(out) {
+        let actual = (meta.len() as f64 * 8.0 / total.max(0.1)) as u64;
+        if actual * 5 < target * 2 {
+            anyhow::bail!(
+                "{encoder} ignored the requested bitrate ({} kbps of {} kbps)",
+                actual / 1000,
+                target / 1000
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1312,16 +1693,34 @@ mod tests {
 
         fx.censor[0].style = 2.0; // pixelate → neighbor scale mosaic
         let pix = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Letterbox, 0.5, 0.5);
-        assert!(pix.contains("flags=neighbor"), "pixelate uses neighbor scale");
+        assert!(
+            pix.contains("flags=neighbor"),
+            "pixelate uses neighbor scale"
+        );
 
         fx.censor[0].style = 3.0; // solid box, custom colour
         fx.censor[0].color = 0xFF8800 as f64;
         let solid = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Letterbox, 0.5, 0.5);
         assert!(solid.contains("drawbox="), "solid fills a box");
-        assert!(solid.contains("color=0xFF8800"), "solid honours the picked colour");
+        assert!(
+            solid.contains("color=0xFF8800"),
+            "solid honours the picked colour"
+        );
 
         // off → no censor filters
-        let off = clip_video_chain(0, 0, 4.0, w, h, fps, &ClipFx::default(), "", Reframe::Letterbox, 0.5, 0.5);
+        let off = clip_video_chain(
+            0,
+            0,
+            4.0,
+            w,
+            h,
+            fps,
+            &ClipFx::default(),
+            "",
+            Reframe::Letterbox,
+            0.5,
+            0.5,
+        );
         assert!(!off.contains("drawbox=") && !off.contains("crop="));
     }
 
@@ -1333,12 +1732,16 @@ mod tests {
         assert!(letter.contains("pad=1080:1920"), "letterbox pads to bars");
         let fill = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Fill, 0.5, 0.5);
         assert!(
-            fill.contains("force_original_aspect_ratio=increase") && fill.contains("crop=1080:1920"),
+            fill.contains("force_original_aspect_ratio=increase")
+                && fill.contains("crop=1080:1920"),
             "fill scales to cover then crops"
         );
         assert!(!fill.contains("pad="), "fill leaves no bars");
         let blur = clip_video_chain(0, 0, 4.0, w, h, fps, &fx, "", Reframe::Blur, 0.5, 0.5);
-        assert!(blur.contains("gblur=sigma") && blur.contains("overlay="), "blur bg + fit overlay");
+        assert!(
+            blur.contains("gblur=sigma") && blur.contains("overlay="),
+            "blur bg + fit overlay"
+        );
     }
 
     #[test]
@@ -1358,7 +1761,9 @@ mod tests {
         assert!(chain.contains("flags=neighbor"), "pixelate (slot 2)");
         // from_map round-trips the numbered keys
         let m: BTreeMap<String, f64> =
-            [("censor2".to_string(), 3.0), ("censor2_x".to_string(), 0.8)].into_iter().collect();
+            [("censor2".to_string(), 3.0), ("censor2_x".to_string(), 0.8)]
+                .into_iter()
+                .collect();
         let fx2 = ClipFx::from_map(&m);
         assert_eq!(fx2.censor[1].style, 3.0);
         assert!((fx2.censor[1].x - 0.8).abs() < 1e-9);
@@ -1372,7 +1777,10 @@ mod tests {
         // 4s / 0.2 = 20 sub-segments
         assert_eq!(segs.len(), 20);
         let total: f64 = segs.iter().map(|s| s.len()).sum();
-        assert!((total - 4.0).abs() < 1e-6, "duration preserved, got {total}");
+        assert!(
+            (total - 4.0).abs() < 1e-6,
+            "duration preserved, got {total}"
+        );
         // scale should rise across the sub-segments (animated)
         let first = match &segs[0] {
             Segment::Clip { fx, .. } => fx.scale,
@@ -1395,7 +1803,9 @@ mod tests {
             _ => panic!("seg0 not clip"),
         }
         match &segs[1] {
-            Segment::Transition { dur, a_src, b_src, .. } => {
+            Segment::Transition {
+                dur, a_src, b_src, ..
+            } => {
                 assert!((dur - 1.0).abs() < 1e-9);
                 assert!((a_src - 5.0).abs() < 1e-9, "A tail window at src 2+4-1=5");
                 assert!((b_src - 2.0).abs() < 1e-9, "B head window at src 3-1=2");
@@ -1403,7 +1813,10 @@ mod tests {
             _ => panic!("seg1 not transition"),
         }
         let total: f64 = segs.iter().map(|s| s.len()).sum();
-        assert!((total - 8.0).abs() < 1e-9, "total preserved at 8s, got {total}");
+        assert!(
+            (total - 8.0).abs() < 1e-9,
+            "total preserved at 8s, got {total}"
+        );
     }
 
     #[test]
@@ -1417,7 +1830,9 @@ mod tests {
     fn transition_needs_adjacency() {
         // gap between clips → no transition even if requested
         let segs = build_segments(vec![clip(0.0, 4.0, 0.0, 0.0), clip(6.0, 4.0, 3.0, 1.0)]);
-        assert!(segs.iter().all(|s| !matches!(s, Segment::Transition { .. })));
+        assert!(segs
+            .iter()
+            .all(|s| !matches!(s, Segment::Transition { .. })));
         assert!(segs.iter().any(|s| matches!(s, Segment::Gap { .. })));
     }
 }
@@ -1430,7 +1845,11 @@ mod tests {
 /// tail by `dur` and inserts a Transition segment there, so the total
 /// timeline duration is preserved (handle-based; see Segment::Transition).
 pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
-    clips.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    clips.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut segs: Vec<Segment> = Vec::new();
     let mut t = 0.0f64;
     let mut prev: Option<ExportClip> = None;
