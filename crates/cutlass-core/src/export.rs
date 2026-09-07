@@ -1863,7 +1863,12 @@ fn run_export(
             let (t0, t1) = (title.start, title.start + title.len);
             let out_lbl = format!("dt{ti}");
             filters.push_str(&format!(
-                "[{cur}]drawtext=fontfile='{font}':text='{txt}':fontsize={fs}:\
+                // expansion=none: a title is literal text the user typed, not a
+                // template. Left on, drawtext reads '%' as a strftime directive
+                // and rejects the graph ("Stray % near ..."), so "100% done"
+                // came out wrong; it also treats "%{...}" as a function call,
+                // which has no business happening to someone's caption.
+                "[{cur}]drawtext=fontfile='{font}':text='{txt}':expansion=none:fontsize={fs}:\
                  fontcolor=white:x={x}:y={y}{boxpart}:\
                  enable='between(t,{t0:.3},{t1:.3})'[{out_lbl}];",
                 txt = esc_drawtext(&title.text)
