@@ -25,6 +25,24 @@ struct History {
     redo: Vec<(Vec<Clip>, Vec<Clip>)>,
 }
 
+/// Lock a mutex, ignoring poisoning.
+///
+/// A poisoned mutex means some other thread panicked while holding it, and the
+/// usual `.lock_ok()` then panics in every later caller too. That turns
+/// one fault anywhere in the app into a window that can do nothing at all --
+/// including save the work in progress -- until it is restarted, which is a far
+/// worse outcome than carrying on. What these locks guard is a document and
+/// some caches, not anything whose invariants a panic could leave dangerous.
+trait LockExt<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for std::sync::Mutex<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 #[derive(Default)]
 struct AppState {
     project: Mutex<Project>,
@@ -101,7 +119,7 @@ enum SyncCmd {
 /// Every mutating command calls this so a live collab session pushes the
 /// change out. No session → no-op.
 fn notify_sync(state: &State<AppState>) {
-    if let Some(tx) = state.sync_tx.lock().unwrap().as_ref() {
+    if let Some(tx) = state.sync_tx.lock_ok().as_ref() {
         let _ = tx.send(SyncCmd::Ping);
     }
 }
@@ -111,14 +129,14 @@ fn with_undo(
     state: &State<AppState>,
     f: impl FnOnce(&mut Project) -> Result<(), String>,
 ) -> Result<serde_json::Value, String> {
-    let mut project = state.project.lock().unwrap();
+    let mut project = state.project.lock_ok();
     let before = project.clips_state();
     f(&mut project)?;
     let after = project.clips_state();
     let snap = project.snapshot();
     drop(project);
     if before != after {
-        let mut h = state.history.lock().unwrap();
+        let mut h = state.history.lock_ok();
         h.undo.push((before, after));
         if h.undo.len() > 100 {
             h.undo.remove(0);
@@ -175,10 +193,18 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
     let mut thumb_paths = cutlass_core::media::read_frames(&dir)?;
 
     let encode = |f: &cutlass_engine::RgbaFrame, i: u32| -> anyhow::Result<()> {
-        let rgb: Vec<u8> = f.data.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let rgb: Vec<u8> = f
+            .data
+            .chunks_exact(4)
+            .flat_map(|p| [p[0], p[1], p[2]])
+            .collect();
         let mut out = std::fs::File::create(dir.join(format!("f{i:05}.jpg")))?;
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
-            .encode(&rgb, f.width, f.height, image::ExtendedColorType::Rgb8)?;
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80).encode(
+            &rgb,
+            f.width,
+            f.height,
+            image::ExtendedColorType::Rgb8,
+        )?;
         Ok(())
     };
 
@@ -310,7 +336,7 @@ async fn import_media(
             .set_media(&info.id, &info.name, &info.path, info.duration_s)
             .map_err(err_str)
     })?;
-    state.media.lock().unwrap().insert(info.id.clone(), info);
+    state.media.lock_ok().insert(info.id.clone(), info);
     Ok(json!({ "media": media_value, "project": snap }))
 }
 
@@ -325,11 +351,14 @@ fn add_clip_from_media(
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
     let (name, dur) = {
-        let media = state.media.lock().unwrap();
+        let media = state.media.lock_ok();
         let info = media.get(&media_id).ok_or("unknown media")?;
         (info.name.clone(), info.duration_s)
     };
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let id = format!("c{nanos:x}");
     let clip = Clip {
         id: id.clone(),
@@ -370,7 +399,13 @@ fn remove_track(track: String, state: State<AppState>) -> Result<serde_json::Val
             .clips_state()
             .iter()
             .filter(|c| track_is_audio(&c.track) == audio && track_num(&c.track) > removed)
-            .map(|c| (c.id.clone(), format!("{kind}{}", track_num(&c.track) - 1), c.start))
+            .map(|c| {
+                (
+                    c.id.clone(),
+                    format!("{kind}{}", track_num(&c.track) - 1),
+                    c.start,
+                )
+            })
             .collect();
         for (id, new_track, start) in shifts {
             p.move_clip(&id, &new_track, start).map_err(err_str)?;
@@ -381,7 +416,7 @@ fn remove_track(track: String, state: State<AppState>) -> Result<serde_json::Val
 
 #[tauri::command]
 fn get_project(state: State<AppState>) -> serde_json::Value {
-    state.project.lock().unwrap().snapshot()
+    state.project.lock_ok().snapshot()
 }
 
 /// Read a small text file (used to load a .cube LUT for the GPU preview).
@@ -425,7 +460,10 @@ fn reveal_file(path: String) {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+        let _ = std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn();
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -453,7 +491,9 @@ fn trim_clip(
     src_in: f64,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    with_undo(&state, |p| p.trim_clip(&id, start, len, src_in).map_err(err_str))
+    with_undo(&state, |p| {
+        p.trim_clip(&id, start, len, src_in).map_err(err_str)
+    })
 }
 
 #[tauri::command]
@@ -477,41 +517,41 @@ fn remove_clip(
 #[tauri::command]
 fn remove_media(media_id: String, state: State<AppState>) -> Result<serde_json::Value, String> {
     let snap = {
-        let mut p = state.project.lock().unwrap();
+        let mut p = state.project.lock_ok();
         p.remove_media(&media_id).map_err(err_str)?;
         p.snapshot()
     };
-    state.media.lock().unwrap().remove(&media_id);
+    state.media.lock_ok().remove(&media_id);
     notify_sync(&state);
     Ok(snap)
 }
 
 #[tauri::command]
 fn undo(state: State<AppState>) -> Result<serde_json::Value, String> {
-    let entry = state.history.lock().unwrap().undo.pop();
+    let entry = state.history.lock_ok().undo.pop();
     let Some((before, after)) = entry else {
-        return Ok(state.project.lock().unwrap().snapshot());
+        return Ok(state.project.lock_ok().snapshot());
     };
-    let mut project = state.project.lock().unwrap();
+    let mut project = state.project.lock_ok();
     project.restore_clips(&before).map_err(err_str)?;
     let snap = project.snapshot();
     drop(project);
-    state.history.lock().unwrap().redo.push((before, after));
+    state.history.lock_ok().redo.push((before, after));
     notify_sync(&state);
     Ok(snap)
 }
 
 #[tauri::command]
 fn redo(state: State<AppState>) -> Result<serde_json::Value, String> {
-    let entry = state.history.lock().unwrap().redo.pop();
+    let entry = state.history.lock_ok().redo.pop();
     let Some((before, after)) = entry else {
-        return Ok(state.project.lock().unwrap().snapshot());
+        return Ok(state.project.lock_ok().snapshot());
     };
-    let mut project = state.project.lock().unwrap();
+    let mut project = state.project.lock_ok();
     project.restore_clips(&after).map_err(err_str)?;
     let snap = project.snapshot();
     drop(project);
-    state.history.lock().unwrap().undo.push((before, after));
+    state.history.lock_ok().undo.push((before, after));
     notify_sync(&state);
     Ok(snap)
 }
@@ -519,8 +559,14 @@ fn redo(state: State<AppState>) -> Result<serde_json::Value, String> {
 /// Split a clip at timeline position `at` (the blade tool).
 #[tauri::command]
 fn split_clip(id: String, at: f64, state: State<AppState>) -> Result<serde_json::Value, String> {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    with_undo(&state, |p| p.split_clip(&id, at, &format!("s{nanos:x}")).map_err(err_str))
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    with_undo(&state, |p| {
+        p.split_clip(&id, at, &format!("s{nanos:x}"))
+            .map_err(err_str)
+    })
 }
 
 /// One logical edit that razors many source ranges (silence / filler
@@ -531,7 +577,10 @@ fn cut_ranges(
     ranges: Vec<(f64, f64)>,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     with_undo(&state, |p| {
         p.razor_out_ranges(&media_id, &ranges, &format!("c{nanos:x}"))
             .map(|_| ())
@@ -569,7 +618,10 @@ fn set_effects(
 /// Create a title (text) clip on V2 at `start`, default lower-third style.
 #[tauri::command]
 fn add_title(start: f64, state: State<AppState>) -> Result<serde_json::Value, String> {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     with_undo(&state, |p| {
         let mut fx = std::collections::BTreeMap::new();
         fx.insert("pos_y".to_string(), 0.3);
@@ -622,7 +674,10 @@ fn add_captions(
     captions: Vec<CaptionSpec>,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    let base = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let base = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     with_undo(&state, |p| {
         for (i, c) in captions.iter().enumerate() {
             let mut fx = std::collections::BTreeMap::new();
@@ -657,7 +712,9 @@ fn set_keyframe(
     value: f64,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    with_undo(&state, |p| p.set_keyframe(&id, &param, t, value).map_err(err_str))
+    with_undo(&state, |p| {
+        p.set_keyframe(&id, &param, t, value).map_err(err_str)
+    })
 }
 
 /// Remove all keyframes for a param (revert to its constant value).
@@ -690,7 +747,7 @@ async fn track_censor(
     use tauri::Emitter;
     // Read just the source path + timing under a brief lock.
     let (path, src_in, len) = {
-        let project = state.project.lock().unwrap();
+        let project = state.project.lock_ok();
         let clips = project.clips_state();
         let clip = clips
             .iter()
@@ -740,8 +797,10 @@ fn reset_censor(
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
     with_undo(&state, |p| {
-        p.clear_keyframes(&id, &format!("{prefix}_x")).map_err(err_str)?;
-        p.clear_keyframes(&id, &format!("{prefix}_y")).map_err(err_str)?;
+        p.clear_keyframes(&id, &format!("{prefix}_x"))
+            .map_err(err_str)?;
+        p.clear_keyframes(&id, &format!("{prefix}_y"))
+            .map_err(err_str)?;
         for (k, v) in [
             (prefix.clone(), 0.0),
             (format!("{prefix}_x"), 0.5),
@@ -821,7 +880,7 @@ fn write_project_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 #[tauri::command]
 fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
-    let mut project = state.project.lock().unwrap();
+    let mut project = state.project.lock_ok();
     // name the project after the file so the title stops reading "Untitled"
     if let Some(stem) = Path::new(&path).file_stem().and_then(|s| s.to_str()) {
         project.set_name(stem);
@@ -838,7 +897,7 @@ fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
 /// any. Returns it once then clears it — the frontend loads it on mount.
 #[tauri::command]
 fn take_startup_file(state: State<AppState>) -> Option<String> {
-    state.startup_file.lock().unwrap().take()
+    state.startup_file.lock_ok().take()
 }
 
 /// Actually close the window — called by the frontend after the user
@@ -903,7 +962,10 @@ async fn open_project(
             let bak = backup_path(Path::new(&path));
             match read(&bak) {
                 Ok(p) => {
-                    eprintln!("{path} unreadable ({main_err}); recovered from {}", bak.display());
+                    eprintln!(
+                        "{path} unreadable ({main_err}); recovered from {}",
+                        bak.display()
+                    );
                     (p, true)
                 }
                 Err(_) if bak.exists() => {
@@ -918,8 +980,8 @@ async fn open_project(
     let entries = project.media_entries();
 
     // rebuilding each media (proxy/waveform) is heavy → off the UI thread
-    let media_pairs = tauri::async_runtime::spawn_blocking(
-        move || -> Vec<(MediaInfo, serde_json::Value)> {
+    let media_pairs =
+        tauri::async_runtime::spawn_blocking(move || -> Vec<(MediaInfo, serde_json::Value)> {
             let mut pairs = Vec::new();
             for (id, name, src_path, _dur) in entries {
                 match import_any(Path::new(&src_path)) {
@@ -934,13 +996,12 @@ async fn open_project(
                 }
             }
             pairs
-        },
-    )
-    .await
-    .map_err(err_str)?;
+        })
+        .await
+        .map_err(err_str)?;
 
     let mut media_out = Vec::new();
-    let mut media_map = state.media.lock().unwrap();
+    let mut media_map = state.media.lock_ok();
     media_map.clear();
     for (info, v) in media_pairs {
         media_out.push(v);
@@ -953,12 +1014,16 @@ async fn open_project(
     let transcripts: serde_json::Map<String, serde_json::Value> = project
         .transcripts()
         .into_iter()
-        .filter_map(|(id, j)| serde_json::from_str::<serde_json::Value>(&j).ok().map(|v| (id, v)))
+        .filter_map(|(id, j)| {
+            serde_json::from_str::<serde_json::Value>(&j)
+                .ok()
+                .map(|v| (id, v))
+        })
         .collect();
 
     let snap = project.snapshot();
-    *state.project.lock().unwrap() = project;
-    *state.history.lock().unwrap() = History::default(); // fresh doc, fresh history
+    *state.project.lock_ok() = project;
+    *state.history.lock_ok() = History::default(); // fresh doc, fresh history
     notify_sync(&state);
     Ok(json!({
         "project": snap,
@@ -978,38 +1043,46 @@ async fn open_project(
 fn set_mode(mode: String, state: State<AppState>) -> Result<serde_json::Value, String> {
     let mode = if mode == "studio" { "studio" } else { "create" };
     {
-        let mut active = state.active_mode.lock().unwrap();
-        let cur = if active.is_empty() { "create" } else { active.as_str() };
+        let mut active = state.active_mode.lock_ok();
+        let cur = if active.is_empty() {
+            "create"
+        } else {
+            active.as_str()
+        };
         if cur != mode {
             std::mem::swap(
-                &mut *state.project.lock().unwrap(),
-                &mut *state.alt_project.lock().unwrap(),
+                &mut *state.project.lock_ok(),
+                &mut *state.alt_project.lock_ok(),
             );
             std::mem::swap(
-                &mut *state.history.lock().unwrap(),
-                &mut *state.alt_history.lock().unwrap(),
+                &mut *state.history.lock_ok(),
+                &mut *state.alt_history.lock_ok(),
             );
-            std::mem::swap(
-                &mut *state.media.lock().unwrap(),
-                &mut *state.alt_media.lock().unwrap(),
-            );
+            std::mem::swap(&mut *state.media.lock_ok(), &mut *state.alt_media.lock_ok());
             *active = mode.to_string();
         }
     }
     // build the now-active workspace's payload (mirrors open_project's shape)
     let (snap, transcripts) = {
-        let mut project = state.project.lock().unwrap();
+        let mut project = state.project.lock_ok();
         let snap = project.snapshot();
         let transcripts: serde_json::Map<String, serde_json::Value> = project
             .transcripts()
             .into_iter()
-            .filter_map(|(id, j)| serde_json::from_str::<serde_json::Value>(&j).ok().map(|v| (id, v)))
+            .filter_map(|(id, j)| {
+                serde_json::from_str::<serde_json::Value>(&j)
+                    .ok()
+                    .map(|v| (id, v))
+            })
             .collect();
         (snap, transcripts)
     };
     let media_out: Vec<serde_json::Value> = {
-        let media = state.media.lock().unwrap();
-        media.values().filter_map(|info| media_json(info).ok()).collect()
+        let media = state.media.lock_ok();
+        media
+            .values()
+            .filter_map(|info| media_json(info).ok())
+            .collect()
     };
     notify_sync(&state);
     Ok(json!({ "project": snap, "media": media_out, "transcripts": transcripts }))
@@ -1040,7 +1113,7 @@ async fn hydrate_media(
     )
     .await
     .map_err(err_str)??;
-    state.media.lock().unwrap().insert(media_id, info);
+    state.media.lock_ok().insert(media_id, info);
     Ok(out)
 }
 
@@ -1074,7 +1147,9 @@ fn whisper_model_path() -> Result<std::path::PathBuf, String> {
             return Ok(candidate);
         }
         if !dir.pop() {
-            return Err("whisper model not found (looked beside the app and in vendor/whisper/)".into());
+            return Err(
+                "whisper model not found (looked beside the app and in vendor/whisper/)".into(),
+            );
         }
     }
 }
@@ -1105,17 +1180,23 @@ async fn transcribe_media(
     let words = tauri::async_runtime::spawn_blocking(move || {
         cutlass_engine::transcribe::transcribe(&path, &model.to_string_lossy(), move |p| {
             if last.swap(p, Ordering::Relaxed) != p {
-                let _ = app2.emit("transcribe-progress", serde_json::json!({ "media": mid, "pct": p }));
+                let _ = app2.emit(
+                    "transcribe-progress",
+                    serde_json::json!({ "media": mid, "pct": p }),
+                );
             }
         })
         .map_err(err_str)
     })
     .await
     .map_err(err_str)??;
-    let _ = app.emit("transcribe-progress", serde_json::json!({ "media": media_id, "pct": 100 }));
+    let _ = app.emit(
+        "transcribe-progress",
+        serde_json::json!({ "media": media_id, "pct": 100 }),
+    );
     // persist into the doc so the transcript saves + syncs with the project
     if let Ok(json) = serde_json::to_string(&words) {
-        let _ = state.project.lock().unwrap().set_transcript(&media_id, &json);
+        let _ = state.project.lock_ok().set_transcript(&media_id, &json);
         notify_sync(&state);
     }
     Ok(words)
@@ -1145,7 +1226,9 @@ fn mdx_model_path() -> Result<std::path::PathBuf, String> {
             return Ok(candidate);
         }
         if !dir.pop() {
-            return Err("music-removal model not found (looked beside the app and in vendor/mdx/)".into());
+            return Err(
+                "music-removal model not found (looked beside the app and in vendor/mdx/)".into(),
+            );
         }
     }
 }
@@ -1193,12 +1276,15 @@ async fn remove_music(
     // recording is minutes of work and gigabytes of RAM for footage you cut out.
     const PAD_S: f64 = 3.0;
     let (path, start_s, end_s, strength) = {
-        let project = state.project.lock().unwrap();
-        let media = state.media.lock().unwrap();
+        let project = state.project.lock_ok();
+        let media = state.media.lock_ok();
         let snap = project.snapshot();
         let clip = snap["clips"]
             .as_array()
-            .and_then(|cs| cs.iter().find(|c| c["id"].as_str() == Some(clip_id.as_str())))
+            .and_then(|cs| {
+                cs.iter()
+                    .find(|c| c["id"].as_str() == Some(clip_id.as_str()))
+            })
             .ok_or_else(|| format!("unknown clip {clip_id}"))?;
         let m = media
             .get(clip["media"].as_str().unwrap_or(""))
@@ -1216,8 +1302,8 @@ async fn remove_music(
     };
     let out = cutlass_core::media::vocals_range_path(Path::new(&path), start_s, end_s)
         .map_err(err_str)?;
-    let raw = cutlass_core::media::vocals_raw_path(Path::new(&path), start_s, end_s)
-        .map_err(err_str)?;
+    let raw =
+        cutlass_core::media::vocals_raw_path(Path::new(&path), start_s, end_s).map_err(err_str)?;
     let model = mdx_model_path()?;
     let out_s = out.to_string_lossy().to_string();
     let raw_s = raw.to_string_lossy().to_string();
@@ -1248,8 +1334,10 @@ async fn remove_music(
                 move |p| {
                     let pct = (p * 100.0) as i32;
                     if last.swap(pct, Ordering::Relaxed) != pct {
-                        let _ = app2
-                            .emit("remove-music-progress", serde_json::json!({ "clip": cid, "pct": pct }));
+                        let _ = app2.emit(
+                            "remove-music-progress",
+                            serde_json::json!({ "clip": cid, "pct": pct }),
+                        );
                     }
                 },
             );
@@ -1268,7 +1356,10 @@ async fn remove_music(
     .await
     .map_err(err_str)?
     .map_err(err_str)?;
-    let _ = app.emit("remove-music-progress", serde_json::json!({ "clip": clip_id, "pct": 100 }));
+    let _ = app.emit(
+        "remove-music-progress",
+        serde_json::json!({ "clip": clip_id, "pct": 100 }),
+    );
     Ok(())
 }
 
@@ -1303,7 +1394,10 @@ async fn cloud_transcribe(
     emit(0);
 
     // 1. extract 16 kHz mono FLAC in ~10-min segments (+ a CSV of chunk offsets)
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let tmp = std::env::temp_dir().join(format!("cutlass-stt-{stamp}"));
     std::fs::create_dir_all(&tmp).map_err(err_str)?;
     let list_path = tmp.join("list.csv");
@@ -1314,8 +1408,20 @@ async fn cloud_transcribe(
     cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(&path)
         .args([
-            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "flac", "-f", "segment", "-segment_time",
-            "600", "-reset_timestamps", "1", "-segment_list",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "flac",
+            "-f",
+            "segment",
+            "-segment_time",
+            "600",
+            "-reset_timestamps",
+            "1",
+            "-segment_list",
         ])
         .arg(&list_path)
         .args(["-segment_list_type", "csv"])
@@ -1330,7 +1436,10 @@ async fn cloud_transcribe(
         let _ = std::fs::remove_dir_all(&tmp);
         return Err(format!(
             "audio extraction failed: {}",
-            String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>()
+            String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .take(300)
+                .collect::<String>()
         ));
     }
     emit(12);
@@ -1375,12 +1484,16 @@ async fn cloud_transcribe(
     if all.is_empty() {
         return Err(last_err.unwrap_or_else(|| "transcription returned no words".into()));
     }
-    all.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+    all.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     emit(100);
 
     // persist into the doc (identical shape to the on-device path)
     if let Ok(json) = serde_json::to_string(&all) {
-        let _ = state.project.lock().unwrap().set_transcript(&media_id, &json);
+        let _ = state.project.lock_ok().set_transcript(&media_id, &json);
         notify_sync(&state);
     }
     Ok(all)
@@ -1394,7 +1507,10 @@ fn razor_out(
     src_to: f64,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     with_undo(&state, |p| {
         p.razor_out(&id, src_from, src_to, &format!("c{nanos:x}"))
             .map_err(err_str)
@@ -1412,18 +1528,18 @@ fn play(
     state: State<AppState>,
 ) -> bool {
     use std::sync::atomic::Ordering;
-    if let Some(h) = state.playback.lock().unwrap().take() {
+    if let Some(h) = state.playback.lock_ok().take() {
         h.stop();
     }
-    if let Some(v) = state.video_stop.lock().unwrap().take() {
+    if let Some(v) = state.video_stop.lock_ok().take() {
         v.store(true, Ordering::Relaxed);
     }
     let muted = muted.unwrap_or_default();
 
     // ── real-time video playback thread ────────────────────────────────
     let video_clips: Vec<PlayClip> = {
-        let project = state.project.lock().unwrap();
-        let media = state.media.lock().unwrap();
+        let project = state.project.lock_ok();
+        let media = state.media.lock_ok();
         let snap = project.snapshot();
         snap["clips"]
             .as_array()
@@ -1448,8 +1564,8 @@ fn play(
             .unwrap_or_default()
     };
     let tracks: Vec<Vec<cutlass_engine::player::AudioClip>> = {
-        let project = state.project.lock().unwrap();
-        let media = state.media.lock().unwrap();
+        let project = state.project.lock_ok();
+        let media = state.media.lock_ok();
         let snap = project.snapshot();
         // every track that carries clips contributes audio — video tracks
         // (their embedded audio) and audio-only beds alike
@@ -1525,7 +1641,7 @@ fn play(
         } else {
             match cutlass_engine::player::start(tracks, from_t) {
                 Ok(handle) => {
-                    *state.playback.lock().unwrap() = Some(handle.clone());
+                    *state.playback.lock_ok() = Some(handle.clone());
                     Some(handle)
                 }
                 Err(e) => {
@@ -1536,7 +1652,7 @@ fn play(
         };
     if !video_clips.is_empty() {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        *state.video_stop.lock().unwrap() = Some(stop.clone());
+        *state.video_stop.lock_ok() = Some(stop.clone());
         start_video_thread(app, video_clips, from_t, stop, audio.clone());
     }
     audio.is_some()
@@ -1545,10 +1661,10 @@ fn play(
 /// Stop audio + video playback; returns where audio stopped.
 #[tauri::command]
 fn pause(state: State<AppState>) -> Option<f64> {
-    if let Some(v) = state.video_stop.lock().unwrap().take() {
+    if let Some(v) = state.video_stop.lock_ok().take() {
         v.store(true, std::sync::atomic::Ordering::Relaxed);
     }
-    state.playback.lock().unwrap().take().map(|h| h.stop())
+    state.playback.lock_ok().take().map(|h| h.stop())
 }
 
 #[tauri::command]
@@ -1585,8 +1701,12 @@ fn frame_to_data_url(frame: &cutlass_engine::RgbaFrame, quality: u8) -> anyhow::
         .flat_map(|px| [px[0], px[1], px[2]])
         .collect();
     let mut jpeg = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
-        .encode(&rgb, frame.width, frame.height, image::ExtendedColorType::Rgb8)?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality).encode(
+        &rgb,
+        frame.width,
+        frame.height,
+        image::ExtendedColorType::Rgb8,
+    )?;
     Ok(format!(
         "data:image/jpeg;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(jpeg)
@@ -1674,7 +1794,7 @@ async fn export_project(
 ) -> Result<String, String> {
     use tauri::Emitter;
     let (clips, overlays, titles) = {
-        let mut project = state.project.lock().unwrap();
+        let mut project = state.project.lock_ok();
         let paths: HashMap<String, String> = project
             .media_entries()
             .into_iter()
@@ -1786,7 +1906,7 @@ async fn export_project(
     };
     // cancel handle: cancel_export flips this; the render loop kills ffmpeg
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    *state.export_cancel.lock().unwrap() = Some(cancel.clone());
+    *state.export_cancel.lock_ok() = Some(cancel.clone());
     // the render runs minutes — off the UI thread; progress still streams
     let result = tauri::async_runtime::spawn_blocking(move || {
         cutlass_core::export::export(
@@ -1817,14 +1937,14 @@ async fn export_project(
     })
     .await
     .map_err(err_str)?;
-    *state.export_cancel.lock().unwrap() = None; // done — drop the handle
+    *state.export_cancel.lock_ok() = None; // done — drop the handle
     result
 }
 
 /// Cancel the in-flight export (kills the ffmpeg render).
 #[tauri::command]
 fn cancel_export(state: State<AppState>) {
-    if let Some(c) = state.export_cancel.lock().unwrap().as_ref() {
+    if let Some(c) = state.export_cancel.lock_ok().as_ref() {
         c.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -1836,13 +1956,13 @@ fn cancel_export(state: State<AppState>) {
 /// after a CUTLASS_ROOM auto-join.
 #[tauri::command]
 fn current_room(state: State<AppState>) -> Option<String> {
-    state.room.lock().unwrap().clone()
+    state.room.lock_ok().clone()
 }
 
 /// Forward an ephemeral presence payload to the room (no-op untethered).
 #[tauri::command]
 fn send_presence(payload: serde_json::Value, state: State<AppState>) {
-    if let Some(tx) = state.sync_tx.lock().unwrap().as_ref() {
+    if let Some(tx) = state.sync_tx.lock_ok().as_ref() {
         let _ = tx.send(SyncCmd::Presence(payload.to_string()));
     }
 }
@@ -1850,8 +1970,8 @@ fn send_presence(payload: serde_json::Value, state: State<AppState>) {
 #[tauri::command]
 fn join_session(room: String, app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SyncCmd>();
-    *state.sync_tx.lock().unwrap() = Some(tx);
-    *state.room.lock().unwrap() = Some(room.clone());
+    *state.sync_tx.lock_ok() = Some(tx);
+    *state.room.lock_ok() = Some(room.clone());
     let url = std::env::var("CUTLASS_SYNC_URL").unwrap_or_else(|_| "ws://127.0.0.1:9720".into());
     tauri::async_runtime::spawn(sync_task(app, format!("{url}/{room}"), rx));
     Ok(())
@@ -1881,7 +2001,7 @@ async fn sync_task(
 
     // offer our current doc
     {
-        let mut p = state.project.lock().unwrap();
+        let mut p = state.project.lock_ok();
         while let Some(m) = p.generate_sync_message(&mut sync) {
             out.push(m);
         }
@@ -1896,7 +2016,7 @@ async fn sync_task(
                 match msg {
                     Some(Ok(WsMessage::Binary(bytes))) => {
                         let snap = {
-                            let mut p = state.project.lock().unwrap();
+                            let mut p = state.project.lock_ok();
                             if p.receive_sync_message(&mut sync, &bytes).is_err() {
                                 continue;
                             }
@@ -1927,7 +2047,7 @@ async fn sync_task(
                     }
                     Some(SyncCmd::Ping) => {
                         {
-                            let mut p = state.project.lock().unwrap();
+                            let mut p = state.project.lock_ok();
                             while let Some(m) = p.generate_sync_message(&mut sync) {
                                 out.push(m);
                             }
@@ -2001,7 +2121,7 @@ fn main() {
     // so the frontend can load it once the window is up.
     let state = AppState::default();
     if let Some(f) = cutlass_arg(&std::env::args().collect::<Vec<_>>()) {
-        *state.startup_file.lock().unwrap() = Some(f);
+        *state.startup_file.lock_ok() = Some(f);
     }
 
     tauri::Builder::default()
@@ -2041,8 +2161,8 @@ fn main() {
                 let handle = app.handle().clone();
                 let state = app.state::<AppState>();
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SyncCmd>();
-                *state.sync_tx.lock().unwrap() = Some(tx);
-                *state.room.lock().unwrap() = Some(room.clone());
+                *state.sync_tx.lock_ok() = Some(tx);
+                *state.room.lock_ok() = Some(room.clone());
                 let url = std::env::var("CUTLASS_SYNC_URL")
                     .unwrap_or_else(|_| "ws://127.0.0.1:9720".into());
                 tauri::async_runtime::spawn(sync_task(handle, format!("{url}/{room}"), rx));
@@ -2181,7 +2301,10 @@ mod tests {
         // an interrupted save leaves the file truncated -- or empty
         std::fs::write(&proj, b"").unwrap();
         assert!(
-            std::fs::read(&proj).ok().and_then(|b| Project::load(&b).ok()).is_none(),
+            std::fs::read(&proj)
+                .ok()
+                .and_then(|b| Project::load(&b).ok())
+                .is_none(),
             "the damaged file should not load"
         );
 
@@ -2191,5 +2314,26 @@ mod tests {
         assert!(recovered.is_some(), "the backup should still load");
         assert_eq!(recovered.unwrap().media_entries().len(), 1);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// One panic anywhere used to poison the shared state and make every later
+    /// command panic too, so the window could not even save. It must survive.
+    #[test]
+    fn a_poisoned_lock_does_not_brick_everything_after_it() {
+        let m = std::sync::Arc::new(std::sync::Mutex::new(vec!["a project".to_string()]));
+        let m2 = m.clone();
+        // a thread panics while holding the lock -- exactly what an unwrap deep
+        // in a command handler does
+        let _ = std::thread::spawn(move || {
+            let _guard = m2.lock().unwrap();
+            panic!("something failed while holding the state");
+        })
+        .join();
+
+        assert!(m.lock().is_err(), "the mutex should now be poisoned");
+        // the old `.lock().unwrap()` would panic here; this must not
+        let mut guard = m.lock_ok();
+        guard.push("still usable".to_string());
+        assert_eq!(guard.len(), 2);
     }
 }
