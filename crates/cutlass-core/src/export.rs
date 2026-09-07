@@ -954,6 +954,100 @@ fn output_args(
     a
 }
 
+/// Re-attempts of one render with the same encoder before giving up on it and
+/// letting `export()` fall through to the next.
+///
+/// Hardware encoders fail transiently. Intel's QSV in particular surfaces
+/// "failed to lock the memory block (-7)" and "Invalid FrameType:0" under
+/// sustained load — five times across one audit run — while being perfectly
+/// reliable when the same encode is repeated in isolation. Abandoning the
+/// encoder on the first fault is both unnecessary and expensive: in a staged
+/// export it throws away every part rendered so far and starts the whole
+/// timeline again on a slower encoder.
+const ENCODER_RETRIES: usize = 2;
+
+/// Whether a failure is worth another attempt. A driver that is too old, or an
+/// encoder this build does not have, will fail identically every time, so those
+/// fall through at once rather than spending three attempts on a certainty.
+fn worth_retrying(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}");
+    !(msg.contains("Driver does not support")
+        || msg.contains("Unknown encoder")
+        || msg.contains("cancelled"))
+}
+
+/// Run one render, re-attempting a transient failure a couple of times.
+fn with_retries(
+    label: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+    log: &mut ExportLog,
+    mut attempt: impl FnMut(&mut ExportLog) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    for n in 0..=ENCODER_RETRIES {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            anyhow::bail!("export cancelled");
+        }
+        match attempt(log) {
+            Ok(()) => {
+                if n > 0 {
+                    log.line(&format!("{label}: succeeded on attempt {}", n + 1));
+                }
+                return Ok(());
+            }
+            Err(e) if n < ENCODER_RETRIES && worth_retrying(&e) => {
+                log.line(&format!(
+                    "{label}: {e:#} — re-attempting ({} of {ENCODER_RETRIES})",
+                    n + 1
+                ));
+                // Give a wedged GPU session a moment to settle before asking
+                // it for another one; retrying instantly tends to fail again.
+                std::thread::sleep(std::time::Duration::from_millis(500 * (n as u64 + 1)));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
+/// How long ffmpeg may say nothing at all before it is treated as wedged.
+///
+/// A hardware-encoder fault does not always end the process: QSV's
+/// "Invalid FrameType:0" was observed leaving ffmpeg alive and idle, and the
+/// export then hung with the progress bar frozen exactly where it stopped —
+/// measured once at 4.8 hours for three seconds of work, ending only because
+/// the process was killed by hand. Retrying cannot help that, because nothing
+/// ever returns to retry. A healthy render emits progress continuously even
+/// when it is very slow, so three minutes of total silence means stuck, not
+/// busy; the limit is deliberately generous so that opening a batch of large
+/// inputs from a slow drive cannot trip it.
+const STALL_LIMIT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// The stall limit, overridable with `CUTLASS_STALL_LIMIT_S` — for testing
+/// this path, and for turning it down on a machine where a driver wedges
+/// often enough that waiting three minutes each time is the wrong trade.
+fn stall_limit() -> std::time::Duration {
+    std::env::var("CUTLASS_STALL_LIMIT_S")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(STALL_LIMIT)
+}
+
+/// Kill a process by id. The watchdog cannot take the `&mut` that
+/// `FfmpegChild::kill` needs, since the render loop is holding it.
+fn kill_pid(pid: u32) {
+    let mut cmd = if cfg!(windows) {
+        let mut c = std::process::Command::new("taskkill");
+        c.args(["/PID", &pid.to_string(), "/F", "/T"]);
+        c
+    } else {
+        let mut c = std::process::Command::new("kill");
+        c.args(["-9", &pid.to_string()]);
+        c
+    };
+    let _ = cmd.output();
+}
+
 /// Removes its file on the way out, whichever path the render leaves by —
 /// finished, failed, or cancelled.
 struct TempFile(std::path::PathBuf);
@@ -1210,10 +1304,15 @@ pub fn export(
                     log,
                 )
             } else {
-                run_export(
-                    segments, overlays, titles, out, settings, encoder, total, progress, cancel,
-                    false, log,
-                )
+                // The staged path retries each part on its own; this one has
+                // no parts to protect, so retry the render itself rather than
+                // dropping straight to a slower encoder over a passing fault.
+                with_retries(encoder, cancel, log, |log| {
+                    run_export(
+                        segments, overlays, titles, out, settings, encoder, total, progress,
+                        cancel, false, log,
+                    )
+                })
             }
         };
 
@@ -1326,8 +1425,19 @@ fn run_export_chunked(
                         as f32,
                 )
             };
-            run_export(
-                batch, &ovs, &tls, &part, s, encoder, span, &mut sub, cancel, true, log,
+            // Retry at the part, not at the export. A transient driver fault
+            // on part 23 of 30 should cost those few seconds again, not throw
+            // away the twenty-two parts already rendered and start the whole
+            // timeline over on a different encoder.
+            with_retries(
+                &format!("part {} of {nparts}", ci + 1),
+                cancel,
+                log,
+                |log| {
+                    run_export(
+                        batch, &ovs, &tls, &part, s, encoder, span, &mut sub, cancel, true, log,
+                    )
+                },
             )
             .with_context(|| format!("part {} of {nparts}", ci + 1))?;
             parts.push(part);
@@ -1715,8 +1825,12 @@ fn run_export(
     // nothing. MP4 is staged into parts of 8 and never came close; ProRes and
     // WebM are rendered in one pass and did.
     let graph_file = temp_graph_path();
-    std::fs::write(&graph_file, filters.as_bytes())
-        .with_context(|| format!("couldn't write the filter graph to {}", graph_file.display()))?;
+    std::fs::write(&graph_file, filters.as_bytes()).with_context(|| {
+        format!(
+            "couldn't write the filter graph to {}",
+            graph_file.display()
+        )
+    })?;
     let _graph_cleanup = TempFile(graph_file.clone());
 
     let mut child = cmd
@@ -1727,9 +1841,38 @@ fn run_export(
         .output(out.to_string_lossy())
         .spawn()?;
 
+    // Watch for the process going silent. Any event at all counts as alive —
+    // a log line as much as a progress tick — so this only fires when ffmpeg
+    // has genuinely stopped talking.
+    let pid = child.as_inner().id();
+    let started = std::time::Instant::now();
+    let last_event = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let stalled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watching = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let limit = stall_limit();
+    let watchdog = {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (last_event, stalled, watching) =
+            (last_event.clone(), stalled.clone(), watching.clone());
+        std::thread::spawn(move || {
+            while watching.load(Relaxed) {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let quiet_for = started.elapsed().as_millis() as u64 - last_event.load(Relaxed);
+                if quiet_for > limit.as_millis() as u64 {
+                    stalled.store(true, Relaxed);
+                    kill_pid(pid);
+                    return;
+                }
+            }
+        })
+    };
+
     let mut saw_error = None;
     for event in child.iter()? {
-        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        use std::sync::atomic::Ordering::Relaxed;
+        last_event.store(started.elapsed().as_millis() as u64, Relaxed);
+        if cancel.load(Relaxed) {
+            watching.store(false, Relaxed);
             let _ = child.kill();
             let _ = std::fs::remove_file(out); // drop the partial output
             anyhow::bail!("export cancelled");
@@ -1748,6 +1891,15 @@ fn run_export(
             }
             _ => {}
         }
+    }
+    watching.store(false, std::sync::atomic::Ordering::Relaxed);
+    let _ = watchdog.join();
+    if stalled.load(std::sync::atomic::Ordering::Relaxed) {
+        log.line("ffmpeg stopped responding — killed it so the render can be re-attempted");
+        anyhow::bail!(
+            "{encoder} stopped responding for {}s and was stopped",
+            limit.as_secs()
+        );
     }
     let status = child.wait()?;
     if !status.success() {
@@ -1773,6 +1925,80 @@ fn parse_time_s(t: &str) -> Option<f64> {
         [m, sec] => Some(m.parse::<f64>().ok()? * 60.0 + sec.parse::<f64>().ok()?),
         [sec] => sec.parse().ok(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    fn log() -> ExportLog {
+        // no file behind it; every write is a no-op
+        ExportLog {
+            file: None,
+            t0: std::time::Instant::now(),
+            last_sample: -1.0,
+            graph_logged: false,
+        }
+    }
+
+    /// The case this exists for: QSV drops a frame under load, the next
+    /// attempt goes through, and the export never notices.
+    #[test]
+    fn a_passing_fault_is_re_attempted_and_recovers() {
+        let tries = AtomicUsize::new(0);
+        let cancel = AtomicBool::new(false);
+        let res = with_retries("part 1 of 4", &cancel, &mut log(), |_| {
+            if tries.fetch_add(1, Ordering::Relaxed) < 1 {
+                anyhow::bail!("[h264_qsv] Error during encoding: failed to lock the memory block")
+            }
+            Ok(())
+        });
+        assert!(res.is_ok());
+        assert_eq!(
+            tries.load(Ordering::Relaxed),
+            2,
+            "should have taken two goes"
+        );
+    }
+
+    #[test]
+    fn a_persistent_fault_gives_up_and_lets_the_next_encoder_have_it() {
+        let tries = AtomicUsize::new(0);
+        let cancel = AtomicBool::new(false);
+        let res = with_retries("part 1 of 4", &cancel, &mut log(), |_| {
+            tries.fetch_add(1, Ordering::Relaxed);
+            anyhow::bail!("[h264_qsv] Invalid FrameType:0")
+        });
+        assert!(res.is_err());
+        assert_eq!(tries.load(Ordering::Relaxed), ENCODER_RETRIES + 1);
+    }
+
+    /// A driver that is too old fails the same way every time, so spending
+    /// three attempts on it just delays the fallback that has to happen.
+    #[test]
+    fn a_hopeless_fault_is_not_re_attempted() {
+        let tries = AtomicUsize::new(0);
+        let cancel = AtomicBool::new(false);
+        let res = with_retries("h264_nvenc", &cancel, &mut log(), |_| {
+            tries.fetch_add(1, Ordering::Relaxed);
+            anyhow::bail!("Driver does not support the required nvenc API version")
+        });
+        assert!(res.is_err());
+        assert_eq!(tries.load(Ordering::Relaxed), 1, "should not have retried");
+    }
+
+    #[test]
+    fn cancelling_stops_it_re_attempting() {
+        let tries = AtomicUsize::new(0);
+        let cancel = AtomicBool::new(true);
+        let res = with_retries("part 1 of 4", &cancel, &mut log(), |_| {
+            tries.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        });
+        assert!(res.is_err(), "a cancelled export must not keep rendering");
+        assert_eq!(tries.load(Ordering::Relaxed), 0);
     }
 }
 

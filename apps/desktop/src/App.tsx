@@ -2634,8 +2634,10 @@ export default function App() {
                 </div>
                 {exportModal.attempt > 1 && (
                   <div className="progress-note">
-                    The first encoder failed, so Cutlass restarted with another one
-                    (attempt {exportModal.attempt}). Progress began again from zero.
+                    The render hit a problem and stepped back to retry
+                    {exportModal.attempt > 2 ? ` (${exportModal.attempt - 1} times so far)` : ""}.
+                    That is usually a passing graphics-driver fault and it recovers on its
+                    own — the bar restarts from wherever it picked up.
                   </div>
                 )}
                 <div className="modal-actions">
