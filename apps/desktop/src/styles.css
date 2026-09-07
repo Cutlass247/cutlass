@@ -2102,10 +2102,31 @@ button {
 }
 .progress-pct {
   margin-top: 8px;
-  text-align: right;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
+}
+
+/* Elapsed / estimate. Tabular figures stop the line jittering as it ticks;
+   it can run long on a slow export, so let it wrap and stay right-aligned. */
+.progress-eta {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Shown only when ffmpeg restarted, so the bar dropping back has a reason. */
+.progress-note {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  border-left: 2px solid var(--accent, #888);
+  padding-left: 10px;
 }
 
 /* ── monitor vignette overlay ───────────────────────────────────────── */
