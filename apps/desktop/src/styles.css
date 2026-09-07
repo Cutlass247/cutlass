@@ -2036,6 +2036,30 @@ button {
   color: var(--muted);
   font-weight: 600;
 }
+/* "Enhance audio" — a checkbox with a line of explanation under its label */
+.ex-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 2px 0 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ex-toggle input {
+  margin-top: 2px;
+  flex: none;
+}
+.ex-toggle strong {
+  display: block;
+  font-weight: 600;
+}
+.ex-toggle em {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-style: normal;
+  line-height: 1.4;
+}
 /* upscale warning under the resolution picker */
 .ex-field > span.ex-warn {
   color: var(--gold, #e8b339);

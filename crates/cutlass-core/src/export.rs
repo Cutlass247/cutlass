@@ -727,6 +727,46 @@ pub struct ExportSettings {
     /// pan for Fill mode: 0..1 in each axis (0.5 = centred)
     pub reframe_x: f64,
     pub reframe_y: f64,
+    /// Master the finished mix: even out dynamics, duck music beds under
+    /// speech, and normalise loudness to what platforms expect.
+    pub master_audio: bool,
+}
+
+/// Target integrated loudness for the mastered mix.
+///
+/// YouTube, Spotify and most platforms normalise uploads to about -14 LUFS:
+/// quieter and they turn it up, louder and they turn it down. Hitting it means
+/// what the creator hears is what viewers get, and that the video sits at the
+/// same volume as everything either side of it in a feed.
+const MASTER_LUFS: f64 = -14.0;
+
+/// Gentle levelling ahead of the loudness pass, so occasional loud moments
+/// don't drag the whole track quiet. 3:1 above roughly -21 dBFS — enough to
+/// even out a voice, not enough to hear it working.
+const MASTER_COMPRESS: &str = "acompressor=threshold=0.089:ratio=3:attack=20:release=250";
+
+/// Condition the signal that drives the ducker.
+///
+/// The key is a control signal — it is never heard — so it can be normalised
+/// hard, and it has to be: `sidechaincompress` triggers on an absolute level,
+/// while the voice it is watching might be recorded anywhere from a whisper to
+/// clipping. Measured against a programme at -47 dB the raw key never crossed
+/// the threshold and nothing ducked at all. Normalising first makes ducking
+/// respond to speech being *present* rather than to how loudly it happened to
+/// be recorded. `t` keeps it from amplifying near-silence into a false trigger.
+const MASTER_DUCK_KEY: &str = "dynaudnorm=f=150:g=11:m=40:t=0.0005";
+
+/// Pull music down while someone is speaking, keyed off the programme audio.
+/// This is the difference between a bed that sits under a voice and one that
+/// fights it. Measured at about 10 dB of duck, which is the usual broadcast
+/// range, with the bed left untouched when nobody is talking.
+const MASTER_DUCK: &str =
+    "sidechaincompress=threshold=0.05:ratio=12:attack=20:release=400:level_sc=1";
+
+/// The loudness stage. `loudnorm` runs at 192 kHz internally and emits at that
+/// rate, which AAC cannot take, so it always has to be resampled back.
+fn master_loudness() -> String {
+    format!("loudnorm=I={MASTER_LUFS}:TP=-1.5:LRA=11,aresample=48000")
 }
 
 /// How a clip fills the output frame when its aspect differs (e.g. a 16:9
@@ -768,6 +808,7 @@ impl Default for ExportSettings {
             reframe: Reframe::Letterbox,
             reframe_x: 0.5,
             reframe_y: 0.5,
+            master_audio: false,
         }
     }
 }
@@ -1464,8 +1505,14 @@ fn run_export_chunked(
         let mut cmd = FfmpegCommand::new();
         cmd.args(["-f", "concat", "-safe", "0"])
             .input(list.to_string_lossy())
-            .args(["-c:v", "copy"])
-            .args(audio_args(s.format, false).iter());
+            .args(["-c:v", "copy"]);
+        // The parts were levelled and ducked individually; loudness is judged
+        // here, once, over the whole programme. The audio is uncompressed in
+        // the parts and re-encoded here anyway, so this costs nothing extra.
+        if s.master_audio {
+            cmd.args(["-af", &master_loudness()]);
+        }
+        cmd.args(audio_args(s.format, false).iter());
         // faststart is an MP4/MOV muxer option; passing it to WebM is an error
         if matches!(s.format, ExportFormat::Mp4H264 | ExportFormat::Mp4H265) {
             cmd.args(["-movflags", "+faststart"]);
@@ -1740,8 +1787,46 @@ fn run_export(
     // PTS 0 and lets the resampler absorb any gap by (de)stretching rather than
     // shifting, so audio can't slide out from under the video — the other half
     // of the CFR fix for A/V drift on heavier (4K) exports.
+    //
+    // Mastering splits across the two stages of a staged export, because the
+    // two halves need opposite things. Ducking needs the music and the voice
+    // as separate streams, which only exist here, before they are mixed down
+    // into a part. Loudness has to be judged over the whole programme — doing
+    // it per part would give each one its own gain and step the level at every
+    // join — so that stage happens once, at the join (or below, when there is
+    // only one pass).
+    let master = s.master_audio;
+    let finish = if master && !intermediate {
+        format!(",{},{}", MASTER_COMPRESS, master_loudness())
+    } else if master {
+        format!(",{MASTER_COMPRESS}")
+    } else {
+        String::new()
+    };
     if overlay_audio.is_empty() {
-        filters.push_str("[cata]aresample=async=1:first_pts=0[outa];");
+        filters.push_str(&format!(
+            "[cata]aresample=async=1:first_pts=0{finish}[outa];"
+        ));
+    } else if master {
+        // Fork the programme: one copy is mixed, the other keys the ducker.
+        filters.push_str(&format!(
+            "[cata]asplit=2[prog][rawkey];[rawkey]{MASTER_DUCK_KEY}[duckkey];"
+        ));
+        let music = if overlay_audio.len() == 1 {
+            overlay_audio[0].clone()
+        } else {
+            filters.push_str(&format!(
+                "{}amix=inputs={}:duration=longest:normalize=0[beds];",
+                overlay_audio.join(""),
+                overlay_audio.len()
+            ));
+            "[beds]".to_string()
+        };
+        filters.push_str(&format!("{music}[duckkey]{MASTER_DUCK}[ducked];"));
+        filters.push_str(&format!(
+            "[prog][ducked]amix=inputs=2:duration=first:normalize=0,\
+             aresample=async=1:first_pts=0{finish}[outa];"
+        ));
     } else {
         filters.push_str(&format!(
             "[cata]{}amix=inputs={}:duration=first:normalize=0,aresample=async=1:first_pts=0[outa];",

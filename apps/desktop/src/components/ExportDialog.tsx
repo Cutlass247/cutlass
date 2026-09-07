@@ -59,6 +59,9 @@ export function ExportDialog(p: {
   });
   const [fps, setFps] = useState(30);
   const [quality, setQuality] = useState("high");
+  // On by default: almost every recording benefits, and the people most likely
+  // to leave defaults alone are the ones whose audio needs it most.
+  const [masterAudio, setMasterAudio] = useState(true);
 
   useEffect(() => setDir(p.initialDir), [p.initialDir]);
 
@@ -90,7 +93,15 @@ export function ExportDialog(p: {
     if (d) setDir(d);
   };
   const submit = () =>
-    p.onExport({ path: fullPath, width: res.w, height: res.h, fps, format, quality });
+    p.onExport({
+      path: fullPath,
+      width: res.w,
+      height: res.h,
+      fps,
+      format,
+      quality,
+      master_audio: masterAudio,
+    });
 
   return (
     <div className="modal-overlay" onPointerDown={p.onCancel}>
@@ -176,6 +187,21 @@ export function ExportDialog(p: {
             </select>
           </label>
         </div>
+
+        <label className="ex-toggle">
+          <input
+            type="checkbox"
+            checked={masterAudio}
+            onChange={(e) => setMasterAudio(e.target.checked)}
+          />
+          <span>
+            <strong>Enhance audio</strong>
+            <em>
+              Evens out the volume, keeps music under the voice, and matches the
+              loudness platforms expect (-14 LUFS).
+            </em>
+          </span>
+        </label>
 
         <div className="export-path" title={fullPath}>
           {fullPath}
