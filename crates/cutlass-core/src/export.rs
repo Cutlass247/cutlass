@@ -954,6 +954,27 @@ fn output_args(
     a
 }
 
+/// Removes its file on the way out, whichever path the render leaves by —
+/// finished, failed, or cancelled.
+struct TempFile(std::path::PathBuf);
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// A unique scratch path for one render's filter graph. Distinct per call
+/// because a staged export runs many renders, and they must not share a file.
+fn temp_graph_path() -> std::path::PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "cutlass-graph-{}-{}.txt",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
 /// The delivery audio codec for a format — or uncompressed, for a chunk that
 /// is going to be stream-copied into the real output.
 fn audio_args(format: ExportFormat, intermediate: bool) -> Vec<String> {
@@ -1128,14 +1149,13 @@ pub fn export(
     anyhow::ensure!(!segments.is_empty(), "nothing to export");
     let total: f64 = segments.iter().map(|s| s.len()).sum();
 
-    // Long timelines are rendered in stages so peak memory stays flat; MP4 is
-    // the only format staged, since it's what long exports actually use and a
-    // copy-join needs the part codec to be legal in the delivery container.
-    let staged = segments.len() >= CHUNK_MIN_SEGMENTS
-        && matches!(
-            settings.format,
-            ExportFormat::Mp4H264 | ExportFormat::Mp4H265
-        );
+    // Long timelines are rendered in stages, for two reasons that hold for
+    // every format: peak memory stays flat (each clip is its own open input,
+    // costing about 0.3 GB apiece at 4K), and the command line stays short
+    // enough for Windows even at hundreds of clips. Parts are Matroska, which
+    // carries H.264, H.265, ProRes and VP9 alike, and the join is a stream
+    // copy into whichever container was asked for.
+    let staged = segments.len() >= CHUNK_MIN_SEGMENTS;
     let mut log = ExportLog::new(out);
     log.line(&format!(
         "export {}x{} @{}fps {:?} {:?} -> {}",
@@ -1332,14 +1352,15 @@ fn run_export_chunked(
         std::fs::write(&list, txt)?;
 
         let mut cmd = FfmpegCommand::new();
-        let mut child = cmd
-            .args(["-f", "concat", "-safe", "0"])
+        cmd.args(["-f", "concat", "-safe", "0"])
             .input(list.to_string_lossy())
             .args(["-c:v", "copy"])
-            .args(audio_args(s.format, false).iter())
-            .args(["-movflags", "+faststart", "-y"])
-            .output(out.to_string_lossy())
-            .spawn()?;
+            .args(audio_args(s.format, false).iter());
+        // faststart is an MP4/MOV muxer option; passing it to WebM is an error
+        if matches!(s.format, ExportFormat::Mp4H264 | ExportFormat::Mp4H265) {
+            cmd.args(["-movflags", "+faststart"]);
+        }
+        let mut child = cmd.args(["-y"]).output(out.to_string_lossy()).spawn()?;
         let mut saw_error = None;
         for event in child.iter()? {
             if cancel.load(Ordering::Relaxed) {
@@ -1686,8 +1707,20 @@ fn run_export(
         log.graph_logged = true;
         log.line(&format!("filter_complex: {filters}"));
     }
+    // Hand ffmpeg the graph in a file rather than on the command line.
+    // Windows caps an entire command line at 32767 characters, and the graph
+    // is by far the biggest thing on it — a 40-clip graded timeline builds
+    // 30130 characters of filters alone, so the export died before it started
+    // with "The filename or extension is too long", which tells a user
+    // nothing. MP4 is staged into parts of 8 and never came close; ProRes and
+    // WebM are rendered in one pass and did.
+    let graph_file = temp_graph_path();
+    std::fs::write(&graph_file, filters.as_bytes())
+        .with_context(|| format!("couldn't write the filter graph to {}", graph_file.display()))?;
+    let _graph_cleanup = TempFile(graph_file.clone());
+
     let mut child = cmd
-        .args(["-filter_complex", &filters])
+        .args(["-filter_complex_script", &graph_file.to_string_lossy()])
         .args(["-map", "[outv]", "-map", "[outa]"])
         .args(out_args.iter())
         .args(["-y"])
