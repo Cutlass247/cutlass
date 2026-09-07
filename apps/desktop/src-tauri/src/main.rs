@@ -773,6 +773,52 @@ fn set_transition(
     })
 }
 
+/// The sidecar the previous good save is kept in, beside the project itself.
+fn backup_path(path: &Path) -> std::path::PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(".bak");
+    std::path::PathBuf::from(p)
+}
+
+/// Write a project file without ever leaving a half-written one in its place.
+///
+/// `fs::write` truncates the target before writing, and auto-save calls this
+/// every couple of seconds while editing — so anything that interrupts a write
+/// (a crash, a power cut, an external drive dropping out) lands in that window.
+/// A truncated automerge document is a *total* loss, not a partial one: even
+/// one flipped byte makes it unreadable. So write a sibling temp file, force it
+/// to the platter, keep the previous good copy as `.bak`, and only then swap it
+/// in — a rename on the same volume is atomic, so the project on disk is always
+/// either the old file or the new one, never a mixture.
+fn write_project_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".saving-{}", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp);
+
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        // Without this the rename can land before the bytes do, which on a
+        // power cut leaves a file that is the right size and all zeroes.
+        f.sync_all()
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    // One generation back. Copied rather than renamed so the project file is
+    // never absent, even for the moment between the two operations.
+    if path.exists() {
+        let _ = std::fs::copy(path, backup_path(path));
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Value, String> {
     let mut project = state.project.lock().unwrap();
@@ -781,7 +827,7 @@ fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
         project.set_name(stem);
     }
     let bytes = project.save();
-    std::fs::write(&path, bytes).map_err(err_str)?;
+    write_project_atomically(Path::new(&path), &bytes).map_err(err_str)?;
     let snap = project.snapshot();
     drop(project);
     notify_sync(&state);
@@ -843,8 +889,32 @@ async fn open_project(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let bytes = std::fs::read(&path).map_err(err_str)?;
-    let mut project = Project::load(&bytes).map_err(err_str)?;
+    // A damaged project can't be repaired — automerge rejects the whole
+    // document over a single bad byte — so the only real recovery is the copy
+    // the previous save left beside it. Losing the last edit beats losing the
+    // project.
+    let read = |p: &Path| -> Result<Project, String> {
+        let bytes = std::fs::read(p).map_err(err_str)?;
+        Project::load(&bytes).map_err(err_str)
+    };
+    let (mut project, recovered_from_backup) = match read(Path::new(&path)) {
+        Ok(p) => (p, false),
+        Err(main_err) => {
+            let bak = backup_path(Path::new(&path));
+            match read(&bak) {
+                Ok(p) => {
+                    eprintln!("{path} unreadable ({main_err}); recovered from {}", bak.display());
+                    (p, true)
+                }
+                Err(_) if bak.exists() => {
+                    return Err(format!(
+                        "{main_err} The backup beside it is unreadable too."
+                    ))
+                }
+                Err(_) => return Err(main_err),
+            }
+        }
+    };
     let entries = project.media_entries();
 
     // rebuilding each media (proxy/waveform) is heavy → off the UI thread
@@ -890,7 +960,14 @@ async fn open_project(
     *state.project.lock().unwrap() = project;
     *state.history.lock().unwrap() = History::default(); // fresh doc, fresh history
     notify_sync(&state);
-    Ok(json!({ "project": snap, "media": media_out, "transcripts": transcripts }))
+    Ok(json!({
+        "project": snap,
+        "media": media_out,
+        "transcripts": transcripts,
+        // the frontend warns when this is set — silently opening an older
+        // version of someone's project would be worse than the damage itself
+        "recoveredFromBackup": recovered_from_backup,
+    }))
 }
 
 /// Switch the active workspace (Create vs Studio). They're fully independent —
@@ -1716,8 +1793,21 @@ async fn export_project(
             &titles,
             Path::new(&path),
             &settings,
-            &mut |p| {
-                let _ = app.emit("export-progress", p);
+            &mut {
+                // ffmpeg reports progress several times a second for the whole
+                // render, and that rate is set by wall-clock time, not by the
+                // export settings. Forwarding every one floods the webview's
+                // script queue on a long export until the UI stops repainting —
+                // which looks exactly like a frozen export while the encode is
+                // in fact healthy. A progress bar cannot show finer than about
+                // a quarter of a percent, so only send that much.
+                let mut last = -1.0f32;
+                move |p: f32| {
+                    if p >= 1.0 || (p - last).abs() >= 0.0025 {
+                        last = p;
+                        let _ = app.emit("export-progress", p);
+                    }
+                }
             },
             &cancel,
         )
@@ -2013,4 +2103,91 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Cutlass");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The guarantee auto-save depends on: the file on disk is always either
+    /// the old project or the new one, and the previous generation survives.
+    #[test]
+    fn atomic_save_keeps_a_good_copy_at_every_step() {
+        let dir = std::env::temp_dir().join(format!("cutlass_atomic_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proj = dir.join("Take 1.cutlass");
+
+        write_project_atomically(&proj, b"version-one").unwrap();
+        assert_eq!(std::fs::read(&proj).unwrap(), b"version-one");
+        // nothing to back up on a first save
+        assert!(!backup_path(&proj).exists());
+
+        write_project_atomically(&proj, b"version-two-longer").unwrap();
+        assert_eq!(std::fs::read(&proj).unwrap(), b"version-two-longer");
+        // the previous good save is now recoverable
+        assert_eq!(std::fs::read(backup_path(&proj)).unwrap(), b"version-one");
+
+        // a shorter write must not leave a tail of the longer one behind,
+        // which is exactly what truncate-then-write produces
+        write_project_atomically(&proj, b"v3").unwrap();
+        assert_eq!(std::fs::read(&proj).unwrap(), b"v3");
+
+        // no half-written scratch files left in the user's folder
+        let strays: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".saving-"))
+            .collect();
+        assert!(strays.is_empty(), "left temp files behind: {strays:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A save that cannot even start must leave the existing project alone
+    /// rather than truncating it first and discovering the problem after.
+    #[test]
+    fn failed_save_does_not_touch_the_existing_project() {
+        let dir = std::env::temp_dir().join(format!("cutlass_atomic_fail_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proj = dir.join("Take 1.cutlass");
+        write_project_atomically(&proj, b"the-good-version").unwrap();
+
+        // target inside a directory that does not exist: the temp file can't
+        // be created, so the write fails at the first step
+        let doomed = dir.join("no-such-folder").join("Take 1.cutlass");
+        assert!(write_project_atomically(&doomed, b"never-lands").is_err());
+
+        // the real project is still exactly as it was
+        assert_eq!(std::fs::read(&proj).unwrap(), b"the-good-version");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The whole point of keeping a `.bak`: a project damaged mid-save is
+    /// still openable from the copy the previous save left.
+    #[test]
+    fn a_damaged_project_is_recoverable_from_its_backup() {
+        let dir = std::env::temp_dir().join(format!("cutlass_recover_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let proj = dir.join("Take 1.cutlass");
+
+        let mut p = Project::new("Take 1");
+        p.set_media("m0", "clip", "C:/clips/a.mp4", 12.0).unwrap();
+        write_project_atomically(&proj, &p.save()).unwrap();
+        // a second save, so the first becomes the backup
+        write_project_atomically(&proj, &p.save()).unwrap();
+
+        // an interrupted save leaves the file truncated -- or empty
+        std::fs::write(&proj, b"").unwrap();
+        assert!(
+            std::fs::read(&proj).ok().and_then(|b| Project::load(&b).ok()).is_none(),
+            "the damaged file should not load"
+        );
+
+        let recovered = std::fs::read(backup_path(&proj))
+            .ok()
+            .and_then(|b| Project::load(&b).ok());
+        assert!(recovered.is_some(), "the backup should still load");
+        assert_eq!(recovered.unwrap().media_entries().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

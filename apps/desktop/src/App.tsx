@@ -1293,8 +1293,19 @@ export default function App() {
       media: MediaItem[];
       transcripts?: Record<string, Word[]>;
       path: string;
+      recoveredFromBackup?: boolean;
     }) => {
       setProject(res.project);
+      if (res.recoveredFromBackup) {
+        // Opening an older version of someone's work without saying so would
+        // be worse than the damage — they'd carry on from a state they didn't
+        // choose and never know an edit had gone missing.
+        setError(
+          "This project file was damaged, so Cutlass opened the automatic backup " +
+            "saved alongside it. Anything changed after that backup is not in here — " +
+            'use "Save As" to write a fresh copy before continuing.'
+        );
+      }
       const map: Record<string, MediaItem> = {};
       for (const m of res.media) map[m.id] = m;
       setMedia(map);
@@ -1342,7 +1353,14 @@ export default function App() {
   useEffect(() => {
     if (!autoSave || !dirty || !projectPath) return;
     const t = setTimeout(() => {
-      saveTo(false).catch(() => {});
+      // A silent failure here is the worst case: the user keeps editing,
+      // believing their work is on disk, while every save is failing (a full
+      // disk, an external drive that went away, a file gone read-only).
+      // Auto-save is the one that must speak up, precisely because nobody is
+      // watching it.
+      saveTo(false).catch((e) =>
+        setError(`Auto-save failed — your changes are not on disk. ${String(e)}`)
+      );
     }, 1500);
     return () => clearTimeout(t);
   }, [autoSave, dirty, projectPath, project, saveTo]);

@@ -131,9 +131,18 @@ impl Project {
     }
 
     pub fn load(bytes: &[u8]) -> anyhow::Result<Self> {
-        Ok(Self {
-            doc: AutoCommit::load(bytes)?,
-        })
+        let doc = AutoCommit::load(bytes)?;
+        // An empty file — which is exactly what an interrupted save leaves —
+        // is a *valid* automerge document, just an empty one. Every accessor
+        // here assumes the root maps are present, so it would load happily and
+        // then panic on first use (`clips_obj`), taking the app down with it.
+        // Refuse it here instead, where the caller can still tell the user.
+        anyhow::ensure!(
+            doc.get(automerge::ROOT, "clips")?.is_some(),
+            "this file isn't a Cutlass project, or was damaged before it \
+             finished saving (no clip list inside it)"
+        );
+        Ok(Self { doc })
     }
 
     pub fn save(&mut self) -> Vec<u8> {
