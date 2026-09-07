@@ -191,12 +191,62 @@ export default function App() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportDir, setExportDir] = useState("");
   const [exportModal, setExportModal] = useState<
-    | { phase: "running"; progress: number; name: string; cancelling: boolean }
+    | {
+        phase: "running";
+        progress: number;
+        name: string;
+        cancelling: boolean;
+        /** when the export began, for total elapsed time */
+        startedAt: number;
+        /** when the current attempt began — the estimate has to come from this,
+         *  since a restart makes everything before it meaningless */
+        attemptAt: number;
+        /** when progress last actually moved — proves the render is alive */
+        movedAt: number;
+        /** bumped when ffmpeg restarts from zero (an encoder fallback or retry) */
+        attempt: number;
+      }
     | { phase: "done"; path: string; encoder: string }
     | { phase: "error"; message: string }
     | null
   >(null);
   const [peers, setPeers] = useState<Record<string, Presence & { ts: number }>>({});
+
+  // A long export advances about one percent every few minutes, which is
+  // indistinguishable from a hung one unless the dialog shows time moving.
+  // Tick only while one is running.
+  const [nowTs, setNowTs] = useState(() => Date.now());
+  useEffect(() => {
+    if (exportModal?.phase !== "running") return;
+    const t = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [exportModal?.phase]);
+
+  const exportEta = useMemo(() => {
+    if (exportModal?.phase !== "running") return "";
+    const secs = (ms: number) => ms / 1000;
+    const fmt = (s: number) => {
+      if (!isFinite(s) || s < 0) return "—";
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${Math.floor(s % 60)}s`;
+      return `${Math.floor(s)}s`;
+    };
+    const elapsed = secs(nowTs - exportModal.startedAt);
+    let out = `${fmt(elapsed)} elapsed`;
+    // Rate comes from the current attempt only.
+    const attemptElapsed = secs(nowTs - exportModal.attemptAt);
+    if (exportModal.progress > 0.005 && attemptElapsed > 10) {
+      const left = (attemptElapsed / exportModal.progress) * (1 - exportModal.progress);
+      out += ` · about ${fmt(left)} left`;
+    }
+    // The reassurance that matters when the bar looks stuck: say plainly how
+    // long since it last moved, so a slow render reads as slow, not as hung.
+    const still = secs(nowTs - exportModal.movedAt);
+    if (still > 120) out += ` · unchanged for ${fmt(still)}`;
+    return out;
+  }, [exportModal, nowTs]);
 
   // ── shell state ─────────────────────────────────────────────────────
   const [mode, setMode] = useState<Mode>(
@@ -383,11 +433,22 @@ export default function App() {
     defaultExportDir().then((d) => d && setExportDir(d));
     const un = onProjectChanged((snap) => setProject(snap));
     const unExport = onExportProgress((p) =>
-      setExportModal((m) =>
-        // never let the bar run backwards: encoder fallbacks/retries restart
-        // ffmpeg's progress from 0, but to the user it's one export
-        m && m.phase === "running" ? { ...m, progress: Math.max(m.progress, p) } : m
-      )
+      setExportModal((m) => {
+        if (!m || m.phase !== "running") return m;
+        // This used to clamp with Math.max so the bar could never run
+        // backwards. That hid encoder fallbacks, which restart ffmpeg from
+        // zero — turning "the bar jumped back" into "the bar sits still for
+        // hours", which is worse: a frozen bar is indistinguishable from a
+        // hung export. Show the truth instead, and count the restarts.
+        const restarted = p + 1e-6 < m.progress;
+        return {
+          ...m,
+          progress: p,
+          attempt: restarted ? m.attempt + 1 : m.attempt,
+          attemptAt: restarted ? Date.now() : m.attemptAt,
+          movedAt: p !== m.progress ? Date.now() : m.movedAt,
+        };
+      })
     );
     const unTrack = onTrackProgress((p) => setTrackProgress(p));
     const unTx = onTranscribeProgress((media, pct) =>
@@ -1411,7 +1472,17 @@ export default function App() {
   const runExport = useCallback(async (opts: ExportOptions) => {
     setExportOpen(false);
     const name = opts.path.split(/[\\/]/).pop() ?? "export";
-    setExportModal({ phase: "running", progress: 0, name, cancelling: false });
+    const t0 = Date.now();
+    setExportModal({
+      phase: "running",
+      progress: 0,
+      name,
+      cancelling: false,
+      startedAt: t0,
+      attemptAt: t0,
+      movedAt: t0,
+      attempt: 1,
+    });
     try {
       const encoder = await exportProject(opts);
       setExportModal({ phase: "done", path: opts.path, encoder });
@@ -2557,7 +2628,16 @@ export default function App() {
                     style={{ width: `${Math.round(exportModal.progress * 100)}%` }}
                   />
                 </div>
-                <div className="progress-pct">{Math.round(exportModal.progress * 100)}%</div>
+                <div className="progress-pct">
+                  {Math.round(exportModal.progress * 100)}%
+                  <span className="progress-eta">{exportEta}</span>
+                </div>
+                {exportModal.attempt > 1 && (
+                  <div className="progress-note">
+                    The first encoder failed, so Cutlass restarted with another one
+                    (attempt {exportModal.attempt}). Progress began again from zero.
+                  </div>
+                )}
                 <div className="modal-actions">
                   <button
                     className="ghost-btn"
