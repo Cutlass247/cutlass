@@ -857,7 +857,6 @@ fn output_args(
     width: u32,
     height: u32,
     fps: u32,
-    cbr: bool,
     // Writing a chunk of a long export rather than the deliverable: the parts
     // are Matroska and get stream-copied into the real output, so they carry
     // uncompressed audio (AAC's encoder padding would put a small gap at every
@@ -869,7 +868,10 @@ fn output_args(
     // fraction of the target. Use CBR from the first pass so we don't encode
     // once in VBR, reject it, and re-encode in CBR — that double pass doubled
     // export time and made the progress bar fill then reset.
-    let cbr = cbr || encoder.ends_with("_amf");
+    // AMD's AMF encoders honour -b:v only in CBR; their VBR modes emit a
+    // fraction of the target. This is the structural guard for that, and the
+    // only reason CBR is ever forced now.
+    let cbr = encoder.ends_with("_amf");
     let mut a = vec![s("-c:v"), s(encoder)];
     // Constant frame rate + explicit output rate. Two reasons:
     //  1. h264_qsv/hevc_qsv reject the filtergraph's timebase outright
@@ -1170,53 +1172,35 @@ pub fn export(
     sources.dedup();
     log.line(&format!("distinct sources: {}", sources.len()));
     for p in sources.iter().take(8) {
-        let size = std::fs::metadata(p).map(|m| m.len() / 1_048_576).unwrap_or(0);
+        let size = std::fs::metadata(p)
+            .map(|m| m.len() / 1_048_576)
+            .unwrap_or(0);
         log.line(&format!("  {size} MB  {p}"));
     }
     log.line(&format!(
         "staged: {staged} (threshold {CHUNK_MIN_SEGMENTS} segments, {CHUNK_SEGMENTS} per part)"
     ));
 
-    let mut run = |encoder: &str,
-                   progress: &mut dyn FnMut(f32),
-                   cbr: bool,
-                   log: &mut ExportLog|
-     -> anyhow::Result<()> {
-        log.line(&format!("--- attempt: {encoder}{} ---", if cbr { " (cbr)" } else { "" }));
-        if staged {
-            run_export_chunked(
-                segments, overlays, titles, out, settings, encoder, total, progress, cancel, cbr,
-                log,
-            )
-        } else {
-            run_export(
-                segments, overlays, titles, out, settings, encoder, total, progress, cancel, cbr,
-                false, log,
-            )
-        }
-    };
+    let run =
+        |encoder: &str, progress: &mut dyn FnMut(f32), log: &mut ExportLog| -> anyhow::Result<()> {
+            log.line(&format!("--- attempt: {encoder} ---"));
+            if staged {
+                run_export_chunked(
+                    segments, overlays, titles, out, settings, encoder, total, progress, cancel,
+                    log,
+                )
+            } else {
+                run_export(
+                    segments, overlays, titles, out, settings, encoder, total, progress, cancel,
+                    false, log,
+                )
+            }
+        };
 
     let encoders = settings.format.encoders();
     for (i, encoder) in encoders.iter().enumerate() {
         progress(0.0);
-        let mut res = run(encoder, progress, false, &mut log);
-        // If it accepted -b:v but emitted a fraction of it, retry the same
-        // encoder pinned to CBR, which obliges it to hit the rate. Hardware
-        // encoders honour -b:v inconsistently depending on driver/context,
-        // and for H.265 there is no software fallback to fall back to.
-        // `{:#}` walks the whole cause chain — a staged run wraps the failure
-        // in which part it came from, which would otherwise hide this.
-        if !cancel.load(Ordering::Relaxed)
-            && res
-                .as_ref()
-                .err()
-                .is_some_and(|e| format!("{e:#}").contains("ignored the requested"))
-        {
-            eprintln!("{encoder} under-delivered; retrying pinned to CBR");
-            log.line(&format!("{encoder} under-delivered; retrying pinned to CBR"));
-            progress(0.0);
-            res = run(encoder, progress, true, &mut log);
-        }
+        let res = run(encoder, progress, &mut log);
         match res {
             Ok(()) => {
                 log.line(&format!("DONE via {encoder} in {:.1}s", log.elapsed()));
@@ -1271,7 +1255,6 @@ fn run_export_chunked(
     total: f64,
     progress: &mut dyn FnMut(f32),
     cancel: &std::sync::atomic::AtomicBool,
-    cbr: bool,
     log: &mut ExportLog,
 ) -> anyhow::Result<()> {
     use std::sync::atomic::Ordering;
@@ -1324,7 +1307,7 @@ fn run_export_chunked(
                 )
             };
             run_export(
-                batch, &ovs, &tls, &part, s, encoder, span, &mut sub, cancel, cbr, true, log,
+                batch, &ovs, &tls, &part, s, encoder, span, &mut sub, cancel, true, log,
             )
             .with_context(|| format!("part {} of {nparts}", ci + 1))?;
             parts.push(part);
@@ -1385,8 +1368,6 @@ fn run_export_chunked(
                 saw_error.map(|e| format!(": {e}")).unwrap_or_default()
             );
         }
-        // judge the delivered bitrate once, on the whole program
-        check_delivered_bitrate(out, s, encoder, total)?;
         progress(1.0);
         Ok(())
     };
@@ -1408,7 +1389,6 @@ fn run_export(
     total: f64,
     progress: &mut dyn FnMut(f32),
     cancel: &std::sync::atomic::AtomicBool,
-    cbr: bool,
     intermediate: bool,
     log: &mut ExportLog,
 ) -> anyhow::Result<()> {
@@ -1684,7 +1664,6 @@ fn run_export(
         s.width,
         s.height,
         s.fps,
-        cbr,
         intermediate,
     );
     // CUTLASS_DEBUG_FFMPEG=1 dumps the graph + output args — the fastest way
@@ -1745,42 +1724,7 @@ fn run_export(
         );
     }
 
-    // Judged on the finished file only. A single part of a staged export is a
-    // few seconds of one scene, and a dark or static stretch legitimately
-    // encodes far under target — judging parts would abort whole exports over
-    // nothing.
-    if !intermediate {
-        check_delivered_bitrate(out, s, encoder, total)?;
-    }
     progress(1.0);
-    Ok(())
-}
-
-/// Some encoders accept `-b:v` and then silently emit a small fraction of it
-/// (driver/Media-Foundation dependent), which looks terrible even though
-/// ffmpeg reports success. Treat a wildly-under-target file as a failure so
-/// `export()` falls through to the next encoder.
-fn check_delivered_bitrate(
-    out: &Path,
-    s: &ExportSettings,
-    encoder: &str,
-    total: f64,
-) -> anyhow::Result<()> {
-    if !matches!(s.format, ExportFormat::Mp4H264 | ExportFormat::Mp4H265) {
-        return Ok(());
-    }
-    let hevc = matches!(s.format, ExportFormat::Mp4H265);
-    let target = target_bitrate_bps(s.width, s.height, s.fps, s.quality, hevc);
-    if let Ok(meta) = std::fs::metadata(out) {
-        let actual = (meta.len() as f64 * 8.0 / total.max(0.1)) as u64;
-        if actual * 5 < target * 2 {
-            anyhow::bail!(
-                "{encoder} ignored the requested bitrate ({} kbps of {} kbps)",
-                actual / 1000,
-                target / 1000
-            );
-        }
-    }
     Ok(())
 }
 
