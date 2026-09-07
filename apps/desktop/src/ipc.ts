@@ -793,6 +793,8 @@ export async function openProject(knownPath?: string): Promise<{
   media: MediaItem[];
   transcripts?: Record<string, Word[]>;
   path: string;
+  /** the project file was damaged and its `.bak` was opened instead */
+  recoveredFromBackup?: boolean;
 } | null> {
   if (!inTauri) {
     if (!mockSaved) return null;
