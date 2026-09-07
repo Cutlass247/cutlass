@@ -1668,6 +1668,7 @@ async fn export_project(
     reframe: Option<String>,
     reframe_x: Option<f64>,
     reframe_y: Option<f64>,
+    master_audio: Option<bool>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -1779,6 +1780,7 @@ async fn export_project(
         format: cutlass_core::export::ExportFormat::parse(format.as_deref().unwrap_or("mp4_h264")),
         quality: cutlass_core::export::Quality::parse(quality.as_deref().unwrap_or("medium")),
         reframe: cutlass_core::export::Reframe::parse(reframe.as_deref().unwrap_or("letterbox")),
+        master_audio: master_audio.unwrap_or(false),
         reframe_x: reframe_x.unwrap_or(0.5),
         reframe_y: reframe_y.unwrap_or(0.5),
     };

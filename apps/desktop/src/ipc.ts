@@ -599,6 +599,8 @@ export interface ExportOptions {
   reframe?: string; // letterbox | fill | blur — how a non-matching source fills the frame
   reframe_x?: number; // 0..1 pan for fill (0.5 = centred)
   reframe_y?: number;
+  /// level the mix, duck music under speech, and normalise loudness to -14 LUFS
+  master_audio?: boolean;
 }
 
 let mockExportCancelled = false;
@@ -619,6 +621,7 @@ export async function exportProject(opts: ExportOptions): Promise<string> {
     reframe: reframe ?? "letterbox",
     reframe_x: reframe_x ?? 0.5,
     reframe_y: reframe_y ?? 0.5,
+    master_audio: opts.master_audio ?? false,
   });
 }
 
