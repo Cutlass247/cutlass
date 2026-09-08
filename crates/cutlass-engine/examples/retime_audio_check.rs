@@ -15,7 +15,7 @@ fn main() {
     let rate = 48_000u32;
     let len = 1.0f64; // 1s of timeline per case
     for speed in [1.0, 2.0, 0.5] {
-        let clip = AudioClip { path: path.clone(), start: 0.0, len, src_in: 0.0, volume: 1.0, speed };
+        let clip = AudioClip { path: path.clone(), start: 0.0, len, src_in: 0.0, volume: 1.0, speed, audio_offset: 0.0 };
         let mut tr = TrackReader::new(vec![clip], rate, 0.0);
         let want_frames = (len * rate as f64) as usize;
         let mut got = 0usize;

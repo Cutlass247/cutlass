@@ -349,7 +349,11 @@ fn push_ring(samples: &[f32], shared: &Shared) -> bool {
         if shared.stopped.load(Ordering::Relaxed) {
             return false;
         }
-        let mut ring = shared.ring.lock().unwrap();
+        // Ignore poisoning. This runs on the playback thread for every buffer;
+        // if some other thread panicked while holding the ring, unwrapping here
+        // would kill audio outright for the rest of the session. The ring is a
+        // sample queue — the worst a panic mid-write leaves is a short glitch.
+        let mut ring = shared.ring.lock().unwrap_or_else(|p| p.into_inner());
         let room = max_ring.saturating_sub(ring.len());
         if room == 0 {
             drop(ring);

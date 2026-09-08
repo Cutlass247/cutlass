@@ -20,6 +20,10 @@ fn demo_clip(id: &str, track: &str, start: f64) -> Clip {
         start,
         len: 4.0,
         src_in: 0.0,
+        text: String::new(),
+        lut: String::new(),
+        fx: Default::default(),
+        kf: Default::default(),
     }
 }
 
