@@ -1,12 +1,26 @@
-# Cutlass 0.1.0 — first public beta
+# Cutlass 0.1.1 — the reliability release
 
 **Cut sharper. Own everything.**
 
-The video editor you don't have to learn. Drop in a long video and **AI finds your best moments** — captioned, vertical, ready to post — or edit by deleting words, and the video cuts itself. Everything OpusClip does, in an editor you own outright.
+The video editor you don't have to learn. Drop in a long video and **AI finds your best moments** — captioned, vertical, ready to post — or edit by deleting words, and the video cuts itself.
 
 > **Windows 10/11 · 64-bit.** Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
 
-> **🆕 New in this build:** **remove copyrighted background music** on-device (keeps your voice) · first-class **screen-recording / OBS** support (variable-frame-rate captures conform on import, so cuts and audio stay in sync) · **audio-sync slip** to fix recordings that came in a touch off · **grade several clips at once** · and a stack of A/V-sync and export fixes.
+---
+
+## 🆕 What's new in 0.1.1
+
+**🎚️ Enhance audio.** One switch in the export dialog levels out the volume, keeps music underneath the voice instead of fighting it, and matches the loudness platforms expect (−14 LUFS). Viewers forgive bad video; they never forgive bad audio.
+
+**⚡ Long exports actually finish.** A gap between two clips too short to hold a single frame could deadlock the render — ffmpeg stayed alive and kept reporting progress, so it looked slow rather than stuck, and a long timeline would sit at the same percentage forever. Fixed, along with the memory blow-up that made hour-long timelines crawl: peak memory is now flat no matter how many cuts you have.
+
+**🛡️ Your project survives a crash.** Auto-save used to rewrite the project in place, so anything interrupting a save — a crash, a power cut, an external drive dropping out — could leave it unreadable, and a damaged project is a total loss. Saves are now atomic, every save keeps a backup beside it, and a damaged file opens from that backup instead of failing.
+
+**📁 Projects have a home.** New projects go to **Documents → Cutlass Projects**, exports default to your **Videos** folder, and both remember wherever you actually put things.
+
+**🔑 Your licence follows you.** Renaming your PC no longer affects it, and if you move to a new machine — new laptop, fresh Windows, swapped parts — enter your purchase code again and the licence moves with you.
+
+**Also:** ProRes and WebM export correctly from long timelines · colour grading is ~1.6× faster · the export dialog shows elapsed time and an estimate, so a slow render doesn't look frozen · a missing or damaged clip now names the file and says why, immediately, instead of failing half a minute later in ffmpeg's words · titles containing `%` render correctly.
 
 ---
 

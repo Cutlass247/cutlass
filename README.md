@@ -6,7 +6,7 @@
 
 The video editor you don't have to learn. Drop in a long video and **AI finds your best moments** — captioned, vertical, ready to post — or edit by deleting words, and the video cuts itself. Everything OpusClip does, in an editor you own outright. Your video never leaves your machine.
 
-### [⬇ Download for Windows](../../releases/latest) · v0.1.0 · Free 7-day trial, then $49 once — yours forever
+### [⬇ Download for Windows](../../releases/latest) · v0.1.1 · Free 7-day trial, then $49 once — yours forever
 
 </div>
 
@@ -34,8 +34,11 @@ The video editor you don't have to learn. Drop in a long video and **AI finds yo
 
 ### 🎨 Grade & finish
 - **Grade in one click.** One-click Looks (Cinematic, Warm, Noir, and more) preview live on your footage. Drop in a `.cube` LUT, pull green screen, punch in, or dial color by hand — grade several clips at once.
+- **Make it sound finished.** One switch on export levels the volume, ducks music under your voice, and matches the loudness every platform expects. The difference between a video that sounds homemade and one that doesn't.
 - **Fix out-of-sync audio.** Slip a clip's audio earlier or later to line it up with the picture when a recording came in a touch off.
 - Transitions, titles and lower-thirds, keyframe any effect, speed/retime, and **live multiplayer** timelines in Studio mode.
+- **Exports that finish.** Hour-long timelines with hundreds of cuts render without stalling, and the dialog shows elapsed time and an estimate so you can tell a slow render from a stuck one.
+- **Work you can't lose.** Auto-save writes atomically and keeps a backup beside every project, so a crash or an unplugged drive mid-save can't take your edit with it.
 
 ## Two independent editors, one app
 
@@ -72,6 +75,7 @@ Prefer to trim by transcript? Switch to **Studio**, click a word to jump there, 
 - **Fast transcription uses the cloud; Private stays on-device.** *Fast* sends only your audio (never your video) to transcribe and analyze, then discards it. Switch to *Private* for 100% on-device, no cloud at all.
 - **Export at your source resolution.** Exporting 1080p footage at 4K just makes it softer and bigger — the app defaults to your footage's resolution and warns if you go higher.
 - **H.264 works on every machine.** ProRes (master) and WebM are also available. (H.265 is hidden for now — it depends on specific GPU support.)
+- **Moving to a new PC?** Enter your purchase code on the new machine and your licence moves with it. Renaming your PC doesn't affect it at all.
 - This is an **early beta**. Expect rough edges, and please tell us about them.
 
 ## Tell us what breaks
