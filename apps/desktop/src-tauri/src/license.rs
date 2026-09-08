@@ -161,6 +161,25 @@ fn info_from_lease(lease: &cutlass_license::Lease, hwid: &str, t: i64) -> Licens
     }
 }
 
+/// Decide from a cached lease alone, when the server can't be reached.
+///
+/// Two things have to hold, and both are security-relevant: the lease must
+/// belong to *this* machine, so one cannot be copied to another, and it must
+/// still be inside the offline grace window the server stamped into it, so a
+/// cached lease can't be trusted indefinitely by staying disconnected.
+/// Separated from `resolve` so those rules can actually be tested.
+fn from_cached_lease(
+    lease: &cutlass_license::Lease,
+    hwid: &str,
+    t: i64,
+) -> Option<LicenseInfo> {
+    if lease.hwid == hwid && t < lease.lease_expires_at {
+        Some(info_from_lease(lease, hwid, t))
+    } else {
+        None
+    }
+}
+
 fn offline(hwid: &str, msg: &str) -> LicenseInfo {
     LicenseInfo {
         status: "offline".into(),
@@ -203,8 +222,8 @@ pub fn resolve() -> LicenseInfo {
     // 2) Offline: trust the cached lease only within the grace window.
     if let Some(signed) = load_cache() {
         if let Some(lease) = signed.verify(&vk) {
-            if lease.hwid == hwid && t < lease.lease_expires_at {
-                return info_from_lease(&lease, &hwid, t);
+            if let Some(info) = from_cached_lease(&lease, &hwid, t) {
+                return info;
             }
         }
         return offline(&hwid, "Reconnect to the internet to verify your license.");
@@ -330,5 +349,116 @@ pub fn cloud_transcribe_chunk(audio: Vec<u8>, offset: f64) -> Result<Vec<SttWord
             Err(format!("{code}: {}", msg.chars().take(200).collect::<String>()))
         }
         Err(e) => Err(format!("Couldn't reach the transcription service: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cutlass_license::{Lease, Status, NEVER};
+
+    const DAY: i64 = 86_400;
+
+    fn lease(status: Status, expires_at: i64, lease_expires_at: i64) -> Lease {
+        Lease {
+            hwid: "this-machine".into(),
+            status,
+            trial_start: 0,
+            expires_at,
+            lease_expires_at,
+            issued_at: 0,
+        }
+    }
+
+    /// The failure that matters most: someone who paid must never be told they
+    /// cannot use what they bought, whatever the clock says.
+    #[test]
+    fn a_paid_licence_is_active_no_matter_the_time() {
+        let paid = lease(Status::Paid, NEVER, NEVER);
+        for t in [0, DAY, 10_000 * DAY, NEVER - 1] {
+            let info = info_from_lease(&paid, "this-machine", t);
+            assert!(info.active, "paid licence must stay active at t={t}");
+            assert_eq!(info.status, "paid");
+            assert_eq!(info.days_left, None, "paid has no trial countdown");
+        }
+    }
+
+    #[test]
+    fn the_owner_edition_is_always_active() {
+        let owner = lease(Status::Owner, NEVER, NEVER);
+        let info = info_from_lease(&owner, "this-machine", 10_000 * DAY);
+        assert!(info.active);
+        assert_eq!(info.status, "owner");
+    }
+
+    /// The trial boundary, exactly. Off by one here either cuts a trial a day
+    /// short or hands out a free day.
+    #[test]
+    fn a_trial_runs_until_its_expiry_and_not_past_it() {
+        let expiry = 7 * DAY;
+        let t = lease(Status::Trial, expiry, expiry);
+
+        assert!(info_from_lease(&t, "this-machine", expiry - 1).active, "live one second before");
+        assert!(!info_from_lease(&t, "this-machine", expiry).active, "over at the expiry itself");
+        assert!(!info_from_lease(&t, "this-machine", expiry + 1).active, "and after");
+
+        let ended = info_from_lease(&t, "this-machine", expiry + DAY);
+        assert_eq!(ended.status, "expired");
+        assert_eq!(ended.days_left, Some(0), "never a negative countdown");
+        assert!(ended.message.contains("Purchase"), "expired should say what to do next");
+    }
+
+    #[test]
+    fn the_days_remaining_count_rounds_the_way_a_person_would() {
+        let expiry = 7 * DAY;
+        let t = lease(Status::Trial, expiry, expiry);
+        let days = |now: i64| info_from_lease(&t, "this-machine", now).days_left;
+        assert_eq!(days(0), Some(7), "a whole 7 days at the start");
+        assert_eq!(days(1), Some(7), "a second in is still 'seven days left'");
+        assert_eq!(days(6 * DAY), Some(1), "part of a day still reads as a day");
+        assert_eq!(days(7 * DAY - 1), Some(1), "the last second is still a day");
+        assert_eq!(days(7 * DAY), Some(0));
+    }
+
+    /// A cached lease is only good on the machine it was issued to. Otherwise
+    /// copying one file to another computer would be a free licence.
+    #[test]
+    fn a_cached_lease_from_another_machine_is_refused() {
+        let l = lease(Status::Paid, NEVER, NEVER); // issued to "this-machine"
+        assert!(from_cached_lease(&l, "this-machine", DAY).is_some());
+        assert!(
+            from_cached_lease(&l, "a-different-machine", DAY).is_none(),
+            "a lease must not travel between machines"
+        );
+    }
+
+    /// Staying offline must not extend a licence forever.
+    #[test]
+    fn a_cached_lease_expires_out_of_its_offline_grace() {
+        let grace_ends = 3 * DAY;
+        let l = lease(Status::Paid, NEVER, grace_ends);
+        assert!(from_cached_lease(&l, "this-machine", grace_ends - 1).is_some(), "inside the window");
+        assert!(from_cached_lease(&l, "this-machine", grace_ends).is_none(), "at the edge");
+        assert!(from_cached_lease(&l, "this-machine", grace_ends + DAY).is_none(), "past it");
+    }
+
+    /// A trial that ended while offline is still *readable* — the app should
+    /// say the trial is over, not that something went wrong.
+    #[test]
+    fn an_expired_trial_inside_grace_reads_as_expired_not_as_an_error() {
+        let l = lease(Status::Trial, 7 * DAY, 30 * DAY);
+        let info = from_cached_lease(&l, "this-machine", 8 * DAY).expect("still within grace");
+        assert_eq!(info.status, "expired");
+        assert!(!info.active);
+        assert!(!info.needs_online, "this is a decided answer, not a connectivity problem");
+    }
+
+    /// A clock set backwards must not lock anyone out; it is the generous
+    /// direction, and users do change their clocks.
+    #[test]
+    fn a_clock_set_backwards_does_not_lock_anyone_out() {
+        let l = lease(Status::Trial, 7 * DAY, 30 * DAY);
+        let info = from_cached_lease(&l, "this-machine", -5 * DAY).expect("still granted");
+        assert!(info.active, "an earlier clock must not deny access");
     }
 }

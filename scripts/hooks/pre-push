@@ -55,8 +55,12 @@ step() { # step <name> <dir> <command...>
 }
 
 echo "pre-push checks:"
+# Default features here: this is the shape that actually ships.
 step "cargo check (incl. tests+examples)" "." cargo check --workspace --all-targets
-step "cargo test" "." cargo test --workspace
+# --all-features, because tests behind an off-by-default feature do not run
+# otherwise and nothing says so. The only signature-verification test in the
+# licensing crate was invisible for exactly that reason.
+step "cargo test (all features)" "." cargo test --workspace --all-features
 step "tsc" "apps/desktop" npx tsc --noEmit
 
 if [ "$fail" -ne 0 ]; then
