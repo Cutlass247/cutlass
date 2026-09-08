@@ -11,6 +11,11 @@ COPY . .
 RUN cargo build --release -p cutlass-license-server
 
 FROM debian:bookworm-slim
+# Railway sets this at build time; carried through so /health can report which
+# commit is actually running. Without it a redeploy is unverifiable from
+# outside -- the endpoint answered {"ok":true} whatever was deployed.
+ARG RAILWAY_GIT_COMMIT_SHA=unknown
+ENV CUTLASS_BUILD_SHA=$RAILWAY_GIT_COMMIT_SHA
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
