@@ -9,7 +9,7 @@ fn main() -> anyhow::Result<()> {
     let model = std::env::args().nth(2).expect("usage: transcribe_check <video> <model>");
 
     let t0 = Instant::now();
-    let words = cutlass_engine::transcribe::transcribe(&path, &model)?;
+    let words = cutlass_engine::transcribe::transcribe(&path, &model, |_| {})?;
     let secs = t0.elapsed().as_secs_f64();
 
     let joined = words

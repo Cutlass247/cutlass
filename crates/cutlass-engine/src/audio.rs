@@ -183,7 +183,11 @@ impl AudioDecoder {
             return Vec::new();
         }
         let n = out.samples() * self.out_channels; // interleaved
-        out.data(0)[..n * 4]
+        // Take what the frame reports, but never past what it actually holds:
+        // a slice out of range here is a panic on the decode thread, which
+        // takes audio down for good. chunks_exact drops any partial tail.
+        let data = out.data(0);
+        data[..(n * 4).min(data.len())]
             .chunks_exact(4)
             .map(|b| f32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
             .collect()

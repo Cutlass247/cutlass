@@ -55,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
         start: end,
         len: 3.0,
         src_in: 0.0,
+        text: String::new(),
+        lut: String::new(),
+        fx: Default::default(),
+        kf: Default::default(),
     })?;
     for m in send_all(&proj, &mut sync) {
         sink.send(WsMessage::Binary(m.into())).await?;
