@@ -80,14 +80,20 @@ fn machine_guid() -> Option<String> {
     None
 }
 
-/// A stable, non-reversible id for this machine. Derived from the Windows
-/// install GUID + computer name, hashed so we never send raw identifiers.
+/// A stable, non-reversible id for this machine, from the Windows install GUID,
+/// hashed so we never send a raw identifier anywhere.
+///
+/// The computer name used to be mixed in as well, and must not be: it is the
+/// one part a user can change on a whim, from Settings, and changing it moved
+/// the machine id. That broke both directions at once — someone who had paid
+/// was locked out of what they bought, and anyone could reset an expired trial
+/// by renaming their PC, which is exactly what binding the trial to hardware
+/// was for. It contributed almost no uniqueness either; the install GUID is
+/// already per-installation.
 pub fn machine_id() -> String {
     let mut h = Sha256::new();
     h.update(machine_guid().unwrap_or_default().as_bytes());
-    h.update(b"|");
-    h.update(std::env::var("COMPUTERNAME").unwrap_or_default().as_bytes());
-    h.update(b"|cutlass-hwid-v1");
+    h.update(b"|cutlass-hwid-v2");
     let digest = h.finalize();
     digest[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
