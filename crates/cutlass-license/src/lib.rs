@@ -180,4 +180,68 @@ mod tests {
         assert!(owner.is_active_at(NEVER - 1));
         assert_eq!(owner.trial_days_left(0), None);
     }
+
+    /// The real public key the client ships. Public by definition, and a valid
+    /// curve point, which an arbitrary 32 bytes would not be.
+    const SHIPPED_KEY: &str = "evVP402EDTzW7mbeHCJlPFANQEAZNe5FCRfdT3Vt+eM=";
+
+    /// A lease arrives from a server or off disk, so it is untrusted input.
+    /// Rubbish must come back as "no lease", never as a panic and never as
+    /// access granted.
+    #[test]
+    fn rubbish_leases_are_refused_without_panicking() {
+        let vk = verifying_key_from_b64(SHIPPED_KEY).expect("the shipped key parses");
+        let cases = [
+            ("not base64 at all", SignedLease { payload: "!!!".into(), sig: "!!!".into() }),
+            ("empty everything", SignedLease { payload: String::new(), sig: String::new() }),
+            (
+                "signature of the wrong length",
+                SignedLease { payload: B64.encode(b"{}"), sig: B64.encode([0u8; 8]) },
+            ),
+            (
+                "well-formed signature over nothing valid",
+                SignedLease { payload: B64.encode(b"not json"), sig: B64.encode([0u8; 64]) },
+            ),
+            (
+                "valid json, signature all zeroes",
+                SignedLease {
+                    payload: B64.encode(br#"{"hwid":"x","status":"paid","trial_start":0,"expires_at":0,"lease_expires_at":0,"issued_at":0}"#),
+                    sig: B64.encode([0u8; 64]),
+                },
+            ),
+        ];
+        for (what, lease) in cases {
+            assert!(lease.verify(&vk).is_none(), "{what} must not verify");
+        }
+    }
+
+    #[test]
+    fn a_malformed_public_key_is_refused() {
+        for bad in ["", "!!!", "c2hvcnQ=", &"A".repeat(100)] {
+            assert!(verifying_key_from_b64(bad).is_none(), "{bad:?} is not a key");
+        }
+        assert!(verifying_key_from_b64(SHIPPED_KEY).is_some());
+        // whitespace around it is survivable — it is embedded as a literal
+        assert!(verifying_key_from_b64(&format!("  {SHIPPED_KEY}
+")).is_some());
+    }
+
+    /// A trial must not come back to life if the clock moves, and must not go
+    /// negative. `is_active_at` is the gate the whole app hangs on.
+    #[test]
+    fn trial_activity_is_decided_purely_by_the_expiry() {
+        let l = Lease {
+            hwid: "m".into(),
+            status: Status::Trial,
+            trial_start: 0,
+            expires_at: 7 * 86_400,
+            lease_expires_at: 7 * 86_400,
+            issued_at: 0,
+        };
+        assert!(l.is_active_at(i64::MIN), "a clock far in the past still grants");
+        assert!(l.is_active_at(7 * 86_400 - 1));
+        assert!(!l.is_active_at(7 * 86_400));
+        assert!(!l.is_active_at(i64::MAX), "and far in the future does not");
+        assert_eq!(l.trial_days_left(i64::MAX), Some(0), "never negative");
+    }
 }
