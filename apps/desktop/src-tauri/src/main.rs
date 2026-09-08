@@ -893,6 +893,40 @@ fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
     Ok(snap)
 }
 
+/// Where new projects go unless the user chooses otherwise: a named folder in
+/// Documents, created the first time it's needed.
+///
+/// Until this existed the save dialog was given a bare file name and no
+/// directory, so Windows opened it wherever Explorer happened to be last.
+/// Projects ended up scattered with no recent-files list to find them again —
+/// and the `.bak` written beside a project only helps someone who can find the
+/// project.
+#[tauri::command]
+fn default_project_dir(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let base = app.path().document_dir().map_err(err_str)?;
+    let dir = base.join("Cutlass Projects");
+    // Best effort. If it can't be created — permissions, or a file sitting on
+    // the name — fall back to Documents rather than failing the save outright.
+    if std::fs::create_dir_all(&dir).is_ok() {
+        Ok(dir.to_string_lossy().into_owned())
+    } else {
+        Ok(base.to_string_lossy().into_owned())
+    }
+}
+
+/// Where exports go unless the user chooses otherwise. Videos, not Downloads:
+/// Downloads is a folder people bulk-delete, it usually sits on the system
+/// drive, and a staged export needs roughly twice the finished size in
+/// transient space, so a long render can fill C: from there.
+#[tauri::command]
+fn default_export_dir(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let p = app.path();
+    let dir = p.video_dir().or_else(|_| p.document_dir()).map_err(err_str)?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
 /// The .cutlass path the app was launched with (double-clicked file), if
 /// any. Returns it once then clears it — the frontend loads it on mount.
 #[tauri::command]
@@ -2194,6 +2228,8 @@ fn main() {
             razor_out,
             save_project,
             take_startup_file,
+            default_project_dir,
+            default_export_dir,
             force_close,
             load_prefs,
             save_pref,

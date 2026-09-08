@@ -642,19 +642,47 @@ export async function cancelExport(): Promise<void> {
 export async function pickExportDir(): Promise<string | null> {
   if (!inTauri) return "C:/Users/You/Videos";
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const dir = await open({ directory: true, multiple: false });
-  return typeof dir === "string" ? dir : null;
+  const dir = await open({
+    directory: true,
+    multiple: false,
+    defaultPath: (await defaultExportDir()) || undefined,
+  });
+  if (typeof dir !== "string") return null;
+  void savePref("lastExportDir", dir);
+  return dir;
 }
 
 /// A sensible default export folder (Downloads, else home).
+/// The folder the export dialog opens in: whatever was used last, else Videos.
 export async function defaultExportDir(): Promise<string> {
   if (!inTauri) return "C:/Users/You/Videos";
   try {
-    const { downloadDir } = await import("@tauri-apps/api/path");
-    return await downloadDir();
+    const remembered = (await loadPrefs()).lastExportDir;
+    if (typeof remembered === "string" && remembered) return remembered;
+    return await invoke<string>("default_export_dir");
   } catch {
     return "";
   }
+}
+
+/// The folder the project dialogs open in: whatever was used last, else the
+/// "Cutlass Projects" folder in Documents, which is created on first use.
+export async function defaultProjectDir(): Promise<string> {
+  if (!inTauri) return "C:/Users/You/Documents/Cutlass Projects";
+  try {
+    const remembered = (await loadPrefs()).lastProjectDir;
+    if (typeof remembered === "string" && remembered) return remembered;
+    return await invoke<string>("default_project_dir");
+  } catch {
+    return "";
+  }
+}
+
+/// Remember the folder a project or export just went to, so the default only
+/// applies until the user makes their own choice.
+function rememberDir(key: "lastProjectDir" | "lastExportDir", filePath: string): void {
+  const cut = Math.max(filePath.lastIndexOf("\\"), filePath.lastIndexOf("/"));
+  if (cut > 0) void savePref(key, filePath.slice(0, cut));
 }
 
 /// Open a URL or mailto: in the OS default handler.
@@ -779,12 +807,14 @@ export async function saveProject(
   let path = knownPath;
   if (!path) {
     const { save } = await import("@tauri-apps/plugin-dialog");
+    const dir = await defaultProjectDir();
     const picked = await save({
       filters: [{ name: "Cutlass project", extensions: ["cutlass"] }],
-      defaultPath: "untitled.cutlass",
+      defaultPath: dir ? `${dir}/untitled.cutlass` : "untitled.cutlass",
     });
     if (!picked) return null;
     path = picked;
+    rememberDir("lastProjectDir", path);
   }
   // backend renames the project after the file and returns the new snapshot
   const project = await invoke<ProjectSnapshot>("save_project", { path });
@@ -807,12 +837,15 @@ export async function openProject(knownPath?: string): Promise<{
   let path = knownPath;
   if (!path) {
     const { open } = await import("@tauri-apps/plugin-dialog");
+    const dir = await defaultProjectDir();
     const picked = await open({
       multiple: false,
       filters: [{ name: "Cutlass project", extensions: ["cutlass"] }],
+      defaultPath: dir || undefined,
     });
     if (typeof picked !== "string") return null;
     path = picked;
+    rememberDir("lastProjectDir", path);
   }
   const res = await invoke<{
     project: ProjectSnapshot;
