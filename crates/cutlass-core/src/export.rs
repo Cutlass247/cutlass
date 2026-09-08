@@ -1022,14 +1022,99 @@ fn output_args(
 /// timeline again on a slower encoder.
 const ENCODER_RETRIES: usize = 2;
 
-/// Whether a failure is worth another attempt. A driver that is too old, or an
-/// encoder this build does not have, will fail identically every time, so those
-/// fall through at once rather than spending three attempts on a certainty.
+/// Whether a failure is worth another attempt.
+///
+/// Some failures are certainties: a driver too old for an encoder, or a source
+/// file that isn't there. Retrying those, and then falling through every other
+/// encoder, only delays a message the user needed immediately — a missing file
+/// took 30 seconds to report before this list existed, and reported it in
+/// ffmpeg's words without naming the file.
 fn worth_retrying(err: &anyhow::Error) -> bool {
     let msg = format!("{err:#}");
     !(msg.contains("Driver does not support")
         || msg.contains("Unknown encoder")
-        || msg.contains("cancelled"))
+        || msg.contains("cancelled")
+        || is_media_fault(&msg))
+}
+
+/// A failure that lies with the media or the destination rather than the
+/// encoder — an unreadable source, a damaged file, a place that can't be
+/// written. Every encoder fails these identically, so neither retrying nor
+/// falling through to the next one does anything but make the user wait.
+fn is_media_fault(msg: &str) -> bool {
+    msg.contains("Error opening input")
+        || msg.contains("Error opening output")
+        || msg.contains("No such file or directory")
+        || msg.contains("moov atom not found")
+        || msg.contains("Invalid data found")
+}
+
+/// The part of a path worth putting in a sentence.
+fn file_label(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+}
+
+/// Check the things ffmpeg would otherwise only discover after being started,
+/// failed, and started again for every encoder in the list.
+///
+/// A source that isn't there and a folder that can't be written are the two
+/// most common ways an export fails on a real machine — footage lives on drives
+/// that get unplugged and in folders that get reorganised. Both used to cost
+/// half a minute and produce a message written for whoever wrote ffmpeg.
+fn preflight(segments: &[Segment], overlays: &[Overlay], out: &Path) -> anyhow::Result<()> {
+    let mut sources: Vec<&str> = Vec::new();
+    for s in segments {
+        match s {
+            Segment::Clip { path, .. } => sources.push(path),
+            Segment::Transition { a_path, b_path, .. } => {
+                sources.push(a_path);
+                sources.push(b_path);
+            }
+            Segment::Gap { .. } => {}
+        }
+    }
+    sources.extend(overlays.iter().map(|o| o.path.as_str()));
+    sources.sort_unstable();
+    sources.dedup();
+
+    for p in sources {
+        match std::fs::metadata(p) {
+            Err(_) => anyhow::bail!(
+                "Can't find \"{}\" — it may have been moved or renamed, or the drive \
+                 it's on may be disconnected.\nLooked in: {p}",
+                file_label(p)
+            ),
+            Ok(m) if m.len() == 0 => anyhow::bail!(
+                "\"{}\" is empty, so there's nothing to export from it. If it was \
+                 still copying, wait for that to finish.\n{p}",
+                file_label(p)
+            ),
+            Ok(_) => {}
+        }
+    }
+
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        anyhow::ensure!(
+            dir.is_dir(),
+            "The folder \"{}\" doesn't exist any more. Choose somewhere else to save to.",
+            dir.display()
+        );
+        // Writable? Cheaper to find out now than after rendering the whole thing.
+        let probe = dir.join(format!(".cutlass-write-test-{}", std::process::id()));
+        match std::fs::File::create(&probe) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe);
+            }
+            Err(e) => anyhow::bail!(
+                "Can't write to \"{}\" ({e}). Check the folder isn't read-only or full.",
+                dir.display()
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// Run one render, re-attempting a transient failure a couple of times.
@@ -1297,6 +1382,9 @@ pub fn export(
 ) -> anyhow::Result<String> {
     use std::sync::atomic::Ordering;
     anyhow::ensure!(!segments.is_empty(), "nothing to export");
+    // Say what is wrong before spending anything, not after four encoders have
+    // each failed on it in turn.
+    preflight(segments, overlays, out)?;
     let total: f64 = segments.iter().map(|s| s.len()).sum();
 
     // Long timelines are rendered in stages, for two reasons that hold for
@@ -1386,6 +1474,12 @@ pub fn export(
                 // a user cancel must not fall through to the next encoder
                 if cancel.load(Ordering::Relaxed) {
                     return Err(e);
+                }
+                // neither must a problem no encoder can do anything about
+                if is_media_fault(&format!("{e:#}")) {
+                    return Err(e.context(
+                        "A clip couldn't be read. The file may be damaged, or still copying. The export log saved next to your output lists every source this timeline uses.",
+                    ));
                 }
                 if i + 1 < encoders.len() {
                     eprintln!(

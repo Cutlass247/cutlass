@@ -148,7 +148,11 @@ fn with_undo(
 }
 
 fn err_str(e: impl std::fmt::Display) -> String {
-    e.to_string()
+    // `{:#}` so an anyhow error brings its causes with it. Plain Display shows
+    // only the outermost context, which for a staged export meant the user was
+    // told "part 3 of 30" and nothing whatsoever about what went wrong. Other
+    // error types ignore the flag.
+    format!("{e:#}")
 }
 
 fn data_url(path: &Path) -> Result<String, String> {
