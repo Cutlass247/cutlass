@@ -96,7 +96,8 @@ fn init_db(conn: &Connection) {
             code         TEXT PRIMARY KEY,
             created_at   INTEGER NOT NULL,
             used_at      INTEGER,
-            used_by      TEXT
+            used_by      TEXT,
+            transfers    INTEGER NOT NULL DEFAULT 0
          );
          -- AI usage metering: seconds of media processed per HWID per calendar
          -- month (resets when the YYYY-MM period rolls over).
@@ -119,6 +120,15 @@ fn init_db(conn: &Connection) {
          );",
     )
     .expect("init db");
+
+    // Migration for a database already on the volume: CREATE TABLE IF NOT
+    // EXISTS leaves an existing `codes` table alone, so the column has to be
+    // added separately. SQLite has no ADD COLUMN IF NOT EXISTS, so failing
+    // because it is already there is the expected path, not a problem.
+    let _ = conn.execute(
+        "ALTER TABLE codes ADD COLUMN transfers INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
 }
 
 /// UTC calendar year-month ("YYYY-MM") for a unix time — the usage period
@@ -372,16 +382,44 @@ async fn redeem(
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         if claimed == 0 {
-            // either unknown or already used — allow re-verify if THIS hwid used it
-            let owned: bool = db
+            // Already used, or unknown. Who holds it?
+            let holder: Option<String> = db
                 .query_row(
-                    "SELECT 1 FROM codes WHERE code=?1 AND used_by=?2",
-                    rusqlite::params![code, hwid],
-                    |_| Ok(true),
+                    "SELECT used_by FROM codes WHERE code=?1",
+                    rusqlite::params![code],
+                    |r| r.get(0),
                 )
-                .unwrap_or(false);
-            if !owned {
-                return Err((StatusCode::BAD_REQUEST, "invalid or already-used code".into()));
+                .ok()
+                .flatten();
+            match holder.as_deref() {
+                // Unknown code. Nothing to do.
+                None => {
+                    return Err((StatusCode::BAD_REQUEST, "invalid or already-used code".into()))
+                }
+                // Same machine re-verifying: fine, carry on.
+                Some(h) if h == hwid => {}
+                // A different machine. Move the licence rather than refuse it.
+                //
+                // People replace laptops, reinstall Windows, and change parts,
+                // and every one of those changes the machine id — so refusing
+                // meant someone who had paid had to email for a rebind. A
+                // transfer releases the old machine as it binds the new one, so
+                // only ever one machine is licensed by a code; a shared code
+                // takes access away from whoever used it last, which is its own
+                // deterrent. `transfers` is recorded so unusual churn shows up.
+                Some(previous) => {
+                    db.execute(
+                        "UPDATE licenses SET status='trial', paid_at=NULL, redeemed=NULL                          WHERE hwid=?1",
+                        rusqlite::params![previous],
+                    )
+                    .ok();
+                    db.execute(
+                        "UPDATE codes SET used_at=?2, used_by=?3, transfers=transfers+1                          WHERE code=?1",
+                        rusqlite::params![code, t, hwid],
+                    )
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                    eprintln!("code {code} transferred from {previous} to {hwid}");
+                }
             }
         }
         db.execute(
@@ -1188,5 +1226,108 @@ mod tests {
         // a paid machine gets the 600-min cap, not the 30-min trial cap
         let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
         assert!((cap - 36_000.0).abs() < 1.0);
+    }
+
+    /// Put a code in the table, as /admin/mint does.
+    fn mint(s: &AppState, code: &str) {
+        let db = s.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO codes (code, created_at) VALUES (?1, ?2)",
+            rusqlite::params![code, now()],
+        )
+        .unwrap();
+    }
+
+    fn status_of(s: &AppState, hwid: &str) -> Option<String> {
+        let db = s.db.lock().unwrap();
+        db.query_row(
+            "SELECT status FROM licenses WHERE hwid=?1",
+            rusqlite::params![hwid],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+
+    /// A machine id changes whenever someone replaces a laptop, reinstalls
+    /// Windows, or swaps a part. Refusing the code then means the person who
+    /// paid has to email for a rebind, so the code moves instead.
+    #[tokio::test]
+    async fn a_code_moves_to_a_new_machine_and_releases_the_old_one() {
+        let s = test_state(0.0, 0.0, &[]);
+        mint(&s, "CUTLASS-AAAA-BBBB-CCCC");
+
+        let first = redeem(
+            State(s.clone()),
+            Json(RedeemReq { hwid: "old-machine".into(), code: "CUTLASS-AAAA-BBBB-CCCC".into() }),
+        )
+        .await;
+        assert!(first.is_ok(), "the first redemption should work");
+        assert_eq!(status_of(&s, "old-machine").as_deref(), Some("paid"));
+
+        // same machine again: still fine, no transfer
+        assert!(redeem(
+            State(s.clone()),
+            Json(RedeemReq { hwid: "old-machine".into(), code: "CUTLASS-AAAA-BBBB-CCCC".into() }),
+        )
+        .await
+        .is_ok());
+
+        // new machine: the licence moves
+        let moved = redeem(
+            State(s.clone()),
+            Json(RedeemReq { hwid: "new-machine".into(), code: "CUTLASS-AAAA-BBBB-CCCC".into() }),
+        )
+        .await;
+        assert!(moved.is_ok(), "a new machine must be able to claim it");
+        assert_eq!(status_of(&s, "new-machine").as_deref(), Some("paid"));
+        assert_eq!(
+            status_of(&s, "old-machine").as_deref(),
+            Some("trial"),
+            "the machine it moved off must lose the paid licence"
+        );
+
+        let (holder, transfers): (String, i64) = {
+            let db = s.db.lock().unwrap();
+            db.query_row(
+                "SELECT used_by, transfers FROM codes WHERE code=?1",
+                rusqlite::params!["CUTLASS-AAAA-BBBB-CCCC"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(holder, "new-machine");
+        assert_eq!(transfers, 1, "the move is recorded, so churn is visible");
+    }
+
+    /// One code, one machine at a time. Moving it back and forth is allowed --
+    /// people do go back to an old laptop -- but it is never live on two.
+    #[tokio::test]
+    async fn a_code_only_ever_licenses_one_machine_at_a_time() {
+        let s = test_state(0.0, 0.0, &[]);
+        mint(&s, "CUTLASS-DDDD-EEEE-FFFF");
+        for hwid in ["a", "b", "a", "c"] {
+            assert!(redeem(
+                State(s.clone()),
+                Json(RedeemReq { hwid: hwid.into(), code: "CUTLASS-DDDD-EEEE-FFFF".into() }),
+            )
+            .await
+            .is_ok());
+        }
+        assert_eq!(status_of(&s, "c").as_deref(), Some("paid"), "the last one holds it");
+        for loser in ["a", "b"] {
+            assert_eq!(status_of(&s, loser).as_deref(), Some("trial"), "{loser} must not still be paid");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_code_is_still_refused() {
+        let s = test_state(0.0, 0.0, &[]);
+        let r = redeem(
+            State(s.clone()),
+            Json(RedeemReq { hwid: "someone".into(), code: "CUTLASS-0000-0000-0000".into() }),
+        )
+        .await;
+        assert!(r.is_err(), "a code that was never minted must not grant anything");
+        assert_ne!(status_of(&s, "someone").as_deref(), Some("paid"));
     }
 }
