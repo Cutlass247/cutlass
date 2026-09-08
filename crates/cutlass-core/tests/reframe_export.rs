@@ -61,6 +61,7 @@ fn export_reframe(src: &PathBuf, out: &PathBuf, reframe: Reframe) -> String {
         reframe,
         reframe_x: 0.5,
         reframe_y: 0.5,
+        ..Default::default()
     };
     let cancel = AtomicBool::new(false);
     let mut progress = |_p: f32| {};
