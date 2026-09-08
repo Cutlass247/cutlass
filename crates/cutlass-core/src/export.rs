@@ -732,6 +732,21 @@ pub struct ExportSettings {
     pub master_audio: bool,
 }
 
+/// The shortest hole between two clips that becomes a real gap segment.
+///
+/// A gap is rendered from a generated `color` source, and a generated source
+/// shorter than one frame emits *no frames at all* — at which point `concat`
+/// waits forever for a picture that is never coming, and the export hangs with
+/// ffmpeg still alive and still printing progress. That is not hypothetical: a
+/// clip ending at 269.4576 against the next starting at 269.46 left a 2.4 ms
+/// hole, and a 75-minute timeline stalled dead at 6% every single time.
+///
+/// Anything this small is drift from floating-point arithmetic on clip
+/// positions rather than something anyone placed, and closing it moves the
+/// programme by less than one frame. 50 ms keeps it safe down to 20 fps
+/// without needing the frame rate here, where it is not known.
+const MIN_GAP: f64 = 0.05;
+
 /// Target integrated loudness for the mastered mix.
 ///
 /// YouTube, Spotify and most platforms normalise uploads to about -14 LUFS:
@@ -1643,6 +1658,13 @@ fn run_export(
                 }
             }
             Segment::Gap { len } => {
+                // Never ask for less than a frame's worth. A generated source
+                // shorter than one frame emits nothing, and concat then blocks
+                // forever waiting for a picture — the export hangs outright,
+                // with ffmpeg alive and still reporting progress. build_segments
+                // already refuses to make gaps that small, so this is the second
+                // lock on the same door rather than the working fix.
+                let len = len.max(1.5 / fps as f64);
                 cmd.args(["-f", "lavfi", "-t", &format!("{len:.3}")]);
                 cmd.input(format!("color=black:s={w}x{h}:r={fps}"));
                 filters.push_str(&format!("[{input_idx}:v]format=yuv420p[v{k}];"));
@@ -1936,19 +1958,24 @@ fn run_export(
     // has genuinely stopped talking.
     let pid = child.as_inner().id();
     let started = std::time::Instant::now();
-    let last_event = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // Wall time when the render last actually MOVED, not when it last spoke.
+    // ffmpeg keeps printing its stats line on a timer whether or not any frame
+    // is being written, so a deadlocked graph looks perfectly chatty from the
+    // outside: watching for silence never fires on the failure that matters.
+    let last_advance = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let furthest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let stalled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let watching = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let limit = stall_limit();
     let watchdog = {
         use std::sync::atomic::Ordering::Relaxed;
-        let (last_event, stalled, watching) =
-            (last_event.clone(), stalled.clone(), watching.clone());
+        let (last_advance, stalled, watching) =
+            (last_advance.clone(), stalled.clone(), watching.clone());
         std::thread::spawn(move || {
             while watching.load(Relaxed) {
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                let quiet_for = started.elapsed().as_millis() as u64 - last_event.load(Relaxed);
-                if quiet_for > limit.as_millis() as u64 {
+                let stuck_for = started.elapsed().as_millis() as u64 - last_advance.load(Relaxed);
+                if stuck_for > limit.as_millis() as u64 {
                     stalled.store(true, Relaxed);
                     kill_pid(pid);
                     return;
@@ -1960,7 +1987,7 @@ fn run_export(
     let mut saw_error = None;
     for event in child.iter()? {
         use std::sync::atomic::Ordering::Relaxed;
-        last_event.store(started.elapsed().as_millis() as u64, Relaxed);
+
         if cancel.load(Relaxed) {
             watching.store(false, Relaxed);
             let _ = child.kill();
@@ -1970,6 +1997,13 @@ fn run_export(
         match event {
             FfmpegEvent::Progress(p) => {
                 let done = parse_time_s(&p.time).unwrap_or(0.0);
+                // Only forward progress resets the stall clock. A repeated or
+                // going-backwards timestamp means nothing is being written.
+                let ms = (done * 1000.0).max(0.0) as u64;
+                if ms > furthest.load(Relaxed) {
+                    furthest.store(ms, Relaxed);
+                    last_advance.store(started.elapsed().as_millis() as u64, Relaxed);
+                }
                 log.sample(done, total);
                 progress((done / total.max(0.001)).clamp(0.0, 1.0) as f32);
             }
@@ -1985,9 +2019,9 @@ fn run_export(
     watching.store(false, std::sync::atomic::Ordering::Relaxed);
     let _ = watchdog.join();
     if stalled.load(std::sync::atomic::Ordering::Relaxed) {
-        log.line("ffmpeg stopped responding — killed it so the render can be re-attempted");
+        log.line("render stopped making progress — killed it so it can be re-attempted");
         anyhow::bail!(
-            "{encoder} stopped responding for {}s and was stopped",
+            "{encoder} stopped making progress for {}s and was stopped",
             limit.as_secs()
         );
     }
@@ -2284,7 +2318,7 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
     let mut prev: Option<ExportClip> = None;
     let mut prev_keyframed = false;
     for c in clips {
-        if c.start > t + 1e-3 {
+        if c.start > t + MIN_GAP {
             segs.push(Segment::Gap { len: c.start - t });
             prev = None; // a gap breaks adjacency
         }
