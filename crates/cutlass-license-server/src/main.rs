@@ -342,7 +342,14 @@ fn signed_response(state: &AppState, hwid: &str, mut lease: Lease) -> Json<Lease
 
 // ── handlers ─────────────────────────────────────────────────────────
 async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "ok": true }))
+    // The commit is here so a redeploy can be confirmed from outside. It used
+    // to answer {"ok":true} regardless of what was running, which meant there
+    // was no way to tell whether a deploy had actually landed.
+    Json(serde_json::json!({
+        "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
+        "commit": std::env::var("CUTLASS_BUILD_SHA").unwrap_or_else(|_| "unknown".into()),
+    }))
 }
 
 async fn activate(
