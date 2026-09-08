@@ -941,7 +941,32 @@ fn take_startup_file(state: State<AppState>) -> Option<String> {
 /// Actually close the window — called by the frontend after the user
 /// answers the save-on-quit prompt (the OS close is otherwise intercepted).
 #[tauri::command]
-fn force_close(window: tauri::WebviewWindow) {
+fn force_close(window: tauri::WebviewWindow, state: State<AppState>) {
+    // A render in flight is a separate ffmpeg process. Windows does not take
+    // children down with their parent, so closing the window on top of one
+    // leaves it running with nothing left to stop it — still burning the CPU,
+    // still writing to the user's disk, invisible outside Task Manager.
+    // Ask it to stop and give it a moment to actually go.
+    let running = {
+        let slot = state.export_cancel.lock_ok();
+        if let Some(c) = slot.as_ref() {
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    };
+    if running {
+        // The render loop notices the flag between ffmpeg events and kills the
+        // child. Bounded, because quitting must not hang on a wedged encoder.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if state.export_cancel.lock_ok().is_none() {
+                break;
+            }
+        }
+    }
     let _ = window.destroy();
 }
 
@@ -1942,9 +1967,19 @@ async fn export_project(
         reframe_x: reframe_x.unwrap_or(0.5),
         reframe_y: reframe_y.unwrap_or(0.5),
     };
-    // cancel handle: cancel_export flips this; the render loop kills ffmpeg
+    // Cancel handle: cancel_export flips this; the render loop kills ffmpeg.
+    // Claiming the slot is also how a second export is kept out — two running
+    // at once would leave the first uncancellable (its handle overwritten) and
+    // could have both writing the same file. Checked and claimed under one
+    // lock so two clicks in the same instant can't both get through.
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    *state.export_cancel.lock_ok() = Some(cancel.clone());
+    {
+        let mut slot = state.export_cancel.lock_ok();
+        if slot.is_some() {
+            return Err("An export is already running. Wait for it to finish, or cancel it.".into());
+        }
+        *slot = Some(cancel.clone());
+    }
     // the render runs minutes — off the UI thread; progress still streams
     let result = tauri::async_runtime::spawn_blocking(move || {
         cutlass_core::export::export(
@@ -1973,10 +2008,13 @@ async fn export_project(
         )
         .map_err(err_str)
     })
-    .await
-    .map_err(err_str)?;
-    *state.export_cancel.lock_ok() = None; // done — drop the handle
-    result
+    .await;
+    // Release the slot whatever happened. If the render thread panicked, the
+    // `?` below returns early — and leaving a stale handle behind would mean
+    // Cancel acting on an export that no longer exists, and no further export
+    // ever being allowed to start.
+    *state.export_cancel.lock_ok() = None;
+    result.map_err(err_str)?
 }
 
 /// Cancel the in-flight export (kills the ffmpeg render).
@@ -2375,5 +2413,32 @@ mod tests {
         let mut guard = m.lock_ok();
         guard.push("still usable".to_string());
         assert_eq!(guard.len(), 2);
+    }
+
+    /// The export slot is what keeps a second render from starting while one
+    /// is going. If a render thread panics, the slot has to come back anyway —
+    /// otherwise Cancel acts on an export that is gone and no new one can ever
+    /// begin.
+    #[test]
+    fn the_export_slot_is_released_even_when_the_render_panics() {
+        let slot: std::sync::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+            std::sync::Mutex::new(None);
+
+        // claim it, as export_project does
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *slot.lock_ok() = Some(cancel);
+        assert!(slot.lock_ok().is_some(), "slot should be claimed");
+
+        // a second export must be turned away while it is held
+        assert!(slot.lock_ok().is_some(), "a second export would be refused here");
+
+        // the render panics; the release must still happen
+        let joined = std::thread::spawn(|| -> i32 { panic!("render died") }).join();
+        *slot.lock_ok() = None; // this is the line that must not be skipped
+        assert!(joined.is_err(), "the thread really did panic");
+        assert!(
+            slot.lock_ok().is_none(),
+            "slot must be free again, or exports are blocked for the session"
+        );
     }
 }
