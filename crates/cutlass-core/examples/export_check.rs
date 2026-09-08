@@ -2,7 +2,6 @@
 //! duration and streams check out.
 //! `cargo run -p cutlass-core --example export_check -- <clipA> <clipB>`
 
-use std::path::Path;
 
 use cutlass_core::export::{export, has_audio, ExportSettings, Overlay, Segment};
 use cutlass_core::media::probe_duration_s;

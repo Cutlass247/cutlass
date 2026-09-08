@@ -1,0 +1,67 @@
+#!/bin/bash
+#
+# Refuse to push code that does not build.
+#
+# This exists because of a specific failure: `cargo test` stopped compiling for
+# two crates when struct fields were added and their harnesses were not updated.
+# A broken example fails the whole target, so the breakage read as noise rather
+# than as absent coverage, and those tests silently stopped running for weeks.
+# The deadlock that cost a day of debugging lived in exactly that gap.
+#
+# `--all-targets` is the point: it compiles tests, examples and benches, not
+# just the code that ships. That is what rots unnoticed.
+#
+# Bypass with `git push --no-verify` when you genuinely need to.
+
+set -u
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# whisper-rs builds native code, so cmake has to be reachable. Git hooks do not
+# inherit the shell you normally build in, so find it rather than assume it.
+if ! command -v cmake >/dev/null 2>&1; then
+  for c in \
+    "/c/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin" \
+    "/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin" \
+    "/c/Program Files/CMake/bin"
+  do
+    [ -x "$c/cmake.exe" ] && PATH="$PATH:$c" && break
+  done
+fi
+if ! command -v cmake >/dev/null 2>&1; then
+  echo "pre-push: cmake not found, so the Rust build can't run."
+  echo "          Install it or add it to PATH, or push with --no-verify."
+  exit 1
+fi
+
+fail=0
+step() { # step <name> <dir> <command...>
+  local name="$1" dir="$2"; shift 2
+  # Stop at the first failure. `cargo test` recompiles everything `cargo check`
+  # just checked, so running on would print the same errors a second time.
+  [ "$fail" -ne 0 ] && { printf '  %-38s%s
+' "$name" "skipped"; return; }
+  printf '  %-38s' "$name"
+  local out
+  if out=$(cd "$dir" && "$@" 2>&1); then
+    echo "ok"
+  else
+    echo "FAILED"
+    # Errors only. Warnings are not worth blocking a push over, and they bury
+    # the line that actually matters.
+    echo "$out" | grep -E "^error" -A 4 | head -40 | sed 's/^/      /'
+    echo "      reproduce: (cd $dir && $*)"
+    fail=1
+  fi
+}
+
+echo "pre-push checks:"
+step "cargo check (incl. tests+examples)" "." cargo check --workspace --all-targets
+step "cargo test" "." cargo test --workspace
+step "tsc" "apps/desktop" npx tsc --noEmit
+
+if [ "$fail" -ne 0 ]; then
+  echo
+  echo "Push stopped: fix the above, or use --no-verify to push anyway."
+  exit 1
+fi
+echo "all clear."
