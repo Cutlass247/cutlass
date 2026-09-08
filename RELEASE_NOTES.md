@@ -56,7 +56,7 @@ The video editor you don't have to learn. Drop in a long video and **AI finds yo
 
 ## 📥 Install
 
-1. Download **`Cutlass-0.1.0-trial-x64-setup.exe`** below.
+1. Download **`Cutlass-0.1.1-trial-x64-setup.exe`** below.
 2. Run it. Windows SmartScreen will likely say *"Windows protected your PC"* — this beta isn't code-signed yet, not because anything's wrong. Click **More info → Run anyway**.
 3. Launch **Cutlass** from the Start menu. On first run you'll start your 7-day free trial (needs internet once to begin).
 

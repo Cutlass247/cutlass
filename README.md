@@ -56,7 +56,7 @@ Every other editor wants a recurring piece of you — a monthly rental, a waterm
 
 ## Install
 
-1. Download **Cutlass-0.1.0-trial-x64-setup.exe** from the [latest release](../../releases/latest).
+1. Download **Cutlass-0.1.1-trial-x64-setup.exe** from the [latest release](../../releases/latest).
 2. Run it. Windows SmartScreen will likely say *"Windows protected your PC"* — this beta isn't code-signed yet, not because anything's wrong. Click **More info → Run anyway**.
 3. Launch **Cutlass** from the Start menu. On first run you'll start your 7-day free trial (needs internet once to begin).
 
