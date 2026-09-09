@@ -447,6 +447,24 @@ fn clip_video_chain(
         format!("setpts=(PTS-STARTPTS)/{:.5}", fx.speed)
     };
     // Temperature/tint as a midtone colour-balance shift (warm = +red/-blue).
+    //
+    // What remains of its cost is the yuv -> rgb -> yuv conversion these
+    // filters force, not the arithmetic: measured at 4K60, nothing 1.01x,
+    // this 0.65x, and the bare conversion with no filter between accounts for
+    // most of the gap. Doing the same shift on the chroma planes instead stays
+    // in YUV and runs at 1.05x, but it is a different colour model -- 31 dB
+    // against this one, which is a visible change to every existing project --
+    // so the accurate version is deliberately kept.
+    //
+    // Nor is the GPU the answer here, which is worth recording because it
+    // looks like it should be. A custom OpenCL kernel doing this whole grade
+    // in one pass measured 0.44x at 4K60 against 0.41x for the CPU chain --
+    // and uploading and downloading the frames with NO kernel at all also
+    // measured 0.44x. The kernel is free; the round trip is the entire cost.
+    // Keeping frames on the GPU end to end would avoid it, but hardware
+    // decoders emit nv12, program_opencl consumes rgba, and this LGPL build
+    // has no GPU-side conversion between them, via either D3D11 or QSV.
+    //
     // This is exactly what `colorbalance` computes, but written as a lookup
     // table so it is evaluated 256 times per channel instead of once per pixel.
     // colorbalance is the single most expensive thing a Look can switch on:
