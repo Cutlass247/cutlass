@@ -759,8 +759,7 @@ async fn track_censor(
             .ok_or_else(|| "clip not found".to_string())?;
         let path = state
             .media
-            .lock()
-            .unwrap()
+            .lock_ok()
             .get(&clip.media)
             .map(|m| m.path.clone())
             .ok_or_else(|| "source media not available".to_string())?;
@@ -1235,8 +1234,7 @@ async fn hydrate_media(
 ) -> Result<serde_json::Value, String> {
     let entry = state
         .project
-        .lock()
-        .unwrap()
+        .lock_ok()
         .media_entries()
         .into_iter()
         .find(|(id, ..)| *id == media_id)
@@ -1304,8 +1302,7 @@ async fn transcribe_media(
     use tauri::Emitter;
     let path = state
         .media
-        .lock()
-        .unwrap()
+        .lock_ok()
         .get(&media_id)
         .map(|m| m.path.clone())
         .ok_or_else(|| format!("unknown media {media_id}"))?;
@@ -1515,8 +1512,7 @@ async fn cloud_transcribe(
     use tauri::Emitter;
     let path = state
         .media
-        .lock()
-        .unwrap()
+        .lock_ok()
         .get(&media_id)
         .map(|m| m.path.clone())
         .ok_or_else(|| format!("unknown media {media_id}"))?;
@@ -1809,8 +1805,7 @@ fn pause(state: State<AppState>) -> Option<f64> {
 fn playback_clock(state: State<AppState>) -> Option<serde_json::Value> {
     state
         .playback
-        .lock()
-        .unwrap()
+        .lock_ok()
         .as_ref()
         .map(|h| json!({ "t": h.clock(), "ended": h.ended() }))
 }
@@ -2384,6 +2379,38 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every mutex here must go through `lock_ok`, and this reads the file's
+    /// own source to say so.
+    ///
+    /// That sounds paranoid until you know how it went wrong. These were
+    /// converted once already, by searching for `.lock().unwrap()` — and five
+    /// were missed, because rustfmt had wrapped them onto two lines and the
+    /// search was one line at a time. Nothing noticed for months: a poisoned
+    /// mutex is a runtime state no test arrives at by accident, so the ones
+    /// left behind passed everything while doing exactly what the fix was
+    /// meant to stop. A grep that can be defeated by a line break is not a
+    /// guarantee; this is, and it costs nothing to run.
+    #[test]
+    fn every_mutex_in_this_file_goes_through_lock_ok() {
+        // Production code only — the poisoning test below locks deliberately.
+        let src = include_str!("main.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+
+        for open in [".lock()", ".read()", ".write()"] {
+            for (at, _) in code.match_indices(open) {
+                let after = code[at + open.len()..].trim_start();
+                if after.starts_with(".unwrap()") || after.starts_with(".expect(") {
+                    let line = code[..at].lines().count();
+                    panic!(
+                        "main.rs:{line} still panics on a poisoned lock \
+                         (`{open}` followed by unwrap/expect). Use `.lock_ok()` — \
+                         see the LockExt doc comment for why."
+                    );
+                }
+            }
+        }
+    }
 
     /// The recovery copy is written after the UI has already crashed, so the
     /// name it builds gets exactly one attempt. A character Windows rejects

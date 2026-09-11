@@ -28,6 +28,23 @@ struct Room {
 
 type Rooms = Arc<Mutex<HashMap<String, Room>>>;
 
+/// Lock the room table, ignoring poisoning.
+///
+/// One peer's connection task panicking while holding this would otherwise
+/// poison it, and every other peer in every other room would then panic on
+/// their next message — one bad frame disconnecting everybody. The same
+/// reasoning as the desktop app and the licence server: what's guarded is a
+/// document and a peer list, not an invariant a panic could leave unsafe.
+trait LockExt<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for Mutex<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 pub async fn run(addr: SocketAddr) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     println!("cutlass-sync-server listening on {addr}");
@@ -69,7 +86,7 @@ async fn handle(stream: TcpStream, rooms: Rooms, peer_id: u64) -> anyhow::Result
 
     // register the peer and offer the room's current state
     {
-        let mut rooms = rooms.lock().unwrap();
+        let mut rooms = rooms.lock_ok();
         let room = rooms.entry(room_name.clone()).or_default();
         let mut state = SyncState::new();
         while let Some(m) = room.doc.generate_sync_message(&mut state) {
@@ -83,7 +100,7 @@ async fn handle(stream: TcpStream, rooms: Rooms, peer_id: u64) -> anyhow::Result
             // presence and other ephemera: text frames, relayed to the
             // rest of the room without touching the document
             WsMessage::Text(text) => {
-                let rooms = rooms.lock().unwrap();
+                let rooms = rooms.lock_ok();
                 if let Some(room) = rooms.get(&room_name) {
                     for (id, peer) in room.peers.iter() {
                         if *id != peer_id {
@@ -93,7 +110,7 @@ async fn handle(stream: TcpStream, rooms: Rooms, peer_id: u64) -> anyhow::Result
                 }
             }
             WsMessage::Binary(bytes) => {
-                let mut rooms = rooms.lock().unwrap();
+                let mut rooms = rooms.lock_ok();
                 let Some(room) = rooms.get_mut(&room_name) else { break };
                 if let Some(peer) = room.peers.get_mut(&peer_id) {
                     match SyncMessage::decode(&bytes) {
@@ -125,7 +142,7 @@ async fn handle(stream: TcpStream, rooms: Rooms, peer_id: u64) -> anyhow::Result
         }
     }
 
-    if let Some(room) = rooms.lock().unwrap().get_mut(&room_name) {
+    if let Some(room) = rooms.lock_ok().get_mut(&room_name) {
         room.peers.remove(&peer_id);
     }
     println!("peer {peer_id} left room '{room_name}'");
