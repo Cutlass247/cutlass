@@ -10,6 +10,9 @@ edition.workspace = true
 
 [dependencies]
 axum = "0.7"
+# catch-panic only: turns a panic in any handler into a 500 for that one
+# caller instead of a dropped connection with no reply.
+tower-http = { version = "0.6", features = ["catch-panic"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -23,3 +26,8 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 cutlass-license = { path = "../cutlass-license", features = ["sign"] }
+
+[dev-dependencies]
+# drives real requests through the router in tests (ServiceExt::oneshot)
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

@@ -44,7 +44,37 @@ use std::{
 };
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Lock the database, ignoring poisoning.
+///
+/// A poisoned mutex means an earlier request panicked while holding it, and a
+/// plain `.lock_ok()` then panics in every later caller *forever*. On a
+/// server that is not one failed request -- it is the whole service down, for
+/// everyone, with nothing in the logs to explain it, until a human notices and
+/// redeploys. The app reports a dead licence server to the user as "Connect to
+/// continue", so the blast radius is every customer being locked out of
+/// software they have paid for.
+///
+/// What this guards is a SQLite connection, whose own transactional guarantees
+/// are untouched by a panic in the Rust code holding it, so carrying on is
+/// strictly better than refusing everyone who comes after. The panic itself is
+/// still a bug; this just stops one bug from becoming an outage.
+trait LockExt<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for Mutex<T> {
+    fn lock_ok(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// A database failure to report to one caller rather than die on.
+fn db_err(e: rusqlite::Error) -> (StatusCode, String) {
+    eprintln!("db error: {e}");
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
 fn env_days(key: &str, default: i64) -> i64 {
@@ -179,8 +209,8 @@ fn ai_gate(
     ver: Option<&str>,
     t: i64,
 ) -> Result<(bool, f64), (StatusCode, String)> {
-    let db = state.db.lock().unwrap();
-    let row = get_or_create(&db, &state.cfg, hwid, ver, t);
+    let db = state.db.lock_ok();
+    let row = get_or_create(&db, &state.cfg, hwid, ver, t).map_err(db_err)?;
     let is_owner = row.status == "owner";
     if !lease_for(&row, &state.cfg, t).is_active_at(t) {
         return Err((StatusCode::PAYMENT_REQUIRED, "no active licence for AI features".into()));
@@ -208,7 +238,7 @@ fn ai_charge(state: &AppState, hwid: &str, is_owner: bool, cap: f64, cost_secs: 
     if is_owner || cost_secs <= 0.0 {
         return;
     }
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_ok();
     let period = year_month(t);
     let (from_monthly, from_credits) = if cap <= 0.0 {
         (cost_secs, 0.0) // track-only: everything visible in monthly, no drain
@@ -237,7 +267,18 @@ struct Row {
 
 /// Fetch the record for `hwid`, creating a fresh trial (or owner) row the first
 /// time we ever see it. Owner HWIDs are always owner, even on first contact.
-fn get_or_create(conn: &Connection, cfg: &Config, hwid: &str, ver: Option<&str>, t: i64) -> Row {
+///
+/// Returns `Err` rather than panicking when that write fails: this runs with
+/// the database lock held, so a panic here poisoned it and took every later
+/// request down with it (see [`LockExt`]). A full volume or a locked database
+/// is a 500 for one caller, not an outage for everyone.
+fn get_or_create(
+    conn: &Connection,
+    cfg: &Config,
+    hwid: &str,
+    ver: Option<&str>,
+    t: i64,
+) -> rusqlite::Result<Row> {
     let existing: Option<(String, i64)> = conn
         .query_row(
             "SELECT status, trial_start FROM licenses WHERE hwid = ?1",
@@ -259,7 +300,7 @@ fn get_or_create(conn: &Connection, cfg: &Config, hwid: &str, ver: Option<&str>,
             rusqlite::params![hwid, t, ver],
         )
         .ok();
-        return Row { status, trial_start };
+        return Ok(Row { status, trial_start });
     }
 
     let status = if cfg.owner_hwids.contains(hwid) { "owner" } else { "trial" };
@@ -267,9 +308,8 @@ fn get_or_create(conn: &Connection, cfg: &Config, hwid: &str, ver: Option<&str>,
         "INSERT INTO licenses (hwid, status, trial_start, created_at, last_seen, app_version)
          VALUES (?1, ?2, ?3, ?3, ?3, ?4)",
         rusqlite::params![hwid, status, t, ver],
-    )
-    .expect("insert license");
-    Row { status: status.to_string(), trial_start: t }
+    )?;
+    Ok(Row { status: status.to_string(), trial_start: t })
 }
 
 /// Turn a stored row into a signed lease for `now`.
@@ -362,8 +402,8 @@ async fn activate(
     }
     let t = now();
     let row = {
-        let db = state.db.lock().unwrap();
-        get_or_create(&db, &state.cfg, hwid, req.app_version.as_deref(), t)
+        let db = state.db.lock_ok();
+        get_or_create(&db, &state.cfg, hwid, req.app_version.as_deref(), t).map_err(db_err)?
     };
     let lease = lease_for(&row, &state.cfg, t);
     Ok(signed_response(&state, hwid, lease))
@@ -377,9 +417,9 @@ async fn redeem(
     let code = req.code.trim().to_uppercase();
     let t = now();
     let row = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock_ok();
         // ensure a row exists so redeeming works even before first activate
-        let base = get_or_create(&db, &state.cfg, hwid, None, t);
+        let base = get_or_create(&db, &state.cfg, hwid, None, t).map_err(db_err)?;
 
         // claim the code atomically: only marks it used if still unused
         let claimed = db
@@ -453,7 +493,7 @@ async fn mint(
     let n = req.count.unwrap_or(1).clamp(1, 100);
     let t = now();
     let mut codes = Vec::new();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_ok();
     for _ in 0..n {
         let code = new_code();
         db.execute(
@@ -802,7 +842,7 @@ async fn usage(State(state): State<AppState>, Query(q): Query<UsageQuery>) -> Js
     let t = now();
     let period = year_month(t);
     let hwid = q.hwid.trim();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_ok();
     // pick the cap for THIS licence's status (trial vs paid), defaulting to trial
     let status: String = db
         .query_row("SELECT status FROM licenses WHERE hwid=?1", [hwid], |r| r.get(0))
@@ -842,7 +882,7 @@ async fn grant(
     }
     let hwid = req.hwid.trim();
     let secs = (req.minutes * 60.0).max(0.0);
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_ok();
     db.execute(
         "INSERT INTO ai_credits (hwid, seconds) VALUES (?1, ?2)
          ON CONFLICT(hwid) DO UPDATE SET seconds = seconds + ?2",
@@ -866,7 +906,7 @@ async fn admin_reset(
         _ => return Err((StatusCode::UNAUTHORIZED, "bad admin token".into())),
     }
     let hwid = req.hwid.trim();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_ok();
     let licenses = db.execute("DELETE FROM licenses WHERE hwid=?1", [hwid]).unwrap_or(0);
     let credits = db.execute("DELETE FROM ai_credits WHERE hwid=?1", [hwid]).unwrap_or(0);
     let usage = db.execute("DELETE FROM ai_usage WHERE hwid=?1", [hwid]).unwrap_or(0);
@@ -946,7 +986,7 @@ async fn lemonsqueezy_webhook(
     }
 
     let t = now();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock_ok();
     // idempotency: a retried webhook must not double-grant (the mutex serialises
     // the check + grant + record, so concurrent retries can't race either)
     if db.query_row("SELECT 1 FROM webhook_events WHERE id=?1", [&order_id], |_| Ok(())).is_ok() {
@@ -1028,7 +1068,35 @@ async fn main() -> anyhow::Result<()> {
         key: Arc::new(key),
     };
 
-    let app = Router::new()
+    // Honor the platform's assigned port (Railway/Render/Fly set $PORT) before
+    // our own override, so the service is reachable without extra config.
+    let port: u16 = env::var("CUTLASS_PORT")
+        .ok()
+        .or_else(|| env::var("PORT").ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8787);
+    println!("cutlass-license-server db: {db_path}");
+    serve(router(state), port).await
+}
+
+async fn serve(app: Router, port: u16) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
+    println!("cutlass-license-server listening on :{port}");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// Every route, plus the panic net around them. Separate from `main` so tests
+/// can drive real requests through the stack the service actually runs.
+fn router(state: AppState) -> Router {
+    router_with(state, Router::new())
+}
+
+/// `extra` is merged in *before* the panic layer, because a layer only covers
+/// routes added ahead of it. Tests add a route through this so the net is
+/// proven where it is really applied, not in a copy of it that could drift.
+fn router_with(state: AppState, extra: Router<AppState>) -> Router {
+    Router::new()
         .route("/health", get(health))
         .route("/activate", post(activate))
         .route("/redeem", post(redeem))
@@ -1043,19 +1111,18 @@ async fn main() -> anyhow::Result<()> {
             "/transcribe",
             post(transcribe).layer(DefaultBodyLimit::max(48 * 1024 * 1024)),
         )
-        .with_state(state);
-
-    // Honor the platform's assigned port (Railway/Render/Fly set $PORT) before
-    // our own override, so the service is reachable without extra config.
-    let port: u16 = env::var("CUTLASS_PORT")
-        .ok()
-        .or_else(|| env::var("PORT").ok())
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8787);
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    println!("cutlass-license-server listening on :{port} (db: {db_path})");
-    axum::serve(listener, app).await?;
-    Ok(())
+        .merge(extra)
+        // Last resort. Nothing above should panic, but without this one that
+        // slips through drops the connection with no reply at all -- which the
+        // app shows the user as "offline", a server bug wearing the costume of
+        // their own internet.
+        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
+            |_: Box<dyn std::any::Any + Send + 'static>| {
+                eprintln!("handler panicked; answered 500");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+            },
+        ))
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -1088,6 +1155,83 @@ mod tests {
         }
     }
 
+    // ── staying up (see `LockExt`) ────────────────────────────────────
+    //
+    // These three are one story. A request panics while holding the database
+    // lock; before this, that poisoned the mutex and every later request from
+    // every other customer panicked too. The service was down for good, and a
+    // dead licence server reaches the user as "Connect to continue" -- so one
+    // bad request locked every paying customer out of the app. It must not be
+    // possible for a single request to do that.
+
+    /// The reachable trigger: `get_or_create` inserts a row with the lock
+    /// held, and used to `.expect("insert license")`, so any failed write --
+    /// a full volume, a locked database -- panicked right there.
+    #[test]
+    fn a_failed_insert_is_an_error_not_a_panic() {
+        let s = test_state(0.0, 0.0, &[]);
+        let db = s.db.lock_ok();
+        // stands in for every reason the write can fail
+        db.execute_batch("DROP TABLE licenses").unwrap();
+
+        let r = get_or_create(&db, &s.cfg, "hwid-with-nowhere-to-go", None, now());
+        assert!(r.is_err(), "a failed insert must return an error, not panic");
+    }
+
+    /// And if something under the lock panics anyway, the next customer
+    /// through the door still has to be served.
+    #[test]
+    fn a_poisoned_lock_does_not_take_the_service_down() {
+        let s = test_state(0.0, 0.0, &[]);
+        let t = now();
+        assert!(ai_gate(&s, "customer-a", None, t).is_ok(), "baseline");
+
+        let db2 = s.db.clone();
+        let _ = std::thread::spawn(move || {
+            let _held = db2.lock_ok();
+            panic!("something under the lock went wrong");
+        })
+        .join();
+        assert!(s.db.lock().is_err(), "the mutex really is poisoned now");
+
+        assert!(ai_gate(&s, "customer-b", None, t).is_ok(), "a later request must still work");
+        assert!(ai_gate(&s, "customer-a", None, t).is_ok(), "and so must an existing one");
+    }
+
+    /// The net under everything else: a panic reaching the router comes back
+    /// as a 500 to that one caller instead of a dropped connection.
+    #[tokio::test]
+    async fn a_panicking_handler_answers_500() {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        async fn boom() -> &'static str {
+            panic!("handler blew up");
+        }
+        let app = router_with(test_state(0.0, 0.0, &[]), Router::new().route("/boom", get(boom)));
+
+        let res = app
+            .oneshot(axum::http::Request::builder().uri("/boom").body(axum::body::Body::empty()).unwrap())
+            .await
+            .expect("the connection must not be dropped");
+
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"internal error");
+    }
+
+    /// Sanity: the test above is only worth anything if real routes go
+    /// through the same stack it does.
+    #[tokio::test]
+    async fn health_still_answers_through_the_stack() {
+        use tower::ServiceExt;
+        let res = router(test_state(0.0, 0.0, &[]))
+            .oneshot(axum::http::Request::builder().uri("/health").body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
     #[test]
     fn year_month_known_date() {
         // 1_755_000_000 → ~Aug 12 2025 UTC
@@ -1102,7 +1246,7 @@ mod tests {
         let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
         ai_charge(&s, hwid, false, cap, 6.0 * 60.0, t); // 6 min
         {
-            let db = s.db.lock().unwrap();
+            let db = s.db.lock_ok();
             assert!((ai_used_secs(&db, hwid, &year_month(t)) - 360.0).abs() < 1.0);
         }
         assert!(ai_gate(&s, hwid, None, t).is_ok()); // still under cap
@@ -1119,7 +1263,7 @@ mod tests {
         let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
         ai_charge(&s, hwid, false, cap, 60.0, t); // exactly at cap
         {
-            let db = s.db.lock().unwrap();
+            let db = s.db.lock_ok();
             db.execute(
                 "INSERT INTO ai_credits (hwid, seconds) VALUES (?1, ?2)",
                 rusqlite::params![hwid, 120.0],
@@ -1128,7 +1272,7 @@ mod tests {
         }
         assert!(ai_gate(&s, hwid, None, t).is_ok()); // at cap but has credits
         ai_charge(&s, hwid, false, cap, 90.0, t); // spills fully onto credits
-        let db = s.db.lock().unwrap();
+        let db = s.db.lock_ok();
         assert!((ai_credit_secs(&db, hwid) - 30.0).abs() < 1.0);
     }
 
@@ -1141,7 +1285,7 @@ mod tests {
         assert!(is_owner);
         ai_charge(&s, hwid, true, cap, 9_999.0 * 60.0, t); // no-op for owners
         {
-            let db = s.db.lock().unwrap();
+            let db = s.db.lock_ok();
             assert_eq!(ai_used_secs(&db, hwid, &year_month(t)), 0.0);
         }
         assert!(ai_gate(&s, hwid, None, t).is_ok());
@@ -1155,7 +1299,7 @@ mod tests {
         let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
         ai_charge(&s, hwid, false, cap, 9_999.0 * 60.0, t);
         {
-            let db = s.db.lock().unwrap();
+            let db = s.db.lock_ok();
             assert!(ai_used_secs(&db, hwid, &year_month(t)) > 0.0); // usage recorded
         }
         assert!(ai_gate(&s, hwid, None, t).is_ok()); // never blocked
@@ -1173,7 +1317,7 @@ mod tests {
         assert_eq!(ai_gate(&s, hwid, None, t).unwrap_err().0, StatusCode::TOO_MANY_REQUESTS);
         // promote to paid → the 10-minute monthly cap applies, so it's allowed again
         {
-            let db = s.db.lock().unwrap();
+            let db = s.db.lock_ok();
             db.execute("UPDATE licenses SET status='paid' WHERE hwid=?1", [hwid]).unwrap();
         }
         let (_, paid_cap) = ai_gate(&s, hwid, None, t).unwrap();
@@ -1202,13 +1346,13 @@ mod tests {
         let s = test_state(600.0, 30.0, &[]);
         let hwid = "resetme000001";
         {
-            let db = s.db.lock().unwrap();
+            let db = s.db.lock_ok();
             mark_paid(&db, hwid, t);
             db.execute("INSERT INTO ai_credits (hwid, seconds) VALUES (?1, 6000)", [hwid]).unwrap();
         }
         // reset (mirrors admin_reset's deletes)
         {
-            let db = s.db.lock().unwrap();
+            let db = s.db.lock_ok();
             db.execute("DELETE FROM licenses WHERE hwid=?1", [hwid]).unwrap();
             db.execute("DELETE FROM ai_credits WHERE hwid=?1", [hwid]).unwrap();
             db.execute("DELETE FROM ai_usage WHERE hwid=?1", [hwid]).unwrap();
@@ -1216,7 +1360,7 @@ mod tests {
         // gone: recreated as a fresh trial (30-min cap), zero credits
         let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
         assert!((cap - 1800.0).abs() < 1.0);
-        let db = s.db.lock().unwrap();
+        let db = s.db.lock_ok();
         assert_eq!(ai_credit_secs(&db, hwid), 0.0);
     }
 
@@ -1226,9 +1370,9 @@ mod tests {
         let s = test_state(600.0, 30.0, &[]); // paid 600 min, trial 30 min
         let hwid = "paidbyhook0001";
         {
-            let db = s.db.lock().unwrap();
+            let db = s.db.lock_ok();
             mark_paid(&db, hwid, t); // as the webhook would on a licence purchase
-            assert_eq!(get_or_create(&db, &s.cfg, hwid, None, t).status, "paid");
+            assert_eq!(get_or_create(&db, &s.cfg, hwid, None, t).unwrap().status, "paid");
         }
         // a paid machine gets the 600-min cap, not the 30-min trial cap
         let (_, cap) = ai_gate(&s, hwid, None, t).unwrap();
@@ -1237,7 +1381,7 @@ mod tests {
 
     /// Put a code in the table, as /admin/mint does.
     fn mint(s: &AppState, code: &str) {
-        let db = s.db.lock().unwrap();
+        let db = s.db.lock_ok();
         db.execute(
             "INSERT INTO codes (code, created_at) VALUES (?1, ?2)",
             rusqlite::params![code, now()],
@@ -1246,7 +1390,7 @@ mod tests {
     }
 
     fn status_of(s: &AppState, hwid: &str) -> Option<String> {
-        let db = s.db.lock().unwrap();
+        let db = s.db.lock_ok();
         db.query_row(
             "SELECT status FROM licenses WHERE hwid=?1",
             rusqlite::params![hwid],
@@ -1294,7 +1438,7 @@ mod tests {
         );
 
         let (holder, transfers): (String, i64) = {
-            let db = s.db.lock().unwrap();
+            let db = s.db.lock_ok();
             db.query_row(
                 "SELECT used_by, transfers FROM codes WHERE code=?1",
                 rusqlite::params!["CUTLASS-AAAA-BBBB-CCCC"],
