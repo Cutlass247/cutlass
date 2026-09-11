@@ -562,16 +562,23 @@ impl Project {
         Ok(())
     }
 
-    /// Materialize the known schema to JSON for the UI. Clip order in the
-    /// returned array is the derived render order: (track, start).
-    pub fn snapshot(&self) -> serde_json::Value {
-        let name = match self.doc.get(automerge::ROOT, "name") {
+    /// The project's name, as shown in the title bar. Empty if never set.
+    /// Separate from [`Self::snapshot`] so a caller that only wants the name —
+    /// naming a recovery file, say — doesn't serialize every clip to get it.
+    pub fn name(&self) -> String {
+        match self.doc.get(automerge::ROOT, "name") {
             Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
                 ScalarValue::Str(s) => s.to_string(),
                 _ => String::new(),
             },
             _ => String::new(),
-        };
+        }
+    }
+
+    /// Materialize the known schema to JSON for the UI. Clip order in the
+    /// returned array is the derived render order: (track, start).
+    pub fn snapshot(&self) -> serde_json::Value {
+        let name = self.name();
         let clips_obj = self.clips_obj();
         let mut clips: Vec<Clip> = self
             .doc

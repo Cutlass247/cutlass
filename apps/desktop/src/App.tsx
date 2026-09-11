@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { noteBackgroundError } from "./components/ErrorBoundary";
 import {
   Clip,
   MediaItem,
@@ -303,6 +304,28 @@ export default function App() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refreshUsage]);
+
+  // Anything async that failed without a `.catch`. In a packaged build there
+  // is no console to open, so without this the user sees an action quietly do
+  // nothing and has no idea why — and neither do we when they report it. Also
+  // kept for the crash screen: a render that throws is usually the second
+  // symptom, and the first one is often in here.
+  useEffect(() => {
+    const onRejection = (e: PromiseRejectionEvent) => {
+      const why = e.reason instanceof Error ? e.reason.message : String(e.reason);
+      noteBackgroundError(`unhandled rejection: ${why}`);
+      setError(`Something didn't finish: ${why}`);
+    };
+    const onError = (e: ErrorEvent) => {
+      noteBackgroundError(`${e.message} (${e.filename}:${e.lineno})`);
+    };
+    window.addEventListener("unhandledrejection", onRejection);
+    window.addEventListener("error", onError);
+    return () => {
+      window.removeEventListener("unhandledrejection", onRejection);
+      window.removeEventListener("error", onError);
+    };
+  }, []);
   const onBuyCredits = useCallback(() => {
     openCheckout("credits").catch((e) => setError(String(e)));
   }, []);

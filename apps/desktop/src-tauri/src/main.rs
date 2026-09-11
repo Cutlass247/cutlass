@@ -897,6 +897,81 @@ fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
     Ok(snap)
 }
 
+/// Strip everything Windows won't accept in a file name, so a project called
+/// `Ep 3: "Rebuild" <final>` still produces a file someone can open.
+fn safe_file_stem(name: &str) -> String {
+    let mut cleaned = String::with_capacity(name.len());
+    for c in name.chars() {
+        if r#"\/:*?"<>|"#.contains(c) || c.is_control() || c.is_whitespace() {
+            // Collapse runs: `Ep 3: "Rebuild"` loses three characters in a row
+            // and would otherwise come out full of gaps.
+            if !cleaned.ends_with(' ') {
+                cleaned.push(' ');
+            }
+        } else {
+            cleaned.push(c);
+        }
+    }
+    // Windows also rejects a trailing dot or space.
+    let trimmed = cleaned.trim().trim_end_matches('.').trim();
+    let capped: String = trimmed.chars().take(80).collect();
+    let capped = capped.trim().to_string();
+    if capped.is_empty() {
+        "Untitled".to_string()
+    } else {
+        capped
+    }
+}
+
+/// Write the in-memory project somewhere findable, with no dialog and no
+/// arguments from the caller beyond a timestamp for the file name.
+///
+/// This is what the UI calls when the UI itself has crashed, so it must not
+/// depend on anything the frontend still holds — not the open file's path, not
+/// a save dialog, not any React state. Everything it needs (the document, its
+/// name) is already here in the backend, which is exactly why a crashed window
+/// doesn't have to mean lost work.
+///
+/// Deliberately does NOT rename the project after the file the way
+/// `save_project` does: the recovery copy is a lifeboat, not a Save As, and
+/// the name it was saved under is how the user will recognise it.
+#[tauri::command]
+fn save_recovery_copy(
+    stamp: String,
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let mut project = state.project.lock_ok();
+    let stem = safe_file_stem(&project.name());
+    let stamp = safe_file_stem(&stamp);
+    let file = format!("{stem} (recovered {stamp}).cutlass");
+
+    // Documents\Cutlass Projects, then Documents, then temp. A crash is the
+    // worst moment to fail because a folder was missing.
+    let p = app.path();
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(docs) = p.document_dir() {
+        dirs.push(docs.join("Cutlass Projects"));
+        dirs.push(docs);
+    }
+    dirs.push(std::env::temp_dir());
+
+    let bytes = project.save();
+    let mut last = String::from("nowhere to write the file");
+    for dir in dirs {
+        if std::fs::create_dir_all(&dir).is_err() {
+            continue;
+        }
+        let path = dir.join(&file);
+        match write_project_atomically(&path, &bytes) {
+            Ok(()) => return Ok(path.to_string_lossy().into_owned()),
+            Err(e) => last = format!("{} ({e})", path.display()),
+        }
+    }
+    Err(format!("couldn't write a recovery copy: {last}"))
+}
+
 /// Where new projects go unless the user chooses otherwise: a named folder in
 /// Documents, created the first time it's needed.
 ///
@@ -2269,6 +2344,7 @@ fn main() {
             remove_music,
             razor_out,
             save_project,
+            save_recovery_copy,
             take_startup_file,
             default_project_dir,
             default_export_dir,
@@ -2308,6 +2384,50 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The recovery copy is written after the UI has already crashed, so the
+    /// name it builds gets exactly one attempt. A character Windows rejects
+    /// means the rescue itself fails, at the only moment it matters.
+    #[test]
+    fn a_recovery_file_name_survives_whatever_the_project_is_called() {
+        for (raw, want) in [
+            ("Ep 3", "Ep 3"),
+            (r#"Ep 3: "Rebuild" <final>"#, "Ep 3 Rebuild final"),
+            (r"client/brief\v2", "client brief v2"),
+            ("why?*|", "why"),
+            ("  padded  ", "padded"),
+            ("trailing dot.", "trailing dot"),
+            ("...", "Untitled"),
+            ("", "Untitled"),
+            ("   ", "Untitled"),
+            ("tab\there", "tab here"),
+        ] {
+            let got = safe_file_stem(raw);
+            assert_eq!(got, want, "for {raw:?}");
+            assert!(
+                !got.chars().any(|c| r#"\/:*?"<>|"#.contains(c) || c.is_control()),
+                "{got:?} still holds a character Windows won't take"
+            );
+            assert!(!got.is_empty() && !got.ends_with('.') && !got.ends_with(' '));
+        }
+
+        // A long name must not push the path past what Windows will open.
+        let long = safe_file_stem(&"word ".repeat(200));
+        assert!(long.chars().count() <= 80, "was {}", long.chars().count());
+        assert!(!long.ends_with(' '), "trimmed after capping, not before");
+
+        // And the whole point: the result is actually writable.
+        let dir = std::env::temp_dir().join(format!("cutlass_recov_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join(format!(
+            "{} (recovered {}).cutlass",
+            safe_file_stem(r#"Ep 3: "Rebuild""#),
+            safe_file_stem("2026-09-11 1432")
+        ));
+        write_project_atomically(&f, b"rescued").expect("the built name must be writable");
+        assert_eq!(std::fs::read(&f).unwrap(), b"rescued");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The guarantee auto-save depends on: the file on disk is always either
     /// the old project or the new one, and the previous generation survives.

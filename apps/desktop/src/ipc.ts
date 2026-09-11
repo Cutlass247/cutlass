@@ -794,6 +794,20 @@ export async function cutRanges(
 // mock "disk" for save/open in the browser
 let mockSaved: { project: ProjectSnapshot } | null = null;
 
+/// Write the project to a findable file with no dialog, and return where it
+/// went. For use when the UI has crashed: the document lives in the backend,
+/// so it can still be rescued after React has given up. Takes no path because
+/// the caller may no longer have one.
+export async function saveRecoveryCopy(): Promise<string> {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(
+    d.getHours()
+  )}${p(d.getMinutes())}`;
+  if (!inTauri) return `Recovered ${stamp}.cutlass`;
+  return invoke<string>("save_recovery_copy", { stamp });
+}
+
 // Save the project. With `knownPath` (a prior save/open location) it writes
 // there silently; otherwise it prompts (Save As). Returns the renamed
 // snapshot and the path used, so the caller can remember it.
