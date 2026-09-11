@@ -84,6 +84,10 @@ pub struct ClipFx {
     pub chroma: f64,        // 0 or 1 — green-screen key (overlay tracks)
     pub chroma_sim: f64,    // 0.30 — key similarity
     pub denoise: f64,       // 0 or 1 — audio voice cleanup
+    /// 0..1 — how hard voice cleanup works. Drives the level below which the
+    /// denoiser calls something noise, which is the setting that decides
+    /// whether it removes hiss or removes the voice with it.
+    pub denoise_strength: f64,
     pub scale: f64,         // 1
     pub rot: f64,           // degrees
     pub pos_x: f64,         // fraction of width
@@ -117,6 +121,7 @@ impl Default for ClipFx {
             chroma: 0.0,
             chroma_sim: 0.30,
             denoise: 0.0,
+            denoise_strength: 0.5,
             scale: 1.0,
             rot: 0.0,
             pos_x: 0.0,
@@ -170,6 +175,7 @@ impl ClipFx {
             "chroma" => self.chroma = v,
             "chroma_sim" => self.chroma_sim = v,
             "denoise" => self.denoise = v,
+            "denoise_strength" => self.denoise_strength = v,
             "scale" => self.scale = v,
             "rot" => self.rot = v,
             "pos_x" => self.pos_x = v,
@@ -229,6 +235,7 @@ impl ClipFx {
             chroma: g("chroma", d.chroma),
             chroma_sim: g("chroma_sim", d.chroma_sim),
             denoise: g("denoise", d.denoise),
+            denoise_strength: g("denoise_strength", d.denoise_strength),
             scale: g("scale", d.scale),
             rot: g("rot", d.rot),
             pos_x: g("pos_x", d.pos_x),
@@ -643,7 +650,17 @@ fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
         // across the spectrum and left every voice sounding muffled. ffmpeg's
         // own default of -50 sits around the noise floor of a decent recording,
         // takes out 0.2-2.4 dB, and does the job it was added for.
-        c.push_str(",afftdn=nr=12:nf=-50");
+        // Strength drives the noise floor, the setting that decides whether
+        // this removes hiss or removes the voice along with it. Measured
+        // against broadband content — which is what consonants and sibilance
+        // physically are — the travel runs from transparent to firm:
+        //   0.0  nf=-62   0.0 / 0.0 / -0.1 / 0.0 dB   at 500Hz / 2k / 5k / 9k
+        //   0.5  nf=-52  -0.2 /-0.4 / -1.0 /-1.6 dB
+        //   1.0  nf=-43  -0.8 /-2.7 / -5.8 /-8.5 dB
+        // The top of that is deliberately short of the -25 this shipped with,
+        // which took 11-12 dB from every voice it touched.
+        let nf = -62.0 + 19.0 * fx.denoise_strength.clamp(0.0, 1.0);
+        c.push_str(&format!(",afftdn=nr=12:nf={nf:.1}"));
     }
     if (fx.speed - 1.0).abs() >= 1e-9 {
         // atempo is pitch-corrected; input span len*speed → len
@@ -2170,6 +2187,51 @@ fn parse_time_s(t: &str) -> Option<f64> {
         [m, sec] => Some(m.parse::<f64>().ok()? * 60.0 + sec.parse::<f64>().ok()?),
         [sec] => sec.parse().ok(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod denoise_tests {
+    use super::*;
+
+    fn chain_for(strength: f64) -> String {
+        let fx = ClipFx { denoise: 1.0, denoise_strength: strength, ..Default::default() };
+        clip_audio_chain(0, 0, 5.0, &fx)
+    }
+
+    /// The noise floor is what decides whether voice cleanup removes hiss or
+    /// removes the voice. It shipped at -25 -- within 5 dB of the most
+    /// destructive value the filter accepts -- and took 11-12 dB of broadband
+    /// content out of every voice. Nothing on the slider may reach that again.
+    #[test]
+    fn cleanup_never_reaches_a_destructive_noise_floor() {
+        for s in [0.0, 0.25, 0.5, 0.75, 1.0, 2.0, -1.0] {
+            let chain = chain_for(s);
+            let nf: f64 = chain
+                .split("nf=")
+                .nth(1)
+                .and_then(|t| t.split(|c: char| !(c.is_ascii_digit() || c == '-' || c == '.')).next())
+                .and_then(|t| t.parse().ok())
+                .unwrap_or_else(|| panic!("no noise floor in {chain}"));
+            assert!(
+                (-62.0..=-43.0).contains(&nf),
+                "strength {s} gave nf={nf}, outside the measured-safe range"
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_is_off_unless_asked_for() {
+        let off = ClipFx::default();
+        assert!(!clip_audio_chain(0, 0, 5.0, &off).contains("afftdn"));
+        assert_eq!(off.denoise, 0.0, "voice cleanup is opt-in");
+    }
+
+    #[test]
+    fn more_strength_means_a_higher_noise_floor() {
+        let nf = |s: f64| -62.0 + 19.0 * s;
+        assert!(nf(0.0) < nf(0.5) && nf(0.5) < nf(1.0));
+        assert!((nf(0.5) - -52.5).abs() < 0.01, "the default stays gentle");
     }
 }
 

@@ -83,6 +83,7 @@ export const FX_DEFAULTS: Record<string, number> = {
   chroma: 0,
   chroma_sim: 0.3,
   denoise: 0,
+  denoise_strength: 0.5, // 0 = barely touches it, 1 = firm
   scale: 1,
   rot: 0,
   pos_x: 0,
