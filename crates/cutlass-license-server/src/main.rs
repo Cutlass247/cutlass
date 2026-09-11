@@ -1164,6 +1164,33 @@ mod tests {
     // bad request locked every paying customer out of the app. It must not be
     // possible for a single request to do that.
 
+    /// Every lock in this file must go through `lock_ok`, checked by reading
+    /// the file's own source.
+    ///
+    /// The desktop app was converted once by searching for `.lock().unwrap()`
+    /// and five were missed, because rustfmt had wrapped them across two lines
+    /// and the search was line by line. Nothing caught it: a poisoned mutex is
+    /// a runtime state no test reaches by accident, so the survivors passed
+    /// every check while doing the exact thing the fix existed to stop. Here
+    /// the stakes are a live service, so the same guard.
+    #[test]
+    fn every_lock_in_this_file_goes_through_lock_ok() {
+        let src = include_str!("main.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+
+        for (at, _) in code.match_indices(".lock()") {
+            let after = code[at + ".lock()".len()..].trim_start();
+            // `.unwrap_or_else` is how lock_ok itself is written, and is fine.
+            if after.starts_with(".unwrap()") || after.starts_with(".expect(") {
+                let line = code[..at].lines().count();
+                panic!(
+                    "main.rs:{line} panics on a poisoned lock, which takes the \
+                     whole service down for every customer. Use `.lock_ok()`."
+                );
+            }
+        }
+    }
+
     /// The reachable trigger: `get_or_create` inserts a row with the lock
     /// held, and used to `.expect("insert license")`, so any failed write --
     /// a full volume, a locked database -- panicked right there.
