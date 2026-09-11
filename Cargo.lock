@@ -1186,6 +1186,7 @@ dependencies = [
  "cutlass-license",
  "hex",
  "hmac",
+ "http-body-util",
  "native-tls",
  "rand 0.8.7",
  "rusqlite",
@@ -1193,6 +1194,8 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "tower",
+ "tower-http",
  "ureq 2.12.1",
 ]
 
@@ -5948,10 +5951,12 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "pin-project-lite",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
  "url",
 ]
 
