@@ -68,6 +68,14 @@ const FX_GROUPS: { title: string; params: FxParam[] }[] = [
         fmt: (v) => (Math.abs(v) < 1e-4 ? "0 ms" : `${v > 0 ? "+" : ""}${Math.round(v * 1000)} ms`),
       },
       { key: "denoise", label: "Voice cleanup", min: 0, max: 1, step: 1, toggle: true },
+      {
+        key: "denoise_strength",
+        label: "Cleanup strength",
+        min: 0,
+        max: 1,
+        step: 0.05,
+        fmt: (v) => (v < 0.2 ? "Light" : v < 0.7 ? "Normal" : "Strong"),
+      },
     ],
   },
 ];
