@@ -2720,3 +2720,139 @@ button {
 .lic-banner-buy:hover {
   filter: brightness(1.06);
 }
+
+/* ── crash screen ────────────────────────────────────────────────────
+   Shown by ErrorBoundary when the UI throws. Styled here rather than
+   inline so it inherits the app's palette, but it must keep working
+   with nothing else on the page — no shared components, no layout
+   classes from the workspace above. */
+.crash {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  background: var(--bg);
+  user-select: text;
+}
+
+.crash-card {
+  width: 100%;
+  max-width: 620px;
+}
+
+.crash-card h1 {
+  margin: 0 0 10px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.crash-lede {
+  margin: 0 0 20px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.crash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.crash-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--speed);
+}
+
+.crash-btn:hover:not(:disabled) {
+  background: var(--panel-3);
+}
+
+.crash-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0b1220;
+  font-weight: 600;
+}
+
+.crash-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.crash-btn.quiet {
+  background: transparent;
+  color: var(--muted);
+}
+
+.crash-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.crash-saved,
+.crash-failed,
+.crash-advice {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.crash-saved {
+  color: var(--ok);
+}
+
+.crash-saved code {
+  color: var(--text);
+  word-break: break-all;
+}
+
+.crash-failed {
+  color: var(--danger);
+}
+
+.crash-advice {
+  color: var(--muted);
+}
+
+.crash-details {
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.crash-details summary {
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.crash-details pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 0 12px 12px;
+  overflow: auto;
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.crash-foot {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
