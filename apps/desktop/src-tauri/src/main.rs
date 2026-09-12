@@ -896,6 +896,17 @@ fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
     Ok(snap)
 }
 
+/// Whether a collab relay is configured for this install.
+///
+/// There is no hosted relay, so for everyone running Cutlass today this is
+/// false and the Collab button is not offered. It used to be shown and
+/// enabled, pointing at ws://127.0.0.1:9720 — a button whose only possible
+/// outcome was a connection error.
+#[tauri::command]
+fn collab_enabled() -> bool {
+    std::env::var("CUTLASS_SYNC_URL").is_ok_and(|v| !v.trim().is_empty())
+}
+
 /// Whether this build is allowed to update itself.
 ///
 /// False for the Creator edition, and that is the whole point of the command.
@@ -1146,25 +1157,44 @@ async fn open_project(
     let entries = project.media_entries();
 
     // rebuilding each media (proxy/waveform) is heavy → off the UI thread
-    let media_pairs =
-        tauri::async_runtime::spawn_blocking(move || -> Vec<(MediaInfo, serde_json::Value)> {
-            let mut pairs = Vec::new();
-            for (id, name, src_path, _dur) in entries {
-                match import_any(Path::new(&src_path)) {
-                    // same path on the same machine hashes to the same id
-                    Ok(info) if info.id == id => {
-                        if let Ok(v) = media_json(&info) {
-                            pairs.push((info, v));
-                        }
+    type Loaded = (Vec<(MediaInfo, serde_json::Value)>, Vec<(String, String)>);
+    let (media_pairs, offline) = tauri::async_runtime::spawn_blocking(move || -> Loaded {
+        let mut pairs = Vec::new();
+        let mut offline = Vec::new();
+        for (id, name, src_path, _dur) in entries {
+            match import_any(Path::new(&src_path)) {
+                // same path on the same machine hashes to the same id
+                Ok(info) if info.id == id => {
+                    if let Ok(v) = media_json(&info) {
+                        pairs.push((info, v));
                     }
-                    Ok(_) => eprintln!("media id changed for {src_path} (moved file?)"),
-                    Err(e) => eprintln!("media offline: {name} ({src_path}): {e:#}"),
+                }
+                // The file is there but isn't the one this project recorded —
+                // a different cut pasted over the same name, most often.
+                Ok(_) => {
+                    eprintln!("media id changed for {src_path} (moved file?)");
+                    offline.push((name, src_path));
+                }
+                Err(e) => {
+                    eprintln!("media offline: {name} ({src_path}): {e:#}");
+                    offline.push((name, src_path));
                 }
             }
-            pairs
-        })
-        .await
-        .map_err(err_str)?;
+        }
+        (pairs, offline)
+    })
+    .await
+    .map_err(err_str)?;
+
+    // Media that didn't load is reported, not swallowed. It used to go to
+    // stderr only, which in a packaged build is nowhere: clips turned into
+    // blank rectangles and the user was left to work out why on their own —
+    // and the commonest cause, an external drive that wasn't plugged in, is
+    // one they can fix in seconds if anyone tells them.
+    let offline_json: Vec<serde_json::Value> = offline
+        .iter()
+        .map(|(name, path)| serde_json::json!({ "name": name, "path": path }))
+        .collect();
 
     let mut media_out = Vec::new();
     let mut media_map = state.media.lock_ok();
@@ -1198,6 +1228,10 @@ async fn open_project(
         // the frontend warns when this is set — silently opening an older
         // version of someone's project would be worse than the damage itself
         "recoveredFromBackup": recovered_from_backup,
+        // clips whose source didn't load: they still show on the timeline,
+        // with no thumbnails and no waveform, and the export will refuse
+        // until the files come back
+        "offlineMedia": offline_json,
     }))
 }
 
@@ -2372,6 +2406,7 @@ fn main() {
             save_project,
             save_recovery_copy,
             updates_enabled,
+            collab_enabled,
             take_startup_file,
             default_project_dir,
             default_export_dir,

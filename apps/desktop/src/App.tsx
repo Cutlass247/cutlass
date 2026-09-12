@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { noteBackgroundError } from "./components/ErrorBoundary";
+import { AskText } from "./components/AskText";
 import {
   Clip,
   MediaItem,
@@ -51,6 +52,7 @@ import {
   onOpenFile,
   onCloseRequested,
   forceClose,
+  collabEnabled,
   checkForUpdate,
   UpdateInfo,
   loadPrefs,
@@ -184,6 +186,10 @@ export default function App() {
   const [feedbackText, setFeedbackText] = useState("");
   // shown when the user closes the window with unsaved changes
   const [quitPromptOpen, setQuitPromptOpen] = useState(false);
+  // One-field prompts, in the app's own dialog rather than window.prompt.
+  const [askLookName, setAskLookName] = useState<string | null>(null);
+  const [askRoom, setAskRoom] = useState<string | null>(null);
+  const [collabAvailable, setCollabAvailable] = useState(false);
   // An update is offered, never forced. `staged` means it's downloaded and
   // waiting for a restart; `pct` is download progress, or null when the
   // response gave no length to measure against.
@@ -499,6 +505,7 @@ export default function App() {
       })
       .catch(() => getProject().then(setProject).catch((e) => setError(String(e))));
     currentRoom().then((r) => r && setRoom(r));
+    collabEnabled().then(setCollabAvailable).catch(() => {});
     defaultExportDir().then((d) => d && setExportDir(d));
     const un = onProjectChanged((snap) => setProject(snap));
     const unExport = onExportProgress((p) =>
@@ -1021,13 +1028,19 @@ export default function App() {
   }, []);
   const onSaveLook = useCallback(() => {
     if (!primaryClip) return;
-    const params: Record<string, number> = {};
-    for (const k of LOOK_KEYS) params[k] = primaryClip.fx?.[k] ?? FX_DEFAULTS[k] ?? 0;
-    const name = window.prompt("Name this Look:", `My Look ${customLooks.length + 1}`);
-    if (!name) return;
-    persistLooks([...customLooks.filter((l) => l.name !== name), { name: name.trim(), params }]);
+    setAskLookName(`My Look ${customLooks.length + 1}`);
+  }, [primaryClip, customLooks]);
+  const saveLookAs = useCallback(
+    (name: string) => {
+      setAskLookName(null);
+      if (!primaryClip) return;
+      const params: Record<string, number> = {};
+      for (const k of LOOK_KEYS) params[k] = primaryClip.fx?.[k] ?? FX_DEFAULTS[k] ?? 0;
+      persistLooks([...customLooks.filter((l) => l.name !== name), { name, params }]);
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primaryClip, customLooks, persistLooks]);
+    [primaryClip, customLooks, persistLooks]
+  );
   const onDeleteLook = useCallback(
     (name: string) => persistLooks(customLooks.filter((l) => l.name !== name)),
     [customLooks, persistLooks]
@@ -1349,18 +1362,45 @@ export default function App() {
     [onDropMedia]
   );
 
-  // hydrate media known to the doc but not local (open/collab)
+  // Hydrate media known to the doc but not local (open/collab).
+  //
+  // `unreachable` is the important half. A failed hydrate used to be forgotten
+  // the moment it failed, and this effect re-runs on every project change —
+  // so with an external drive unplugged, every single edit fired a fresh
+  // hydrate for each missing file, and each of those spawns an ffprobe. The
+  // editor got slower the more footage was missing, for no benefit: the file
+  // is not going to appear between two keystrokes.
   const hydrating = useRef<Set<string>>(new Set());
+  const unreachable = useRef<Set<string>>(new Set());
   useEffect(() => {
     for (const c of project.clips) {
       if (media[c.media] || hydrating.current.has(c.media)) continue;
+      if (unreachable.current.has(c.media)) continue;
       hydrating.current.add(c.media);
       hydrateMedia(c.media).then((m) => {
         hydrating.current.delete(c.media);
         if (m) setMedia((prev) => ({ ...prev, [m.id]: m }));
+        else unreachable.current.add(c.media); // stop asking
       });
     }
   }, [project, media]);
+
+  // Opening a project drops media that wouldn't load. Nothing used to say so
+  // — the clips simply appeared blank — and the usual cause is a drive that
+  // isn't plugged in, which is a ten-second fix for anyone who is told.
+  const reportOffline = useCallback((items: { name: string; path: string }[]) => {
+    if (!items.length) return;
+    for (const it of items) unreachable.current.add(it.path);
+    const names = items.map((i) => i.name);
+    const shown = names.slice(0, 3).join(", ");
+    const rest = names.length > 3 ? ` and ${names.length - 3} more` : "";
+    setError(
+      `Couldn't open ${names.length === 1 ? "one file" : `${names.length} files`} this ` +
+        `project uses: ${shown}${rest}. Those clips are still on the timeline but can't ` +
+        `preview or export — if the footage is on a drive that isn't connected, plug it ` +
+        `in and open the project again.`
+    );
+  }, []);
 
   // ── save / open / export / collab ───────────────────────────────────
   // Save to the current file when we have one; only prompt (Save As) for a
@@ -1440,8 +1480,14 @@ export default function App() {
       transcripts?: Record<string, Word[]>;
       path: string;
       recoveredFromBackup?: boolean;
+      offlineMedia?: { name: string; path: string }[];
     }) => {
       setProject(res.project);
+      // Damage first if both happened: a project opened from its backup is
+      // the more surprising of the two, and two banners would fight.
+      if (res.offlineMedia?.length && !res.recoveredFromBackup) {
+        reportOffline(res.offlineMedia);
+      }
       if (res.recoveredFromBackup) {
         // Opening an older version of someone's work without saying so would
         // be worse than the damage — they'd carry on from a state they didn't
@@ -1467,7 +1513,7 @@ export default function App() {
         .then((p) => setAutoSave(p.autoSave === true))
         .catch(() => {});
     },
-    []
+    [reportOffline]
   );
 
   const doOpen = useCallback(
@@ -1544,7 +1590,9 @@ export default function App() {
 
   // Beta feedback → open the user's mail client with a prefilled report
   const onSendFeedback = useCallback(() => {
-    const body = `${feedbackText}\n\n---\nCutlass 0.1.0 (beta) · ${navigator.userAgent}`;
+    // Hardcoded, this claimed 0.1.0 on every report no matter what the sender
+    // was running — the one field in a bug report that has to be right.
+    const body = `${feedbackText}\n\n---\nCutlass ${__APP_VERSION__} (beta) · ${navigator.userAgent}`;
     const url = `mailto:cutlass.beta@gmail.com?subject=${encodeURIComponent(
       "Cutlass beta feedback"
     )}&body=${encodeURIComponent(body)}`;
@@ -1606,12 +1654,25 @@ export default function App() {
     });
   }, [clipFormat, clipReframe, clipReframeX, exportDir, runExport]);
 
-  const doCollab = useCallback(async () => {
-    const name = window.prompt("Room name (share it with your collaborator):", "cutlass-demo");
-    if (!name) return;
+  // The room name is the only thing protecting a session: the relay has no
+  // accounts and no access control, so anyone who knows the name is in the
+  // room and gets the whole project document. It used to default to the
+  // literal string "cutlass-demo" -- meaning every user who accepted the
+  // default would have landed in ONE shared room together, merging their
+  // timelines into each other's. A fresh random code per session instead.
+  const newRoomCode = () => {
+    const bytes = new Uint8Array(15);
+    crypto.getRandomValues(bytes);
+    const abc = "abcdefghijkmnopqrstuvwxyz23456789"; // no l/1, no o/0
+    const code = Array.from(bytes, (b) => abc[b % abc.length]).join("");
+    return `${code.slice(0, 5)}-${code.slice(5, 10)}-${code.slice(10, 15)}`;
+  };
+  const doCollab = useCallback(() => setAskRoom(newRoomCode()), []);
+  const joinRoom = useCallback(async (name: string) => {
+    setAskRoom(null);
     try {
-      await joinSession(name.trim());
-      setRoom(name.trim());
+      await joinSession(name);
+      setRoom(name);
     } catch (e) {
       setError(String(e));
     }
@@ -2432,6 +2493,7 @@ export default function App() {
         onAddTitle={onAddTitle}
         onDeleteSel={doDeleteSel}
         onCollab={doCollab}
+        collabAvailable={collabAvailable}
         onZoom={(dir) =>
           setPps((z) => clamp(z * (dir > 0 ? 1.25 : 0.8), PPS_MIN, PPS_MAX))
         }
@@ -2868,6 +2930,28 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {askLookName !== null && (
+        <AskText
+          title="Name this Look"
+          sub="It'll appear in the Looks list for any clip."
+          initial={askLookName}
+          confirmLabel="Save Look"
+          onConfirm={saveLookAs}
+          onCancel={() => setAskLookName(null)}
+        />
+      )}
+
+      {askRoom !== null && (
+        <AskText
+          title="Start a collab session"
+          sub="Send this code to whoever you're editing with — anyone who has it can open and change the project, so treat it like a password."
+          initial={askRoom}
+          confirmLabel="Start session"
+          onConfirm={joinRoom}
+          onCancel={() => setAskRoom(null)}
+        />
       )}
 
       {removeMediaAsk && (

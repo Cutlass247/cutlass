@@ -731,6 +731,18 @@ export async function onExportProgress(
   return listen<number>("export-progress", (e) => cb(e.payload));
 }
 
+/// Whether a collab relay is configured. False for every normal install —
+/// there is no hosted relay — so the UI doesn't offer a button that can only
+/// fail.
+export async function collabEnabled(): Promise<boolean> {
+  if (!inTauri) return false;
+  try {
+    return await invoke<boolean>("collab_enabled");
+  } catch {
+    return false;
+  }
+}
+
 /// Join a collab room on the sync relay.
 export async function joinSession(room: string): Promise<void> {
   if (!inTauri) throw new Error("collab requires the desktop app");
@@ -908,6 +920,8 @@ export async function openProject(knownPath?: string): Promise<{
   path: string;
   /** the project file was damaged and its `.bak` was opened instead */
   recoveredFromBackup?: boolean;
+  /** sources the project references that wouldn't load on this machine */
+  offlineMedia?: { name: string; path: string }[];
 } | null> {
   if (!inTauri) {
     if (!mockSaved) return null;

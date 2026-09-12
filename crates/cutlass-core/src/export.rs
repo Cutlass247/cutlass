@@ -1108,6 +1108,121 @@ fn file_label(path: &str) -> &str {
 /// most common ways an export fails on a real machine — footage lives on drives
 /// that get unplugged and in folders that get reorganised. Both used to cost
 /// half a minute and produce a message written for whoever wrote ffmpeg.
+/// How old an abandoned working folder has to be before it's swept, in
+/// seconds. Long enough that a second Cutlass exporting to the same folder
+/// right now is never touched, short enough to be gone by the next session.
+const ABANDONED_AFTER_S: u64 = 6 * 3600;
+
+/// Delete staging folders left behind by an export that never got to clean up
+/// after itself.
+///
+/// Every normal ending — finished, failed, cancelled — removes its own folder.
+/// A process that dies outright does not: a crash, Task Manager, a power cut.
+/// What it leaves is parts of a half-rendered video, which for 4K is tens of
+/// gigabytes sitting in the user's Videos folder under a name that means
+/// nothing to them, and nothing ever came back for it.
+///
+/// Best effort throughout. This runs at the start of an export and must never
+/// be the reason one fails, so every error is ignored — including the
+/// permission error from a folder another Cutlass is still writing to.
+fn sweep_abandoned_work_dirs(parent: &Path) {
+    sweep_work_dirs_older_than(parent, std::time::Duration::from_secs(ABANDONED_AFTER_S));
+}
+
+/// The body of [`sweep_abandoned_work_dirs`], with the age threshold exposed
+/// so a test doesn't have to wait six hours to see it work.
+fn sweep_work_dirs_older_than(parent: &Path, max_age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(parent) else { return };
+    let now = std::time::SystemTime::now();
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(".cutlass_export_") {
+            continue;
+        }
+        if !e.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let old_enough = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age > max_age);
+        if old_enough {
+            let freed = std::fs::remove_dir_all(e.path()).is_ok();
+            eprintln!(
+                "swept abandoned export folder {} ({})",
+                e.path().display(),
+                if freed { "removed" } else { "still in use" }
+            );
+        }
+    }
+}
+
+/// Bytes free on the volume holding `dir`, or None if it can't be determined.
+#[cfg(windows)]
+fn free_space_bytes(dir: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut available: u64 = 0;
+    // The first out-param is what's available to *this* user, which is the
+    // number that matters under a disk quota; the other two are the volume
+    // totals and aren't needed.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(available)
+}
+
+#[cfg(not(windows))]
+fn free_space_bytes(_dir: &Path) -> Option<u64> {
+    None
+}
+
+/// Refuse an export that plainly cannot fit before spending an hour finding
+/// out. A staged render writes every part to disk and then joins them, so it
+/// needs roughly twice the finished size in transient space on top of the
+/// output itself.
+///
+/// Deliberately compares against a *lower bound* on the finished size rather
+/// than a guess at it. Getting this wrong in the cautious direction blocks an
+/// export that would have worked, which is worse than the problem — so it only
+/// fires when there is no plausible reading of the numbers under which the
+/// render fits.
+fn check_room_to_work(out: &Path, total_secs: f64, s: &ExportSettings) -> anyhow::Result<()> {
+    let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let Some(free) = free_space_bytes(parent) else { return Ok(()) };
+
+    // A conservative floor on delivery bitrate: well under what any of these
+    // presets actually produce, so `needed` is a number the render is certain
+    // to exceed rather than one it might.
+    let pixels = (s.width as f64) * (s.height as f64);
+    let floor_bps = (pixels * s.fps as f64 * 0.02).max(1_000_000.0);
+    let finished = (total_secs.max(0.0) * floor_bps / 8.0) as u64;
+    let needed = finished.saturating_mul(3); // the output, plus parts, plus the join
+
+    if free >= needed {
+        return Ok(());
+    }
+    let gb = |b: u64| b as f64 / 1_073_741_824.0;
+    anyhow::bail!(
+        "Not enough free space on {} to finish this export. It needs about {:.1} GB \
+         while it works — the finished video plus the parts it builds first — and \
+         there is {:.1} GB free. Free some space, or export somewhere else.",
+        parent.display(),
+        gb(needed),
+        gb(free)
+    )
+}
+
 fn preflight(segments: &[Segment], overlays: &[Overlay], out: &Path) -> anyhow::Result<()> {
     let mut sources: Vec<&str> = Vec::new();
     for s in segments {
@@ -1430,6 +1545,9 @@ pub fn export(
     // each failed on it in turn.
     preflight(segments, overlays, out)?;
     let total: f64 = segments.iter().map(|s| s.len()).sum();
+    // Same reasoning, for the other thing that can only be discovered late:
+    // running out of disk an hour in, having written the whole thing.
+    check_room_to_work(out, total, settings)?;
 
     // Long timelines are rendered in stages, for two reasons that hold for
     // every format: peak memory stays flat (each clip is its own open input,
@@ -1587,6 +1705,7 @@ fn run_export_chunked(
         std::process::id(),
         ATTEMPT.fetch_add(1, Ordering::Relaxed)
     ));
+    sweep_abandoned_work_dirs(parent);
     std::fs::create_dir_all(&work)
         .with_context(|| format!("couldn't create a working folder in {}", parent.display()))?;
 
@@ -2187,6 +2306,182 @@ fn parse_time_s(t: &str) -> Option<f64> {
         [m, sec] => Some(m.parse::<f64>().ok()? * 60.0 + sec.parse::<f64>().ok()?),
         [sec] => sec.parse().ok(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::*;
+
+    fn clip(start: f64, len: f64) -> ExportClip {
+        ExportClip {
+            start,
+            len,
+            src_in: 0.0,
+            path: "C:/clips/a.mp4".into(),
+            fx: Default::default(),
+            kf: Default::default(),
+            lut: String::new(),
+            trans_dur: 0.0,
+            trans_dip: false,
+        }
+    }
+
+    fn gaps(segs: &[Segment]) -> Vec<f64> {
+        segs.iter()
+            .filter_map(|s| match s {
+                Segment::Gap { len } => Some(*len),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The worst bug this project has had, and it lived behind a harness
+    /// nothing ever ran.
+    ///
+    /// A gap renders from a generated `color` source, and a generated source
+    /// shorter than one frame emits no frames at all — so `concat` waits
+    /// forever for a picture that never comes while ffmpeg stays alive and
+    /// keeps printing its stats line. It looks busy rather than stuck. A
+    /// clip ending at 269.4576 against the next starting at 269.46 — a 2.4 ms
+    /// hole from floating-point drift that nobody placed — stalled a
+    /// 75-minute export dead at 6%, and cost a day to find.
+    ///
+    /// This was checked only by `examples/gap_regression.rs`, which `cargo
+    /// test` does not run. It was compiled and never executed.
+    #[test]
+    fn a_sub_frame_hole_never_becomes_a_gap() {
+        // the real timeline that hung
+        let segs = build_segments(vec![clip(223.10, 46.3576), clip(269.46, 1.79)]);
+        // the 223.1s hole before the first clip is a real gap and belongs
+        // there; only a sub-frame one between clips is the bug
+        let tiny: Vec<f64> = gaps(&segs).into_iter().filter(|g| *g < 1.0).collect();
+        assert!(tiny.is_empty(), "a {tiny:?}s gap would hang the export forever");
+
+        // nothing from 1ms up to a frame may survive as a gap
+        for ms in 1..=49 {
+            let d = ms as f64 / 1000.0;
+            let g = gaps(&build_segments(vec![clip(0.0, 5.0), clip(5.0 + d, 5.0)]));
+            assert!(g.is_empty(), "a {ms}ms hole survived as {g:?} and would hang");
+        }
+    }
+
+    /// The other half: absorbing small holes must not swallow a real one.
+    #[test]
+    fn a_gap_somebody_meant_is_kept() {
+        let g = gaps(&build_segments(vec![clip(0.0, 5.0), clip(9.0, 5.0)]));
+        assert_eq!(g.len(), 1, "the deliberate gap should still be there: {g:?}");
+        assert!((g[0] - 4.0).abs() < 1e-6, "and be 4s, not {:?}", g[0]);
+    }
+
+    /// Every gap that does survive has to be long enough to emit a frame,
+    /// which is the property that actually prevents the hang.
+    #[test]
+    fn every_surviving_gap_can_emit_a_frame() {
+        for fps in [24u32, 25, 30, 60] {
+            for hole_ms in [51, 60, 100, 250, 1000, 4000] {
+                let d = hole_ms as f64 / 1000.0;
+                for g in gaps(&build_segments(vec![clip(0.0, 5.0), clip(5.0 + d, 5.0)])) {
+                    assert!(
+                        g >= 1.0 / fps as f64,
+                        "a {g}s gap is under one frame at {fps}fps and would hang"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod disk_tests {
+    use super::*;
+
+    /// A staged export writes its parts next to the output. Every normal
+    /// ending removes them; a process that dies outright cannot, and what it
+    /// leaves at 4K is tens of gigabytes in the user's Videos folder under a
+    /// name that means nothing to them. Nothing ever came back for it.
+    #[test]
+    fn abandoned_export_folders_are_swept_and_live_ones_are_not() {
+        let root = std::env::temp_dir().join(format!("cutlass_sweep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let abandoned = root.join(".cutlass_export_4242_0");
+        std::fs::create_dir_all(&abandoned).unwrap();
+        std::fs::write(abandoned.join("part000.mkv"), b"half a video").unwrap();
+
+        // things that must survive: a real project, and an export running now
+        let keep_file = root.join("Holiday.mp4");
+        std::fs::write(&keep_file, b"finished video").unwrap();
+        let keep_dir = root.join("Footage");
+        std::fs::create_dir_all(&keep_dir).unwrap();
+
+        // zero threshold: everything abandoned-looking is old enough
+        sweep_work_dirs_older_than(&root, std::time::Duration::ZERO);
+        assert!(!abandoned.exists(), "the abandoned parts should be gone");
+        assert!(keep_file.exists(), "a finished export must not be touched");
+        assert!(keep_dir.exists(), "unrelated folders must not be touched");
+
+        // and a fresh one is left alone — another Cutlass may be writing it
+        let live = root.join(".cutlass_export_9999_0");
+        std::fs::create_dir_all(&live).unwrap();
+        sweep_work_dirs_older_than(&root, std::time::Duration::from_secs(ABANDONED_AFTER_S));
+        assert!(live.exists(), "an export in progress must survive the sweep");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Sweeping happens at the start of an export and must never be the reason
+    /// one fails, so a folder it can't read or delete is not an error.
+    #[test]
+    fn sweeping_somewhere_unreadable_is_not_an_error() {
+        sweep_work_dirs_older_than(
+            Path::new("Z:/no/such/volume/anywhere"),
+            std::time::Duration::ZERO,
+        );
+    }
+
+    #[test]
+    fn free_space_reports_something_believable() {
+        let Some(free) = free_space_bytes(&std::env::temp_dir()) else {
+            return; // not Windows, or the call failed — the check no-ops
+        };
+        assert!(free > 0, "a writable temp dir with zero bytes free is not credible");
+        assert!(free < 1 << 50, "a petabyte of free space is a unit error");
+    }
+
+    fn settings(w: u32, h: u32, fps: u32) -> ExportSettings {
+        ExportSettings { width: w, height: h, fps, ..Default::default() }
+    }
+
+    /// The space check exists to stop a long render dying at the end. Getting
+    /// it wrong the cautious way is worse than the bug — an export that would
+    /// have worked, refused — so it must not fire on anything plausible.
+    #[test]
+    fn a_normal_export_is_never_blocked() {
+        let out = std::env::temp_dir().join("cutlass_space_check.mp4");
+        // an hour of 4K60 and a short 1080p clip, on a normal machine
+        check_room_to_work(&out, 3600.0, &settings(3840, 2160, 60))
+            .expect("an hour of 4K must not be refused on a machine with room");
+        check_room_to_work(&out, 30.0, &settings(1920, 1080, 30)).expect("30s of 1080p");
+        // zero-length and absurd input must not panic or divide by anything
+        check_room_to_work(&out, 0.0, &settings(1920, 1080, 30)).unwrap();
+        check_room_to_work(&out, -5.0, &settings(1920, 1080, 30)).unwrap();
+    }
+
+    /// And it does fire when the numbers genuinely don't fit: a thousand hours
+    /// of 4K is more than any disk this will run on.
+    #[test]
+    fn an_impossible_export_is_refused_with_the_numbers() {
+        if free_space_bytes(&std::env::temp_dir()).is_none() {
+            return; // the check no-ops where free space is unknown
+        }
+        let out = std::env::temp_dir().join("cutlass_space_check.mp4");
+        let err = check_room_to_work(&out, 3600.0 * 1000.0, &settings(3840, 2160, 60))
+            .expect_err("a thousand hours of 4K cannot fit");
+        let msg = err.to_string();
+        assert!(msg.contains("GB free"), "say how much there is: {msg}");
+        assert!(msg.contains("Free some space"), "say what to do: {msg}");
     }
 }
 
