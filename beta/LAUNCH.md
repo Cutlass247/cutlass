@@ -8,21 +8,22 @@ Goal: get the installer into the hands of **10–20 testers on varied hardware**
 
 ## 1. Publish the download (GitHub Releases)
 
-Your **source code stays private** — this public repo holds only the installer and a README.
+> **This section was written for the very first launch and its plan no longer
+> holds.** It said the source would stay private in a separate repo;
+> `Cutlass247/cutlass` is public and holds the full source, deliberately. It
+> also predates the auto-updater, which needs a signed build and a manifest
+> uploaded beside the installer — miss either and the release is invisible to
+> everyone who already has Cutlass.
 
-1. On GitHub, create a **new public repository** named `cutlass` (description: *"Cutlass — cut sharper, own everything. Windows beta."*). Don't add the source.
-2. Add `beta/README.md` (from this repo) as that repo's **README.md**. The download buttons in it point at `releases/latest`, so they'll work automatically once step 4 is done.
-3. Go to **Releases → Draft a new release**.
-   - Tag: `v0.1.0-beta` · Title: `Cutlass 0.1.0 — Windows beta`
-   - Body: paste `beta/RELEASE_NOTES.md`.
-   - Check **"Set as a pre-release."**
-4. **Attach the installer**: drag in
-   `D:\Video Editing Idea\target\release\bundle\nsis\Cutlass_0.1.0_x64-setup.exe`
-   Publish.
+**Cutting a release is now [RELEASING.md](RELEASING.md).** Follow that, not the
+steps that used to be here.
 
-The public download URL is then `github.com/<you>/cutlass/releases/latest`.
+The public download URL stays `github.com/Cutlass247/cutlass/releases/latest`,
+which is what every download button in the README and on the site points at.
 
-> Before you send the link to anyone: download it yourself from the release page on a different machine if you can, install, and export one clip. That's the exact path a tester walks.
+> Before you send the link to anyone: download it yourself from the release
+> page on a different machine if you can, install, and export one clip. That's
+> the exact path a tester walks.
 
 ## 2. Recruit testers
 
