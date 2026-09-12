@@ -16,5 +16,7 @@ testspeech.mp4
 *.keys
 *.pem
 *-private.key
+*.key
+!**/gen/**
 cutlass-license.keys
 installers/

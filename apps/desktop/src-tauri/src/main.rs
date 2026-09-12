@@ -896,6 +896,19 @@ fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
     Ok(snap)
 }
 
+/// Whether this build is allowed to update itself.
+///
+/// False for the Creator edition, and that is the whole point of the command.
+/// The update endpoint serves the public trial build, so an owner build that
+/// checked for updates would cheerfully replace itself with one — downgrading
+/// the only unrestricted copy of Cutlass that exists, on the machine it is
+/// least convenient to lose it from. The Creator edition is built from this
+/// tree by hand; it doesn't need a channel to reach it.
+#[tauri::command]
+fn updates_enabled() -> bool {
+    !cfg!(feature = "owner")
+}
+
 /// Strip everything Windows won't accept in a file name, so a project called
 /// `Ep 3: "Rebuild" <final>` still produces a file someone can open.
 fn safe_file_stem(name: &str) -> String {
@@ -2285,6 +2298,8 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(state)
         .setup(|app| {
             use tauri::{Emitter, Manager};
@@ -2340,6 +2355,7 @@ fn main() {
             razor_out,
             save_project,
             save_recovery_copy,
+            updates_enabled,
             take_startup_file,
             default_project_dir,
             default_export_dir,
@@ -2379,6 +2395,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Creator edition must never update itself.
+    ///
+    /// The update endpoint serves the public trial build, so an owner build
+    /// that checked would download it, verify it happily — it is correctly
+    /// signed, just not the same edition — and replace itself with a trial.
+    /// The only unrestricted copy of Cutlass, downgraded by a background task.
+    ///
+    /// The suite runs both ways: `--all-features` turns `owner` on, which is
+    /// what the pre-push hook uses, and a plain run has it off. So each arm
+    /// below is genuinely exercised rather than compiled out and forgotten.
+    #[test]
+    fn the_creator_edition_never_updates_itself() {
+        #[cfg(feature = "owner")]
+        assert!(
+            !updates_enabled(),
+            "the owner build would replace itself with the public trial build"
+        );
+        #[cfg(not(feature = "owner"))]
+        assert!(updates_enabled(), "the shipping build has to be reachable");
+    }
 
     /// Every mutex here must go through `lock_ok`, and this reads the file's
     /// own source to say so.

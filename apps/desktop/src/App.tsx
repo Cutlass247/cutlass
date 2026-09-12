@@ -51,6 +51,8 @@ import {
   onOpenFile,
   onCloseRequested,
   forceClose,
+  checkForUpdate,
+  UpdateInfo,
   loadPrefs,
   savePref,
   openUrl,
@@ -182,6 +184,19 @@ export default function App() {
   const [feedbackText, setFeedbackText] = useState("");
   // shown when the user closes the window with unsaved changes
   const [quitPromptOpen, setQuitPromptOpen] = useState(false);
+  // An update is offered, never forced. `staged` means it's downloaded and
+  // waiting for a restart; `pct` is download progress, or null when the
+  // response gave no length to measure against.
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updateState, setUpdateState] = useState<"offered" | "getting" | "staged">("offered");
+  const [updatePct, setUpdatePct] = useState<number | null>(null);
+  // Set when the restart is for an update, so the save prompt relaunches
+  // instead of just closing.
+  const relaunchAfterQuit = useRef(false);
+  const updateRef = useRef<UpdateInfo | null>(null);
+  useEffect(() => {
+    updateRef.current = update;
+  }, [update]);
   // confirm removing a media item that's used by timeline clips
   const [removeMediaAsk, setRemoveMediaAsk] = useState<{
     id: string;
@@ -304,6 +319,37 @@ export default function App() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refreshUsage]);
+
+  // Look for a new version once, a few seconds after launch so it never
+  // competes with opening a project. Nothing here interrupts: a failed check
+  // returns null, and the banner it may produce is dismissible.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      checkForUpdate()
+        .then((u) => u && setUpdate(u))
+        .catch(() => {});
+    }, 5000);
+    return () => clearTimeout(t);
+  }, []);
+
+  const installUpdate = useCallback(async () => {
+    if (!update) return;
+    setUpdateState("getting");
+    setUpdatePct(null);
+    try {
+      await update.install((f) => setUpdatePct(f));
+      setUpdateState("staged");
+    } catch (e) {
+      setError(`The update couldn't be installed: ${String(e)}`);
+      setUpdate(null);
+    }
+  }, [update]);
+
+  const restartForUpdate = useCallback(() => {
+    relaunchAfterQuit.current = true;
+    if (dirtyRef.current) setQuitPromptOpen(true);
+    else void update?.relaunch();
+  }, [update]);
 
   // Anything async that failed without a `.catch`. In a packaged build there
   // is no console to open, so without this the user sees an action quietly do
@@ -1352,6 +1398,7 @@ export default function App() {
   // are no unsaved changes, otherwise prompt Save / Don't save / Cancel.
   useEffect(() => {
     const un = onCloseRequested(() => {
+      relaunchAfterQuit.current = false; // this is a quit, not an update restart
       if (dirtyRef.current) setQuitPromptOpen(true);
       else forceClose();
     });
@@ -1359,17 +1406,32 @@ export default function App() {
       un.then((f) => f());
     };
   }, []);
+  // Closing for an update must still go out through the app's own door:
+  // `relaunch` kills the process outright, which would walk straight past the
+  // save prompt this dialog exists to show.
+  // Backing out of the prompt must clear the relaunch intent too. Without
+  // this, cancelling an update restart leaves the flag set, and the NEXT
+  // ordinary close -- minutes later, via the window's X -- restarts the app
+  // instead of quitting it.
+  const dismissQuitPrompt = useCallback(() => {
+    relaunchAfterQuit.current = false;
+    setQuitPromptOpen(false);
+  }, []);
+  const leave = useCallback(async () => {
+    if (relaunchAfterQuit.current && updateRef.current) await updateRef.current.relaunch();
+    else forceClose();
+  }, []);
   const onQuitSave = useCallback(async () => {
     try {
       const saved = await saveTo(false); // may prompt for a location first time
-      if (saved) forceClose();
-      else setQuitPromptOpen(false); // save was cancelled → stay in the app
+      if (saved) await leave();
+      else dismissQuitPrompt(); // save was cancelled → stay in the app
     } catch (e) {
       setError(String(e));
-      setQuitPromptOpen(false);
+      dismissQuitPrompt();
     }
-  }, [saveTo]);
-  const onQuitDiscard = useCallback(() => forceClose(), []);
+  }, [saveTo, leave, dismissQuitPrompt]);
+  const onQuitDiscard = useCallback(() => void leave(), [leave]);
 
   const applyOpened = useCallback(
     (res: {
@@ -2387,6 +2449,55 @@ export default function App() {
         </div>
       )}
 
+      {update && (
+        <div className="notice update">
+          {updateState === "offered" && (
+            <>
+              <strong>Cutlass {update.version} is available.</strong>
+              {update.notes && <span className="update-notes">{update.notes}</span>}
+              <button className="update-btn" onClick={installUpdate}>
+                Download
+              </button>
+              <button className="update-btn quiet" onClick={() => setUpdate(null)}>
+                Not now
+              </button>
+            </>
+          )}
+          {updateState === "getting" && (
+            <>
+              <span>
+                Downloading Cutlass {update.version}
+                {updatePct === null ? "…" : ` — ${Math.round(updatePct * 100)}%`}
+              </span>
+              <span className="update-bar">
+                <i style={{ width: `${(updatePct ?? 0) * 100}%` }} />
+              </span>
+            </>
+          )}
+          {updateState === "staged" && (
+            <>
+              <strong>Cutlass {update.version} is ready.</strong>
+              {exportModal?.phase === "running" ? (
+                <span className="update-notes">
+                  It will finish installing when you restart — your export is still running,
+                  so nothing will interrupt it.
+                </span>
+              ) : (
+                <>
+                  <span className="update-notes">Restart to finish.</span>
+                  <button className="update-btn" onClick={restartForUpdate}>
+                    Restart now
+                  </button>
+                </>
+              )}
+              <button className="update-btn quiet" onClick={() => setUpdate(null)}>
+                Later
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       <main className="workspace">
         {/* the media bin is where imports land — shown in both modes so
             there's always something to drag onto the timeline */}
@@ -2738,14 +2849,14 @@ export default function App() {
       )}
 
       {quitPromptOpen && (
-        <div className="modal-overlay" onPointerDown={() => setQuitPromptOpen(false)}>
+        <div className="modal-overlay" onPointerDown={dismissQuitPrompt}>
           <div className="modal" onPointerDown={(e) => e.stopPropagation()}>
             <div className="modal-title">Save changes before closing?</div>
             <div className="modal-sub">
               You have unsaved changes in “{project.name}”. Save them before Cutlass closes?
             </div>
             <div className="modal-actions">
-              <button className="ghost-btn" onClick={() => setQuitPromptOpen(false)}>
+              <button className="ghost-btn" onClick={dismissQuitPrompt}>
                 Cancel
               </button>
               <button className="ghost-btn danger" onClick={onQuitDiscard}>
