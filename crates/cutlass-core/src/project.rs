@@ -110,6 +110,61 @@ impl Default for Project {
     }
 }
 
+/// The project file format.
+///
+/// Bump this **only** when a change would make an older Cutlass read a newer
+/// file *wrongly* — a field whose units or meaning change, or one whose
+/// absence an old build would misinterpret. Adding a new key is not a bump:
+/// Automerge carries keys a reader doesn't know straight through a load and
+/// re-save, so an older build ignores them and preserves them rather than
+/// dropping them (see `unknown_keys_survive_an_old_build`).
+///
+/// A file with no stamp at all is format 1 — every project saved before this
+/// existed, which is all of them at the time of writing.
+pub const FORMAT: u64 = 1;
+
+/// Read the format stamp from a document. Anything unstamped, or stamped with
+/// something that isn't a number, is treated as the original format — the
+/// first is every project saved before this existed, and the second can only
+/// come from a file that was never written by Cutlass, which `load` then
+/// rejects for having no clip list.
+fn read_format(doc: &AutoCommit) -> u64 {
+    match doc.get(automerge::ROOT, "format") {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Uint(n) => *n,
+            ScalarValue::Int(n) if *n >= 0 => *n as u64,
+            _ => 1,
+        },
+        _ => 1,
+    }
+}
+
+/// A project written by a newer Cutlass than this one.
+///
+/// Its own error type because the caller has to tell it apart from a damaged
+/// file: damage is worth trying the `.bak` for, a version gap never is — the
+/// backup is from the same newer build and would fail identically, leaving the
+/// user with "the backup is unreadable too" when nothing is wrong with either.
+#[derive(Debug, Clone, Copy)]
+pub struct FormatTooNew {
+    pub found: u64,
+    pub supported: u64,
+}
+
+impl std::fmt::Display for FormatTooNew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "This project was saved by a newer version of Cutlass (file format {}, \
+             this one reads up to {}). Update Cutlass and open it again — the file \
+             is fine, this copy just doesn't know how to read it yet.",
+            self.found, self.supported
+        )
+    }
+}
+
+impl std::error::Error for FormatTooNew {}
+
 impl Project {
     pub fn new(name: &str) -> Self {
         // Deterministic bootstrap: fixed actor + time 0 makes the initial
@@ -126,12 +181,31 @@ impl Project {
             automerge::transaction::CommitOptions::default().with_time(0),
         );
         doc.set_actor(automerge::ActorId::random());
+        // Deliberately outside the bootstrap commit above. That commit is
+        // byte-identical across instances so two projects share ancestry and
+        // merge cleanly in a collab session; changing what goes into it would
+        // give builds from different versions different roots.
+        doc.put(automerge::ROOT, "format", FORMAT).expect("init format");
         doc.put(automerge::ROOT, "name", name).expect("init name");
         Self { doc }
     }
 
+    /// The format a saved project claims, or `None` if it isn't readable as a
+    /// document at all. An unstamped project reports 1 — see [`FORMAT`].
+    pub fn format_of(bytes: &[u8]) -> Option<u64> {
+        let doc = AutoCommit::load(bytes).ok()?;
+        Some(read_format(&doc))
+    }
+
     pub fn load(bytes: &[u8]) -> anyhow::Result<Self> {
         let doc = AutoCommit::load(bytes)?;
+        // Version first. A newer file may legitimately be missing things this
+        // build expects, and reporting that as damage would send the user
+        // hunting for a corruption problem they don't have.
+        let found = read_format(&doc);
+        if found > FORMAT {
+            return Err(FormatTooNew { found, supported: FORMAT }.into());
+        }
         // An empty file — which is exactly what an interrupted save leaves —
         // is a *valid* automerge document, just an empty one. Every accessor
         // here assumes the root maps are present, so it would load happily and
@@ -146,6 +220,20 @@ impl Project {
     }
 
     pub fn save(&mut self) -> Vec<u8> {
+        // Stamp on the way out, so a project written before formats existed
+        // describes itself once this build has touched it. Only when it would
+        // actually change — an unconditional put is a new CRDT change on every
+        // save, and these documents keep their whole history.
+        //
+        // Strictly `<`, never `!=`. Stamping a *newer* document back down to
+        // this build's number would relabel someone else's file as older than
+        // it is, and the next old build to open it would sail past the check
+        // and misread it. `load` refuses a newer format, but collab sync
+        // applies a peer's changes straight to the document without going
+        // through it, so this is reachable.
+        if read_format(&self.doc) < FORMAT {
+            self.doc.put(automerge::ROOT, "format", FORMAT).expect("stamp format");
+        }
         self.doc.save()
     }
 
@@ -562,6 +650,17 @@ impl Project {
         Ok(())
     }
 
+    /// Stamp an arbitrary format number.
+    ///
+    /// Exists so tests in *other* crates can build the one file this build
+    /// must refuse — a project from a future Cutlass. `#[cfg(test)]` wouldn't
+    /// reach them, since that only applies to the crate being tested. There is
+    /// no reason for application code to call this.
+    #[doc(hidden)]
+    pub fn set_format_for_tests(&mut self, format: u64) {
+        self.doc.put(automerge::ROOT, "format", format).expect("stamp format");
+    }
+
     /// The project's name, as shown in the title bar. Empty if never set.
     /// Separate from [`Self::snapshot`] so a caller that only wants the name —
     /// naming a recovery file, say — doesn't serialize every clip to get it.
@@ -796,6 +895,110 @@ mod tests {
             fx: BTreeMap::new(),
             kf: BTreeMap::new(),
         }
+    }
+
+    // ── file format ──────────────────────────────────────────────────
+    //
+    // Until this existed a project file said nothing about what wrote it, so
+    // a file from a future Cutlass was indistinguishable from a damaged one,
+    // and there was no way to ever tell them apart afterwards. Every project
+    // saved without a stamp stays unstamped forever, which is why this had to
+    // land while the installed base was small.
+
+    #[test]
+    fn a_new_project_says_what_format_it_is() {
+        let mut p = Project::new("Stamped");
+        assert_eq!(Project::format_of(&p.save()), Some(FORMAT));
+    }
+
+    /// Every project that exists today has no stamp. They are format 1 and
+    /// must keep opening exactly as before.
+    #[test]
+    fn a_project_from_before_formats_still_opens() {
+        // built the way `new` did before the stamp existed
+        let mut doc = AutoCommit::new();
+        doc.put_object(automerge::ROOT, "clips", ObjType::Map).unwrap();
+        doc.put_object(automerge::ROOT, "media", ObjType::Map).unwrap();
+        doc.put(automerge::ROOT, "name", "Legacy").unwrap();
+        let bytes = doc.save();
+
+        assert_eq!(Project::format_of(&bytes), Some(1), "unstamped means format 1");
+        let mut p = Project::load(&bytes).expect("an old project must still open");
+        assert_eq!(p.name(), "Legacy");
+
+        // and saving it stamps it, so it describes itself from now on
+        assert_eq!(Project::format_of(&p.save()), Some(FORMAT));
+    }
+
+    #[test]
+    fn a_project_from_a_newer_cutlass_is_refused_and_says_why() {
+        let mut p = Project::new("From the future");
+        p.doc.put(automerge::ROOT, "format", FORMAT + 1).unwrap();
+        let bytes = p.save();
+
+        let Err(err) = Project::load(&bytes) else {
+            panic!("a newer format must not be opened");
+        };
+
+        // The caller has to be able to tell this from damage: a damaged file
+        // is worth trying the .bak for, this never is.
+        let typed = err
+            .downcast_ref::<FormatTooNew>()
+            .expect("must be a FormatTooNew, not a generic error");
+        assert_eq!(typed.found, FORMAT + 1);
+        assert_eq!(typed.supported, FORMAT);
+
+        let msg = err.to_string();
+        assert!(msg.contains("newer version of Cutlass"), "{msg}");
+        assert!(!msg.to_lowercase().contains("damaged"), "must not blame the file: {msg}");
+    }
+
+    /// Saving must never relabel a newer document as older. `load` refuses a
+    /// newer format, but collab sync applies a peer's changes straight to the
+    /// document, so a newer format can arrive without passing through it —
+    /// and stamping it back down would hand the next old build a file that
+    /// lies about what it is.
+    #[test]
+    fn saving_never_downgrades_a_newer_stamp() {
+        let mut p = Project::new("Shared with a newer peer");
+        p.doc.put(automerge::ROOT, "format", FORMAT + 3).unwrap();
+        assert_eq!(Project::format_of(&p.save()), Some(FORMAT + 3));
+    }
+
+    /// The rule that keeps [`FORMAT`] from being bumped for no reason: adding
+    /// a key does not break an old reader, because Automerge hands back what
+    /// it was given. An older Cutlass opening a newer project ignores fields
+    /// it doesn't know and *preserves* them when it saves, rather than
+    /// quietly deleting a stranger's work.
+    #[test]
+    fn unknown_keys_survive_an_old_build() {
+        let mut future = Project::new("Made later");
+        future.add_clip(&demo_clip("a", "V1", 0.0)).unwrap();
+        // something a later version added and this build knows nothing about
+        future.doc.put(automerge::ROOT, "colour_science", "aces-1.3").unwrap();
+        let bytes = future.save();
+
+        // this build opens it, edits it, saves it
+        let mut here = Project::load(&bytes).unwrap();
+        here.add_clip(&demo_clip("b", "V1", 8.0)).unwrap();
+        let round_tripped = here.save();
+
+        let after = AutoCommit::load(&round_tripped).unwrap();
+        let kept = after
+            .get(automerge::ROOT, "colour_science")
+            .unwrap()
+            .map(|(v, _)| v.to_str().unwrap_or_default().to_string());
+        assert_eq!(
+            kept.as_deref(),
+            Some("aces-1.3"),
+            "a build that doesn't understand a field must not drop it"
+        );
+
+        // and this build's own edit is there too
+        let snap = Project::load(&round_tripped).unwrap().snapshot();
+        let ids: Vec<&str> =
+            snap["clips"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"a") && ids.contains(&"b"), "{ids:?}");
     }
 
     #[test]
