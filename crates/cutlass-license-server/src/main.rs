@@ -24,6 +24,9 @@
 //!   CUTLASS_LS_SIGNING_SECRET    Lemon Squeezy webhook HMAC secret (enables it)
 //!   CUTLASS_LS_LICENSE_VARIANTS  comma-sep LS variant ids that grant a licence
 //!   CUTLASS_LS_CREDIT_VARIANTS   "variantId:minutes,…" credit-pack top-ups
+//!   CUTLASS_LS_CHECKOUT_LICENSE  buy-link for the licence (served to the app)
+//!   CUTLASS_LS_CHECKOUT_CREDITS  buy-link for a credit pack
+//!   CUTLASS_LS_ALLOW_TEST_MODE   1 = honour test-mode orders (leave unset)
 
 use axum::{
     body::Bytes,
@@ -100,6 +103,17 @@ struct Config {
     ls_license_variants: HashSet<String>,
     /// Lemon Squeezy credit-pack variant IDs → minutes granted.
     ls_credit_variants: HashMap<String, f64>,
+    /// Checkout links, served to the app so they are not compiled into it.
+    /// Going live on Lemon Squeezy means new products, new variant ids and
+    /// new checkout URLs — baked into the app, that would need a new build
+    /// and would leave every already-installed copy pointing at a checkout
+    /// that cannot take money.
+    ls_checkout_license: Option<String>,
+    ls_checkout_credits: Option<String>,
+    /// Honour orders flagged `test_mode`. Off unless deliberately set: a test
+    /// order is not a purchase, and granting a real licence for one would be
+    /// indistinguishable in the database from a real sale.
+    ls_allow_test_mode: bool,
 }
 
 #[derive(Clone)]
@@ -389,6 +403,18 @@ async fn health() -> impl IntoResponse {
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
         "commit": std::env::var("CUTLASS_BUILD_SHA").unwrap_or_else(|_| "unknown".into()),
+    }))
+}
+
+/// Where to send someone who wants to buy.
+///
+/// Served rather than compiled into the app so the store can move — going
+/// live, changing price, replacing a product — without shipping a new build
+/// and without stranding every copy already installed.
+async fn checkout(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "license": state.cfg.ls_checkout_license,
+        "credits": state.cfg.ls_checkout_credits,
     }))
 }
 
@@ -972,6 +998,15 @@ async fn lemonsqueezy_webhook(
     {
         return Ok(StatusCode::OK);
     }
+    // A test-mode order is signed and says "paid", and once live and test
+    // products share a variant id -- which happens the moment one is copied
+    // to live mode -- nothing else here would tell them apart.
+    let test_order = v["meta"]["test_mode"].as_bool().unwrap_or(false)
+        || v["data"]["attributes"]["test_mode"].as_bool().unwrap_or(false);
+    if test_order && !state.cfg.ls_allow_test_mode {
+        eprintln!("ignored a test-mode order (set CUTLASS_LS_ALLOW_TEST_MODE=1 to honour them)");
+        return Ok(StatusCode::OK);
+    }
     let order_id = v["data"]["id"].as_str().unwrap_or("").to_string();
     let hwid = v["meta"]["custom_data"]["hwid"].as_str().unwrap_or("").trim().to_string();
     let variant = {
@@ -1048,6 +1083,14 @@ async fn main() -> anyhow::Result<()> {
             .filter(|s| !s.is_empty())
             .collect(),
         // "variantId:minutes,variantId:minutes"
+        ls_checkout_license: env::var("CUTLASS_LS_CHECKOUT_LICENSE")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+        ls_checkout_credits: env::var("CUTLASS_LS_CHECKOUT_CREDITS")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
+        ls_allow_test_mode: env::var("CUTLASS_LS_ALLOW_TEST_MODE")
+            .is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes")),
         ls_credit_variants: env::var("CUTLASS_LS_CREDIT_VARIANTS")
             .unwrap_or_default()
             .split(',')
@@ -1098,6 +1141,7 @@ fn router(state: AppState) -> Router {
 fn router_with(state: AppState, extra: Router<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/checkout", get(checkout))
         .route("/activate", post(activate))
         .route("/redeem", post(redeem))
         .route("/admin/mint", post(mint))
@@ -1145,6 +1189,9 @@ mod tests {
             ls_signing_secret: None,
             ls_license_variants: HashSet::new(),
             ls_credit_variants: HashMap::new(),
+            ls_checkout_license: None,
+            ls_checkout_credits: None,
+            ls_allow_test_mode: false,
         };
         // any valid 32-byte key — the signing key is unused by the metering path
         let key = signing_key_from_b64("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=").unwrap();
@@ -1163,6 +1210,58 @@ mod tests {
     // dead licence server reaches the user as "Connect to continue" -- so one
     // bad request locked every paying customer out of the app. It must not be
     // possible for a single request to do that.
+
+    /// A test-mode order is signed, says "paid", and carries a variant id.
+    /// Once a product is copied to live mode the two environments can look
+    /// identical to this handler, so the flag is the only thing separating a
+    /// rehearsal from a sale.
+    #[test]
+    fn test_mode_is_not_a_purchase_unless_asked_for() {
+        let s = test_state(0.0, 0.0, &[]);
+        assert!(!s.cfg.ls_allow_test_mode, "honouring test orders must be opt-in");
+
+        for body in [
+            serde_json::json!({"meta": {"test_mode": true}, "data": {"attributes": {}}}),
+            serde_json::json!({"meta": {}, "data": {"attributes": {"test_mode": true}}}),
+        ] {
+            let flagged = body["meta"]["test_mode"].as_bool().unwrap_or(false)
+                || body["data"]["attributes"]["test_mode"].as_bool().unwrap_or(false);
+            assert!(flagged, "a test order must be recognisable wherever LS puts the flag");
+        }
+
+        // and a real order carries neither
+        let real = serde_json::json!({"meta": {}, "data": {"attributes": {"status": "paid"}}});
+        assert!(!(real["meta"]["test_mode"].as_bool().unwrap_or(false)
+            || real["data"]["attributes"]["test_mode"].as_bool().unwrap_or(false)));
+    }
+
+    /// The checkout links are served, not compiled in. Unset they are null,
+    /// and the app keeps whatever it already knew rather than sending someone
+    /// to a blank page.
+    #[tokio::test]
+    async fn checkout_links_come_from_config() {
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let mut st = test_state(0.0, 0.0, &[]);
+        let cfg = Arc::get_mut(&mut st.cfg).unwrap();
+        cfg.ls_checkout_license = Some("https://example.test/buy/live-licence".into());
+
+        let res = router(st)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/checkout")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["license"], "https://example.test/buy/live-licence");
+        assert!(v["credits"].is_null(), "unset means unset, not empty string");
+    }
 
     /// Every lock in this file must go through `lock_ok`, checked by reading
     /// the file's own source.

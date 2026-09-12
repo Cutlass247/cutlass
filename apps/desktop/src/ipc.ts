@@ -707,9 +707,26 @@ export const LS_CHECKOUT = {
 
 /// Open a Lemon Squeezy checkout in the browser, carrying THIS machine's id as
 /// custom data so the payment webhook grants the licence/credits to it.
+///
+/// The link is asked of the licence server first, and the constants above are
+/// only the fallback. Going live on Lemon Squeezy creates new products with
+/// new ids and new checkout links — so if these were simply compiled in, the
+/// day the store went live every copy of Cutlass already installed would open
+/// a checkout that could not take money, and only a new release would fix it.
 export async function openCheckout(kind: "license" | "credits"): Promise<void> {
   const hwid = await licenseMachineId();
-  const url = `${LS_CHECKOUT[kind]}?checkout[custom][hwid]=${encodeURIComponent(hwid)}`;
+  let base: string = LS_CHECKOUT[kind];
+  if (inTauri) {
+    try {
+      const links = await invoke<{ license: string | null; credits: string | null }>(
+        "checkout_links"
+      );
+      base = links[kind] || base;
+    } catch {
+      // unreachable server → the compiled-in link, which is better than nothing
+    }
+  }
+  const url = `${base}?checkout[custom][hwid]=${encodeURIComponent(hwid)}`;
   await openUrl(url);
 }
 
