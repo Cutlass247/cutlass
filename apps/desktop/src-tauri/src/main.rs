@@ -1091,6 +1091,50 @@ fn save_pref(app: tauri::AppHandle, key: String, value: serde_json::Value) -> Re
     std::fs::write(&path, text).map_err(err_str)
 }
 
+/// Read a project, falling back to the `.bak` beside it. Returns the project
+/// and whether it came from that backup.
+///
+/// A damaged project can't be repaired — automerge rejects the whole document
+/// over a single bad byte — so the only real recovery is the copy the previous
+/// save left beside it. Losing the last edit beats losing the project.
+///
+/// Separate from the command so both outcomes can actually be tested; the
+/// command itself needs Tauri state that a test has no way to build.
+fn read_project_or_backup(path: &Path) -> Result<(Project, bool), String> {
+    let read = |p: &Path| -> anyhow::Result<Project> {
+        let bytes = std::fs::read(p)?;
+        Project::load(&bytes)
+    };
+    match read(path) {
+        Ok(p) => Ok((p, false)),
+        // A project from a newer Cutlass is not damage, and the backup beside
+        // it was written by that same newer build — so trying it would fail
+        // identically and end with "the backup is unreadable too", sending
+        // someone hunting for corruption in two files that are both fine.
+        Err(e) if e.downcast_ref::<cutlass_core::project::FormatTooNew>().is_some() => {
+            Err(format!("{e}"))
+        }
+        Err(main_err) => {
+            let main_err = err_str(main_err);
+            let bak = backup_path(path);
+            match read(&bak) {
+                Ok(p) => {
+                    eprintln!(
+                        "{} unreadable ({main_err}); recovered from {}",
+                        path.display(),
+                        bak.display()
+                    );
+                    Ok((p, true))
+                }
+                Err(_) if bak.exists() => {
+                    Err(format!("{main_err} The backup beside it is unreadable too."))
+                }
+                Err(_) => Err(main_err),
+            }
+        }
+    }
+}
+
 /// Load a .cutlass file and rebuild the media pool from the paths stored
 /// in the document (scrub proxies come from cache when available).
 #[tauri::command]
@@ -1098,35 +1142,7 @@ async fn open_project(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    // A damaged project can't be repaired — automerge rejects the whole
-    // document over a single bad byte — so the only real recovery is the copy
-    // the previous save left beside it. Losing the last edit beats losing the
-    // project.
-    let read = |p: &Path| -> Result<Project, String> {
-        let bytes = std::fs::read(p).map_err(err_str)?;
-        Project::load(&bytes).map_err(err_str)
-    };
-    let (mut project, recovered_from_backup) = match read(Path::new(&path)) {
-        Ok(p) => (p, false),
-        Err(main_err) => {
-            let bak = backup_path(Path::new(&path));
-            match read(&bak) {
-                Ok(p) => {
-                    eprintln!(
-                        "{path} unreadable ({main_err}); recovered from {}",
-                        bak.display()
-                    );
-                    (p, true)
-                }
-                Err(_) if bak.exists() => {
-                    return Err(format!(
-                        "{main_err} The backup beside it is unreadable too."
-                    ))
-                }
-                Err(_) => return Err(main_err),
-            }
-        }
-    };
+    let (mut project, recovered_from_backup) = read_project_or_backup(Path::new(&path))?;
     let entries = project.media_entries();
 
     // rebuilding each media (proxy/waveform) is heavy → off the UI thread
@@ -2395,6 +2411,57 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Opening covers three outcomes, and they must not be confused with each
+    /// other: a good file opens, a damaged one falls back to the backup, and
+    /// one from a newer Cutlass is refused without touching the backup at all.
+    ///
+    /// That last case is the reason this is a test. The backup beside a newer
+    /// project was written by the same newer build, so trying it fails the
+    /// same way and the user ends up told "the backup is unreadable too" —
+    /// hunting for corruption in two files that are both perfectly fine.
+    #[test]
+    fn opening_tells_damage_apart_from_a_newer_cutlass() {
+        let dir = std::env::temp_dir().join(format!("cutlass_open_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 1. a good project opens as itself
+        let good = dir.join("Good.cutlass");
+        let mut p = Project::new("Good");
+        p.set_media("m0", "clip", "C:/clips/a.mp4", 12.0).unwrap();
+        write_project_atomically(&good, &p.save()).unwrap();
+        let (mut opened, from_backup) = read_project_or_backup(&good).expect("should open");
+        assert!(!from_backup);
+        assert_eq!(opened.media_entries().len(), 1);
+
+        // 2. damage falls back to the backup, and says it did
+        write_project_atomically(&good, &p.save()).unwrap(); // first save becomes the .bak
+        std::fs::write(&good, b"").unwrap(); // an interrupted save
+        let (mut recovered, from_backup) =
+            read_project_or_backup(&good).expect("backup should save us");
+        assert!(from_backup, "the caller has to know this is not the file they saved");
+        assert_eq!(recovered.media_entries().len(), 1);
+
+        // 3. a newer project is refused on its own terms, with its backup in
+        //    place and equally newer
+        let future = dir.join("Future.cutlass");
+        let mut f = Project::new("Future");
+        f.set_format_for_tests(cutlass_core::project::FORMAT + 1);
+        write_project_atomically(&future, &f.save()).unwrap();
+        write_project_atomically(&future, &f.save()).unwrap(); // now a .bak exists too
+        assert!(backup_path(&future).exists(), "the test needs a backup present");
+
+        let Err(err) = read_project_or_backup(&future) else {
+            panic!("a project from a newer Cutlass must not open");
+        };
+        assert!(err.contains("newer version of Cutlass"), "{err}");
+        assert!(
+            !err.contains("backup"),
+            "must not send them looking at the backup: {err}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// The Creator edition must never update itself.
     ///
