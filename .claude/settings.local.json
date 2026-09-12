@@ -482,7 +482,9 @@
       "Bash(bash scripts/release-manifest.sh --verify 0.1.1)",
       "Bash(echo \"exit: $?\")",
       "Bash(cp /c/Users/ISAIAH~1/AppData/Local/Temp/claude/D--Video-Editing-Idea/55d4a859-6fb3-47b3-b0d8-938a059a2886/scratchpad/app.bak apps/desktop/src/App.tsx)",
-      "Bash(chmod +x scripts/run-harnesses.sh)"
+      "Bash(chmod +x scripts/run-harnesses.sh)",
+      "Bash(bash scripts/release-manifest.sh 0.1.2 \"Clearer exported audio with a strength slider, automatic updates from here on, and a way back from a crashed window.\")",
+      "Bash(python -c \"import sys,json;d=json.load\\(sys.stdin\\);d['platforms']['windows-x86_64']['signature']=d['platforms']['windows-x86_64']['signature'][:40]+'…\\(truncated for display\\)';print\\(json.dumps\\(d,indent=2\\)\\)\")"
     ]
   }
 }

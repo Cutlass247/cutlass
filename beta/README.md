@@ -6,7 +6,7 @@
 
 A video editor where your transcript is your timeline — delete the words, and the video cuts itself. Grade it in one click. Everything runs on your machine: nothing uploaded, nothing watermarked, nothing claimed.
 
-### [⬇ Download for Windows](../../releases/latest) · v0.1.0 (beta)
+### [⬇ Download for Windows](../../releases/latest) · v0.1.2 (beta)
 
 </div>
 
@@ -28,7 +28,7 @@ A video editor where your transcript is your timeline — delete the words, and 
 
 ## Install
 
-1. Download **Cutlass_0.1.0_x64-setup.exe** from the [latest release](../../releases/latest).
+1. Download **Cutlass_0.1.2_x64-setup.exe** from the [latest release](../../releases/latest).
 2. Run it. Windows SmartScreen will likely say *"Windows protected your PC"* — that's because this beta isn't code-signed yet, not because anything's wrong. Click **More info → Run anyway**.
 3. Launch **Cutlass** from the Start menu.
 
