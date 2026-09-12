@@ -106,3 +106,46 @@ cd apps/desktop && npm run tauri build -- --features owner
 ```
 
 **Never publish that installer**, to a GitHub release or anywhere else.
+
+### Move it before you do anything else
+
+Both builds write to **the same path and the same filename**:
+
+```
+target/release/bundle/nsis/Cutlass_<version>_x64-setup.exe
+```
+
+So building the Creator edition silently overwrites the trial installer you
+published, and leaves the trial's `.sig` sitting next to it as if they belonged
+together. Re-run an upload from that folder afterwards — a `--clobber` to fix a
+typo in the release notes, say — and you have published your own unrestricted
+build as the public download, under a name that looks exactly right.
+
+Move it out of the way as soon as it finishes:
+
+```bash
+mkdir -p installers
+mv "target/release/bundle/nsis/Cutlass_<version>_x64-setup.exe" \
+   "installers/Cutlass_<version>_CREATOR-EDITION_x64-setup.exe"
+```
+
+`installers/` is gitignored, so it can't be committed either. If you still need
+the trial installer afterwards, rebuild it — or keep a copy before you start.
+
+Check which one you have by feature flag, never by searching the binary for
+text. `cfg!(feature = "owner")` is a runtime boolean, so **both builds contain
+all the same strings** — grepping for "Creator edition" finds it in the trial
+build too, and has fooled me before:
+
+```bash
+cargo tree -p cutlass-desktop -f "{p} [{f}]" --depth 0   # trial: []
+```
+
+### Don't sign the Creator edition
+
+Build it without `TAURI_SIGNING_PRIVATE_KEY` set. Tauri prints an error at the
+signing step and still produces the installer, which is the outcome you want:
+the Creator edition never checks for updates, so the signature would do nothing
+useful, and a *signed* owner installer is a genuinely dangerous thing to have
+lying around — one accidental upload away from replacing every user's trial
+with your unrestricted build, verifying perfectly on the way in.
