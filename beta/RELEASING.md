@@ -66,13 +66,22 @@ manager alongside the licensing key.
    `latest.json`. The updater only ever reads `latest.json`; an installer
    attached without it is invisible.
 
-6. **Check what the world actually sees** — the only test that counts:
+6. **Verify it from outside** — the only test that counts:
 
    ```bash
-   curl -sL https://github.com/Cutlass247/cutlass/releases/latest/download/latest.json
+   scripts/release-manifest.sh --verify <version>
    ```
 
-   The `version` must be the new one and `url` must resolve.
+   This checks the manifest is published, advertises the right version, names
+   an installer that actually downloads, and carries a real signature. Every
+   one of those failures is invisible from inside the app — a wrong asset name
+   looks exactly like "no update available", so nobody finds out until the
+   release after this one also fails to land.
+
+   **Do not rename the installer on the way to the release.** 0.1.1 was
+   published as `Cutlass-0.1.1-trial-x64-setup.exe`, a hand-rename of the built
+   file; that convention is dropped. The manifest points at the name the build
+   produced, and a rename breaks every update silently.
 
 ## The Creator edition does not update
 
