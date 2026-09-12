@@ -136,6 +136,21 @@ fn agent() -> ureq::Agent {
     builder.build()
 }
 
+/// Where to send someone who wants to buy, asked of the server rather than
+/// compiled in.
+///
+/// Going live on Lemon Squeezy creates new products with new ids and new
+/// checkout links. Baked into the app, that would mean a new build to change
+/// them — and every copy already installed would keep opening a checkout that
+/// cannot take money. Returns None when the server can't be reached or hasn't
+/// been told, and the caller keeps whatever it already had.
+pub fn checkout_links() -> Option<(Option<String>, Option<String>)> {
+    let url = format!("{}/checkout", server_url().trim_end_matches('/'));
+    let v: serde_json::Value = agent().get(&url).call().ok()?.into_json().ok()?;
+    let pick = |k: &str| v[k].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    Some((pick("license"), pick("credits")))
+}
+
 fn post_lease(path: &str, body: serde_json::Value) -> Option<SignedLease> {
     let url = format!("{}{}", server_url().trim_end_matches('/'), path);
     let resp: LeaseResp = agent().post(&url).send_json(body).ok()?.into_json().ok()?;
