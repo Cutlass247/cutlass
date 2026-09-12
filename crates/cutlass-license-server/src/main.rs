@@ -424,14 +424,18 @@ async fn checkout(State(state): State<AppState>) -> Json<serde_json::Value> {
 /// anchor — no JavaScript, no CORS, and nothing about the store baked into a
 /// static page that would need redeploying the day it changes.
 ///
-/// Falls back to the store front when no link is configured, which is better
-/// than a dead end: someone who wants to pay still lands somewhere they can.
+/// With nothing configured it sends people to the download instead of to the
+/// store. Until the store is activated there is nothing there to buy, and a
+/// button that leads somewhere you cannot pay is worse than one that offers
+/// the trial — which is what someone should be doing in the meantime anyway.
 async fn buy(State(state): State<AppState>, Path(what): Path<String>) -> Response {
     let link = match what.as_str() {
         "credits" => state.cfg.ls_checkout_credits.clone(),
         _ => state.cfg.ls_checkout_license.clone(),
     };
-    let to = link.unwrap_or_else(|| "https://cutlass.lemonsqueezy.com".to_string());
+    let to = link.unwrap_or_else(|| {
+        "https://cutlass247.github.io/cutlass/#download".to_string()
+    });
     // 302, not 301: browsers cache a permanent redirect, and this target
     // changes the day the store goes live.
     (StatusCode::FOUND, [(axum::http::header::LOCATION, to)]).into_response()
@@ -1309,6 +1313,10 @@ mod tests {
         let (status, loc) = go(test_state(0.0, 0.0, &[]), "/buy/license").await;
         assert_eq!(status, StatusCode::FOUND, "must redirect, not 404");
         assert!(loc.starts_with("https://"), "landed nowhere: {loc}");
+        assert!(
+            !loc.contains("lemonsqueezy"),
+            "before the store is activated there is nothing to buy there: {loc}"
+        );
 
         // configured: the configured link, and 302 so browsers don't cache a
         // target that changes the day the store goes live
