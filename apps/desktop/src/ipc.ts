@@ -794,6 +794,71 @@ export async function cutRanges(
 // mock "disk" for save/open in the browser
 let mockSaved: { project: ProjectSnapshot } | null = null;
 
+export interface UpdateInfo {
+  version: string;
+  notes: string;
+  /// Download and install, reporting progress 0..1. Resolves once the new
+  /// version is staged; the app must relaunch for it to take effect.
+  install: (onProgress: (frac: number) => void) => Promise<void>;
+  relaunch: () => Promise<void>;
+}
+
+/// Look for a newer release. Returns null when this is the latest, when the
+/// check fails (offline, GitHub down — never worth interrupting anyone over),
+/// or when this build isn't allowed to update itself.
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  // Browser mock, same idea as cutlassMockLicense — the real check can only
+  // ever run inside a packaged build, so the banner would otherwise be
+  // unreviewable until it was already shipped:
+  //   localStorage.cutlassMockUpdate = "0.1.2"
+  if (!inTauri) {
+    const v = localStorage.getItem("cutlassMockUpdate");
+    if (!v) return null;
+    return {
+      version: v,
+      notes: "Crisper exported audio, and a way back from a crashed window.",
+      install: async (onProgress) => {
+        for (let f = 0; f <= 1.0001; f += 0.05) {
+          onProgress(Math.min(1, f));
+          await new Promise((r) => setTimeout(r, 60));
+        }
+      },
+      relaunch: async () => localStorage.removeItem("cutlassMockUpdate"),
+    };
+  }
+  try {
+    if (!(await invoke<boolean>("updates_enabled"))) return null;
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const found = await check();
+    if (!found) return null;
+    return {
+      version: found.version,
+      notes: found.body ?? "",
+      install: async (onProgress) => {
+        // contentLength arrives with the first event and can be absent for a
+        // chunked response, in which case there is no honest percentage to
+        // show — report 0 and let the UI say "Downloading…" instead of
+        // inventing a bar that doesn't move.
+        let total = 0;
+        let got = 0;
+        await found.downloadAndInstall((e) => {
+          if (e.event === "Started") total = e.data.contentLength ?? 0;
+          else if (e.event === "Progress") {
+            got += e.data.chunkLength;
+            if (total > 0) onProgress(Math.min(1, got / total));
+          } else if (e.event === "Finished") onProgress(1);
+        });
+      },
+      relaunch: async () => {
+        const { relaunch } = await import("@tauri-apps/plugin-process");
+        await relaunch();
+      },
+    };
+  } catch {
+    return null; // a failed update check must never get in the way of editing
+  }
+}
+
 /// Write the project to a findable file with no dialog, and return where it
 /// went. For use when the UI has crashed: the document lives in the backend,
 /// so it can still be rescued after React has given up. Takes no path because
