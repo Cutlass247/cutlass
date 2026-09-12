@@ -30,9 +30,9 @@
 
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -416,6 +416,25 @@ async fn checkout(State(state): State<AppState>) -> Json<serde_json::Value> {
         "license": state.cfg.ls_checkout_license,
         "credits": state.cfg.ls_checkout_credits,
     }))
+}
+
+/// Send a buyer to the current checkout.
+///
+/// A plain redirect so the landing page can link to it with an ordinary
+/// anchor — no JavaScript, no CORS, and nothing about the store baked into a
+/// static page that would need redeploying the day it changes.
+///
+/// Falls back to the store front when no link is configured, which is better
+/// than a dead end: someone who wants to pay still lands somewhere they can.
+async fn buy(State(state): State<AppState>, Path(what): Path<String>) -> Response {
+    let link = match what.as_str() {
+        "credits" => state.cfg.ls_checkout_credits.clone(),
+        _ => state.cfg.ls_checkout_license.clone(),
+    };
+    let to = link.unwrap_or_else(|| "https://cutlass.lemonsqueezy.com".to_string());
+    // 302, not 301: browsers cache a permanent redirect, and this target
+    // changes the day the store goes live.
+    (StatusCode::FOUND, [(axum::http::header::LOCATION, to)]).into_response()
 }
 
 async fn activate(
@@ -1142,6 +1161,7 @@ fn router_with(state: AppState, extra: Router<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/checkout", get(checkout))
+        .route("/buy/:what", get(buy))
         .route("/activate", post(activate))
         .route("/redeem", post(redeem))
         .route("/admin/mint", post(mint))
@@ -1261,6 +1281,43 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["license"], "https://example.test/buy/live-licence");
         assert!(v["credits"].is_null(), "unset means unset, not empty string");
+    }
+
+    /// The landing page's Buy button is an ordinary link to this, so it has
+    /// to redirect somewhere useful even before the store is live — a button
+    /// that 404s is worse than one that lands on the store front.
+    #[tokio::test]
+    async fn buy_always_sends_someone_somewhere() {
+        use tower::ServiceExt;
+
+        let go = |st: AppState, path: &'static str| async move {
+            let res = router(st)
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let loc =
+                res.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            (res.status(), loc)
+        };
+
+        // nothing configured yet: still a redirect, to the store front
+        let (status, loc) = go(test_state(0.0, 0.0, &[]), "/buy/license").await;
+        assert_eq!(status, StatusCode::FOUND, "must redirect, not 404");
+        assert!(loc.starts_with("https://"), "landed nowhere: {loc}");
+
+        // configured: the configured link, and 302 so browsers don't cache a
+        // target that changes the day the store goes live
+        let mut st = test_state(0.0, 0.0, &[]);
+        let cfg = Arc::get_mut(&mut st.cfg).unwrap();
+        cfg.ls_checkout_license = Some("https://example.test/buy/live".into());
+        cfg.ls_checkout_credits = Some("https://example.test/buy/credits".into());
+        assert_eq!(go(st.clone(), "/buy/license").await, (StatusCode::FOUND, "https://example.test/buy/live".into()));
+        assert_eq!(go(st, "/buy/credits").await, (StatusCode::FOUND, "https://example.test/buy/credits".into()));
     }
 
     /// Every lock in this file must go through `lock_ok`, checked by reading

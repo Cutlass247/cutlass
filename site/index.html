@@ -55,6 +55,10 @@
   .btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
   .btn.gold { background: linear-gradient(180deg, #5a9bff, var(--blue)); color: #fff; box-shadow: 0 2px 10px rgba(74,144,255,0.35); }
   .btn.ghost { border: 1px solid var(--border); color: var(--text); }
+  /* Deliberately quieter than .gold: the trial is the right first step for
+     most people, and two loud buttons would only compete with each other. */
+  .btn.buy { border: 1px solid var(--ok); color: var(--ok); }
+  .btn.buy:hover { background: rgba(63,185,80,0.08); }
   .pledge-line { margin-top: 18px; font-size: 13px; color: var(--muted); }
   .pledge-line b { color: var(--ok); }
 
@@ -175,6 +179,7 @@
     </p>
     <div class="cta-row">
       <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
+      <a class="btn buy" href="https://cutlass-production.up.railway.app/buy/license">Buy now — $49</a>
       <a class="btn ghost" href="#ai">See the AI in action</a>
     </div>
     <p class="pledge-line"><b>Free 7-day trial, then $49 once — yours forever.</b> No subscription. No watermark. Your video never leaves your machine.</p>
@@ -365,7 +370,10 @@
   <section class="waitlist" id="download">
     <h2>Get the beta</h2>
     <p class="lead" style="margin: 0 auto;">Windows 10/11 today. macOS and Linux follow. If you're leaving another editor — we built this for you.</p>
-    <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
+    <div class="cta-row" style="justify-content: center;">
+      <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
+      <a class="btn buy" href="https://cutlass-production.up.railway.app/buy/license">Buy now — $49</a>
+    </div>
     <p class="pledge-line">Free 7-day trial, then $49 once — yours forever. Not on Windows? <a href="mailto:beta@cutlass.app?subject=Cutlass%20for%20Mac%2FLinux&body=Tell%20me%20when%20it%27s%20ready.%20I%20use%3A%20" style="color: var(--blue);">Tell us to ping you</a> when your platform's ready.</p>
   </section>
 </div>
