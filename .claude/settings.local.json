@@ -504,7 +504,8 @@
       "Bash(grep -oiE \"[^<>]{0,80}\\(never leaves|cloud|sent to transcribe|on-device\\)[^<>]{0,80}\")",
       "Bash(curl -s -o /dev/null -w \"%{url_effective}\\\\n\" -L https://github.com/Cutlass247/cutlass/releases/latest)",
       "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" -L https://github.com/Cutlass247/cutlass/releases/download/v0.1.2/Cutlass_0.1.2_x64-setup.exe)",
-      "WebFetch(domain:docs.lemonsqueezy.com)"
+      "WebFetch(domain:docs.lemonsqueezy.com)",
+      "Bash(xargs -I{} echo \"buy links on the page: {}\")"
     ]
   }
 }
