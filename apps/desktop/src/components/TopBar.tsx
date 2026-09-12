@@ -24,6 +24,9 @@ export function TopBar(p: {
   onAddTitle: () => void;
   onDeleteSel: (ripple: boolean) => void;
   onCollab: () => void;
+  /// Whether a collab relay is configured at all. Without one the button
+  /// can only ever produce a connection error, so it isn't offered.
+  collabAvailable: boolean;
   onZoom: (dir: 1 | -1) => void;
   hasSelection: boolean;
   onFeedback: () => void;
@@ -86,7 +89,7 @@ export function TopBar(p: {
           items={[
             { label: "Send beta feedback…", onSelect: p.onFeedback },
             { separator: true, label: "" },
-            { label: "Cutlass 0.1.0 (beta)", disabled: true, onSelect: () => {} },
+            { label: `Cutlass ${__APP_VERSION__} (beta)`, disabled: true, onSelect: () => {} },
           ]}
         />
       </nav>
@@ -120,7 +123,7 @@ export function TopBar(p: {
           <button className="tool-btn" title="Redo (Ctrl+Y)" onClick={p.onRedo}>
             ↪
           </button>
-          {!p.room && (
+          {!p.room && p.collabAvailable && (
             <button className="tool-btn wide" onClick={p.onCollab} disabled={!p.inTauri}>
               Collab
             </button>

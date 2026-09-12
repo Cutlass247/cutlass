@@ -53,7 +53,18 @@ manager alongside the licensing key.
    # Cutlass_<version>_x64-setup.exe.sig   <- without this there is no update
    ```
 
-4. **Write the manifest:**
+4. **Run the export harnesses** against any short clip with audio:
+
+   ```bash
+   scripts/run-harnesses.sh path/to/clip.mp4
+   ```
+
+   `cargo test` compiles examples but never runs them, so these check nothing
+   unless someone runs them deliberately. The gap-deadlock regression hid in
+   that blind spot for months and is now a real test; what's left here needs
+   real footage and a real encoder, so it can't be.
+
+5. **Write the manifest:**
 
    ```bash
    scripts/release-manifest.sh <version> "one line of release notes"
@@ -62,11 +73,11 @@ manager alongside the licensing key.
    Those notes are shown in the update banner inside the app, so write them for
    a user, not a changelog.
 
-5. **Tag and publish the release**, then upload the installer *and*
+6. **Tag and publish the release**, then upload the installer *and*
    `latest.json`. The updater only ever reads `latest.json`; an installer
    attached without it is invisible.
 
-6. **Verify it from outside** — the only test that counts:
+7. **Verify it from outside** — the only test that counts:
 
    ```bash
    scripts/release-manifest.sh --verify <version>

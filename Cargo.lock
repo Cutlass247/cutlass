@@ -1132,6 +1132,7 @@ dependencies = [
  "ffmpeg-sidecar",
  "serde",
  "serde_json",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
