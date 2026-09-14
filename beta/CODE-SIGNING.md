@@ -1,56 +1,88 @@
 # Code signing — the plan
 
-**The problem it solves:** every tester today sees *"Windows protected your PC — unknown publisher."* Many normal people will not click past that. Signing attaches a verified publisher identity to the installer so Windows (and SmartScreen) trust it. It is the single biggest friction-remover before a wide launch.
+**The problem it solves:** every downloader sees *"Windows protected your PC — unknown publisher."* Plenty of people will not click past that, and the ones who do are the ones least likely to also hand over $49. Signing attaches a verified publisher identity so Windows knows who shipped it.
 
-**For the closed beta:** skip it. The "More info → Run anyway" note in the README/invite is enough for a small group of people who already trust you. Do **not** spend money here yet — wait until real testers confirm the app is worth signing.
+**Status:** Cutlass 0.1.3 is **unsigned** — confirmed, not assumed:
+
+```
+Get-AuthenticodeSignature .\Cutlass_0.1.3_x64-setup.exe
+  status : NotSigned
+```
+
+Now worth doing, because payments are being switched on. An unknown-publisher warning in front of a paying customer is friction at the worst possible moment.
 
 ---
 
-## How Windows trust actually works
+## Two things, often confused
 
-Two separate things, and this trips people up:
+1. **A valid signature** — proves *who* published it. Removes "unknown publisher."
+2. **SmartScreen reputation** — earned over downloads and time.
 
-1. **A valid signature** — proves *who* published it (identity). Removes "unknown publisher."
-2. **SmartScreen reputation** — earned over downloads/time. A brand-new certificate can still show a warning until reputation accrues, **unless** the cert type grants instant reputation.
+You need the first to start earning the second.
 
-So the cert type matters a lot.
+## The options, as of September 2026
 
-## The three realistic options (2026)
-
-| Option | ~Cost | SmartScreen | Hardware token? | Catch |
+| Option | Cost | Where | SmartScreen | Token? |
 |---|---|---|---|---|
-| **Azure Trusted Signing** | ~$10/mo | Trusted (builds fast) | No (cloud) | Needs a **verified business** (historically 3+ yrs; individual tier has been rolling out — verify eligibility) |
-| **OV certificate** (Sectigo/DigiCert) | ~$200–400/yr | Warning until reputation builds | **Yes** (USB token / cloud HSM) | Reputation ramp; token complicates automated builds |
-| **EV certificate** | ~$300–700/yr | **Instant trust**, day one | **Yes** (token) | Most expensive; token handling |
+| **Microsoft Store (MSIX)** | **Free** | Worldwide | **No warnings at all** | No |
+| **Azure Artifact Signing** (was Trusted Signing) | ~$9.99/mo | Orgs: US/CA/EU/UK · **Individuals: US + Canada only** | Reputation builds | No |
+| **OV certificate** (DigiCert, Sectigo…) | $150–300/yr | Worldwide | Reputation builds | **Yes** (HSM/USB) |
+| **EV certificate** | $400+/yr | Worldwide | Reputation builds — **same as OV** | **Yes** |
+| Self-signed | Free | — | Blocks installation | — |
 
-Notes:
-- Since 2023, OV/EV certs can no longer be plain `.pfx` files — the private key must live on a hardware token or cloud HSM (CA/Browser Forum rule). That's why **Azure Trusted Signing** (cloud, no token) is now the sweet spot for most indies.
-- **Self-signed certificates do nothing for SmartScreen** — don't bother.
+Source: [Code signing options for Windows app developers](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options) (Microsoft Learn, updated 2026-08-29).
 
-## The entity requirement (read this first)
+## ⚠️ Two corrections to what this document used to say
 
-Code-signing certs — and Azure Trusted Signing's org tier — are issued to a **verified legal entity**, not usually a person. As a solo founder that likely means **registering an LLC** (or checking the individual/sole-proprietor path, which some CAs and Azure's newer individual tier support). This is the real gating step and it takes days–weeks, so start it before you think you need it.
+**EV no longer bypasses SmartScreen.** That behaviour was removed in **2024**. An earlier version of this file recommended EV for "instant trust, day one" — that advice is dead, and following it would mean paying $400+/yr for something identical to a $150 OV cert. If you already hold an EV cert, keep using it; do not buy one for this reason.
+
+**Nothing paid gives instant trust any more.** Azure, OV and EV all start at zero reputation and build it by signing consecutive releases with the *same* identity. So the benefit compounds — and switching identities later resets it. Pick one and stay on it.
+
+## The one option that does remove warnings: the Store
+
+Publishing an **MSIX** through the Microsoft Store is free, worldwide, and Microsoft re-signs the package so users see **no SmartScreen warning at all**. It is the only path to zero warnings on day one.
+
+The catches, for Cutlass specifically:
+- Tauri builds NSIS and MSI, not MSIX. Packaging work required.
+- Store review, Store policies, and Store's cut on anything sold through it — though Cutlass sells through Lemon Squeezy, not in-app, so that may not apply.
+- The bundled ffmpeg is LGPL; Store distribution needs the licence compliance checked, not assumed.
+
+Worth pricing as a *second* channel later. Not a reason to delay signing now.
 
 ## Recommendation
 
-1. **Now (closed beta):** ship unsigned with the "Run anyway" note. Zero spend.
-2. **In parallel:** if you don't have a business entity, start forming one (an LLC) — it's needed for signing anyway, and for taking payment later.
-3. **Before any wide/public launch:** get signing in place. In priority order of value-for-money:
-   - **Azure Trusted Signing** if you qualify — cheapest, cloud, good SmartScreen behavior.
-   - **EV cert** if you want zero warnings on day one and can absorb the cost.
-   - **OV cert** as a budget fallback, accepting a short reputation ramp.
+1. **If Isaiah is in the US or Canada → Azure Artifact Signing, $9.99/mo.** No hardware token, integrates with the existing build, cheapest real option, and it works for an individual — no LLC required, which was the old blocker.
+2. **Otherwise → an OV certificate, $150–300/yr** from Sectigo or DigiCert, accepting a USB token or cloud HSM. Do not pay the EV premium.
+3. **Either way, sign every release from then on with the same identity**, so reputation accumulates instead of restarting.
 
-## Wiring it into the build (when you have a cert)
+Both need identity validation — allow a few business days.
 
-Tauri signs the installer during `tauri build`. In `apps/desktop/src-tauri/tauri.conf.json`, under `bundle.windows`:
+## Wiring it into the build
 
-- **Token/local cert:** set `"certificateThumbprint"` (and `timestampUrl`, e.g. `http://timestamp.digicert.com`). Tauri calls `signtool` with it.
-- **Azure Trusted Signing:** use `bundle.windows.signCommand` to invoke Azure's signing tool on the built artifacts, or run a post-build `signtool` step with the Azure dlib.
+Tauri signs during `tauri build`, in `apps/desktop/src-tauri/tauri.conf.json` under `bundle.windows`:
 
-Then re-run the installer build and verify: right-click the `.exe` → Properties → **Digital Signatures** tab should show your publisher name.
+- **Token / local cert:** set `certificateThumbprint` and `timestampUrl` (e.g. `http://timestamp.digicert.com`). Tauri invokes `signtool`.
+- **Azure Artifact Signing:** use `bundle.windows.signCommand` to call Azure's signing tool over the built artifacts.
+
+`signtool.exe` is already present on this machine:
+`C:\Program Files (x86)\Windows Kits\10\bin\10.0.17763.0\x64\signtool.exe`
+
+**Verify afterwards — do not assume it worked.** A misconfigured signing step is silent:
+
+```powershell
+Get-AuthenticodeSignature "target\release\bundle\nsis\Cutlass_<version>_x64-setup.exe"
+# status must be Valid, and SignerCertificate.Subject must be you
+```
+
+Add that to the release checklist in `RELEASING.md` once a cert exists.
+
+## Note on the updater
+
+Update signing (the minisign key in `~/.cutlass-keys/updater.key`) is **separate and unrelated**. It proves an update came from us; Authenticode proves the installer came from a verified publisher. Both are needed and neither replaces the other. Do not conflate them.
 
 ## Bottom line
 
-- **Cost to start:** $0 for the closed beta.
-- **Cost before public launch:** ~$120/yr (Azure) to ~$400/yr (OV/EV), plus whatever forming an entity costs.
-- **Biggest hidden dependency:** a legal entity. Start that early; everything else is a config change once the cert exists.
+- **Cheapest real path:** ~$120/yr (Azure), if the geography allows it.
+- **Fallback:** $150–300/yr (OV).
+- **Do not buy EV.**
+- **No option except the Store removes warnings immediately** — signing starts the clock, it doesn't skip it.
