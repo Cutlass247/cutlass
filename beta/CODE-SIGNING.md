@@ -51,11 +51,16 @@ Worth pricing as a *second* channel later. Not a reason to delay signing now.
 
 ## Recommendation
 
-1. **If Isaiah is in the US or Canada → Azure Artifact Signing, $9.99/mo.** No hardware token, integrates with the existing build, cheapest real option, and it works for an individual — no LLC required, which was the old blocker.
-2. **Otherwise → an OV certificate, $150–300/yr** from Sectigo or DigiCert, accepting a USB token or cloud HSM. Do not pay the EV premium.
-3. **Either way, sign every release from then on with the same identity**, so reputation accumulates instead of restarting.
+**Settled 2026-09-14: Azure Artifact Signing, Basic SKU (~$9.99/mo).** Isaiah is
+in the US, so the individual tier applies — no hardware token, no LLC, and it
+drops into the existing build. The blocker this document used to name, needing a
+legal entity, no longer exists.
 
-Both need identity validation — allow a few business days.
+Then **sign every release under the same identity**, so reputation accumulates
+rather than restarting from zero each version.
+
+If the individual tier ever falls through, the fallback is an **OV certificate**
+at $150–300/yr with a USB token or cloud HSM. Not EV — see above.
 
 ## Setting up Azure Artifact Signing (Isaiah: US individual — this is the path)
 
