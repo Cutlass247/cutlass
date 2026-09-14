@@ -88,3 +88,14 @@ Prefer to trim by transcript? Switch to **Studio**, click a word to jump there, 
 <div align="center">
 <sub>Cutlass · Windows · Your content is yours.</sub>
 </div>
+
+---
+
+## License
+
+Cutlass is **proprietary software** — © 2026 Isaiah Aniemeka, all rights reserved.
+
+The source is public so you can read it and see exactly what the app does with
+your files. That is not the same as open source: it may be read, not copied,
+modified or redistributed. See [LICENSE](LICENSE) for the full terms, including
+the third-party components Cutlass builds on.
