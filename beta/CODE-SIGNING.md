@@ -57,6 +57,56 @@ Worth pricing as a *second* channel later. Not a reason to delay signing now.
 
 Both need identity validation — allow a few business days.
 
+## Setting up Azure Artifact Signing (Isaiah: US individual — this is the path)
+
+Source: [Quickstart: Set up Artifact Signing](https://learn.microsoft.com/en-us/azure/trusted-signing/quickstart)
+(Microsoft Learn, updated 2026-09-12).
+
+### Read this before you start anything
+
+**Your Azure billing account's legal name and address become the certificate,
+verbatim.** For individual validation the form is populated from the billing
+account and is **read-only** — you cannot correct it there. If the name or
+address is wrong, you have to change the billing account and *start a new
+identity validation request*, which invalidates work already done.
+
+So, first:
+
+- Billing account **Account Type must be `Individual`** (not Organization).
+- The **legal name must match your government photo ID exactly.**
+- The address must match your ID, a utility bill, or a bank statement.
+- City, state and country from that address are printed on the certificate.
+  Your email and street address are not.
+
+Fix those *before* step 4, not after.
+
+### The steps
+
+1. **Azure subscription + Entra tenant.** A personal Microsoft account is
+   enough; no company required.
+2. **Register the resource provider** — `Microsoft.CodeSigning`:
+   `az provider register --namespace Microsoft.CodeSigning`
+3. **Create an Artifact Signing account**, Basic SKU (~$9.99/mo, 5,000
+   signatures — far more than we will use). Pick a US region and note its
+   endpoint; e.g. East US → `https://eus.codesigning.azure.net`.
+4. **Assign yourself the `Artifact Signing Identity Verifier` role.** Without
+   it the **New identity** button is greyed out with no explanation. This is
+   the step people get stuck on.
+5. **Create the identity validation** — Individual → Public. Select the
+   billing account; the form fills itself from it (see the warning above).
+6. **Complete Verified ID on your phone.** A third party (AU10TIX) emails a
+   PIN, takes a phone number, then you scan a QR code and photograph your
+   **government ID** — passport, driver's licence or state ID. Ends in the
+   Microsoft Authenticator app. **Have your phone and ID to hand**; it is a
+   live capture, not an upload of an old scan. No flash, flat surface, no
+   cropping, both sides as separate images.
+7. **Create a certificate profile** of type **Public Trust**, bound to the
+   completed identity validation.
+
+**Timing:** the Verified ID part takes minutes. Microsoft quotes **1–20
+business days** for public identity validation overall, so start it now rather
+than the week of a launch.
+
 ## Wiring it into the build
 
 Tauri signs during `tauri build`, in `apps/desktop/src-tauri/tauri.conf.json` under `bundle.windows`:
