@@ -1,0 +1,66 @@
+Copyright (c) 2026 Isaiah Aniemeka. All rights reserved.
+
+Cutlass is proprietary software. It is not open source.
+
+
+WHAT THIS REPOSITORY IS
+
+The source code is published so that anyone can read it — so customers can
+see what the software does with their files, and so anyone evaluating Cutlass
+can check the claims made for it. Publishing it does not place it in the
+public domain and does not grant a licence to use it.
+
+
+WHAT YOU MAY DO
+
+  - Read, view and study this source code.
+  - Quote short excerpts for commentary, review, teaching or reporting,
+    with attribution.
+  - Report bugs and security issues.
+
+Downloading a build of Cutlass and using the application itself is governed
+separately by the terms accompanying that build, not by this file.
+
+
+WHAT YOU MAY NOT DO WITHOUT WRITTEN PERMISSION
+
+  - Copy, reproduce or redistribute this source code, in whole or in
+    substantial part.
+  - Modify it, or create derivative works from it.
+  - Compile it and distribute the result, whether free or for a fee.
+  - Incorporate any part of it into another product or project.
+  - Remove or alter this notice.
+
+No licence, express or implied, is granted by the publication of this code,
+and no rights are waived by it.
+
+
+THIRD-PARTY COMPONENTS
+
+Cutlass builds on software written by other people, under their own licences,
+which this notice does not cover and does not override. Those components
+remain governed entirely by their own terms.
+
+The distributed application includes FFmpeg, used under the GNU Lesser General
+Public License. FFmpeg's licence is shipped alongside the application (see the
+`licenses` folder beside the installed program) and its source is available
+from https://ffmpeg.org. Cutlass links FFmpeg as unmodified shared libraries.
+
+Other bundled components — including the speech recognition and audio
+separation models, and the Microsoft Visual C++ runtime — are redistributed
+under their respective licences.
+
+
+NO WARRANTY
+
+This source code is provided "as is", without warranty of any kind, express or
+implied, including but not limited to the warranties of merchantability,
+fitness for a particular purpose and non-infringement. In no event shall the
+author be liable for any claim, damages or other liability arising from, out
+of, or in connection with this source code or its use.
+
+
+CONTACT
+
+For permission to use any part of this code, or with any licensing question,
+open an issue at https://github.com/Cutlass247/cutlass.
