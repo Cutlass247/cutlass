@@ -111,11 +111,34 @@ than the week of a launch.
 
 Tauri signs during `tauri build`, in `apps/desktop/src-tauri/tauri.conf.json` under `bundle.windows`:
 
-- **Token / local cert:** set `certificateThumbprint` and `timestampUrl` (e.g. `http://timestamp.digicert.com`). Tauri invokes `signtool`.
-- **Azure Artifact Signing:** use `bundle.windows.signCommand` to call Azure's signing tool over the built artifacts.
+Azure has no local certificate file to point at, so `certificateThumbprint`
+does not apply. Use `bundle.windows.signCommand`, which Tauri runs over each
+built artifact with the path substituted for `%1`:
 
-`signtool.exe` is already present on this machine:
+```jsonc
+"bundle": {
+  "windows": {
+    "signCommand": "trusted-signing-cli -e https://eus.codesigning.azure.net -a <ACCOUNT> -c <PROFILE> %1"
+  }
+}
+```
+
+`trusted-signing-cli` is a small Rust tool (`cargo install trusted-signing-cli`)
+wrapping the Azure signing API. It authenticates from the environment, so a
+local `az login` covers manual builds.
+
+**Check those flags against the tool's current README at setup time.** This is
+written from the service documentation, not from a run — it is the one part of
+this document nobody has executed, and the rest of the project has been bitten
+twice now by exactly that kind of assumption.
+
+If the fallback OV path is ever needed instead, `signtool.exe` is already on
+this machine:
 `C:\Program Files (x86)\Windows Kits\10\bin\10.0.17763.0\x64\signtool.exe`
+— that path takes `certificateThumbprint` plus a `timestampUrl`.
+
+**Sign the installer *and* the exe inside it.** Both are `NotSigned` today, and
+a signed installer that drops an unsigned binary still trips warnings later.
 
 **Verify afterwards — do not assume it worked.** A misconfigured signing step is silent:
 
