@@ -67,6 +67,24 @@ at $150–300/yr with a USB token or cloud HSM. Not EV — see above.
 Source: [Quickstart: Set up Artifact Signing](https://learn.microsoft.com/en-us/azure/trusted-signing/quickstart)
 (Microsoft Learn, updated 2026-09-12).
 
+### Where this stands (2026-09-15)
+
+Set up, awaiting Microsoft's review. None of this is secret.
+
+| | |
+|---|---|
+| Signing account | `cutlasssigning` |
+| Region | East US |
+| Endpoint | `https://eus.codesigning.azure.net` |
+| Resource group | `cutlass` |
+| SKU | Basic (~$9.99/mo) |
+| Roles assigned | Identity Verifier · Certificate Profile Signer |
+| Identity validation | Individual / Public — **Verified ID completed 2026-09-15**, awaiting Microsoft (1–20 business days) |
+| Certificate profile | **not yet created** — blocked until validation completes |
+
+Next, in order: validation reaches **Completed** → create a **Public Trust**
+certificate profile bound to it → wire `signCommand` → sign and verify.
+
 ### Read this before you start anything
 
 **Your Azure billing account's legal name and address become the certificate,
