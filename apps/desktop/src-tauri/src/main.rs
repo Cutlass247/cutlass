@@ -196,9 +196,15 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
     anyhow::ensure!(duration_s > 0.05, "no usable duration");
     // native size — the export UI uses it to stop silent upscaling
     let (src_w, src_h) = eng.dimensions();
-    // Aim for ~480 proxy frames (dense on short clips, capped on long
-    // ones so an hour is ~8s/frame instead of 15s), at most 10 fps.
-    let scrub_fps = (480.0 / duration_s.max(0.1)).min(10.0);
+    // Aim for MAX_SCRUB_FRAMES proxy frames (dense on short clips, capped on
+    // long ones), at most 10 fps.
+    //
+    // This asked for 480 while `media::scrub_proxy` — the same job, other code
+    // path — asked for 240, so the path the app actually runs did twice the
+    // decoding for the same scrub strip. Under ~24s both hit the 10 fps cap
+    // and are identical; past 48s it was a straight doubling, which is exactly
+    // the long files that felt slowest.
+    let scrub_fps = (cutlass_core::media::MAX_SCRUB_FRAMES / duration_s.max(0.1)).min(10.0);
     let interval = 1.0 / scrub_fps;
     let width = cutlass_core::media::SCRUB_WIDTH;
     let dir = cutlass_core::media::cache_dir(path)?;
@@ -1025,13 +1031,26 @@ fn spawn_conform(app: tauri::AppHandle, media_id: String, src: std::path::PathBu
     });
 }
 
-/// How many files to import at once.
+/// How many files to import at once. One, deliberately.
 ///
-/// Import is mostly waiting on ffmpeg — decoding thumbnails, reading audio —
-/// so running several at once is close to free on wall-clock time. Not
-/// unbounded, though: each one holds an open decoder, and a 4K source costs
-/// real memory, so dropping twenty files should not start twenty decoders.
-const IMPORT_CONCURRENCY: usize = 4;
+/// This was 4, on the reasoning that import is "mostly waiting on ffmpeg" and
+/// therefore overlaps well. That was measured against
+/// `cutlass_core::media::scrub_proxy`, which spawns a subprocess — but the app
+/// imports through `MediaEngine`, which decodes IN-PROCESS via linked libav
+/// and is CPU-bound. libav already spreads one decode across every core, so
+/// four at once divides the same cores four ways instead of overlapping waits.
+///
+/// Measured on four real files (`examples/engine_import_timing.rs`):
+///
+/// ```text
+///   sequential : 22.10s total, first clip visible after  5.52s
+///   four at once: 21.83s total, first clip visible after 21.83s
+/// ```
+///
+/// 0.27s saved overall — 1.2% — in exchange for the first clip taking four
+/// times as long to appear. Importing feels fast because clips land one after
+/// another, not because they all land together at the end.
+const IMPORT_CONCURRENCY: usize = 1;
 
 /// Import several files, a few at a time, reporting each as it lands.
 ///
@@ -2779,6 +2798,40 @@ mod tests {
         );
         #[cfg(not(feature = "owner"))]
         assert!(updates_enabled(), "the shipping build has to be reachable");
+    }
+
+    /// Importing must stay sequential, and both import paths must ask for the
+    /// same number of thumbnails.
+    ///
+    /// Both of these shipped wrong in 0.1.5 and had to be rolled back. The
+    /// concurrency came from measuring `scrub_proxy`, which spawns an ffmpeg
+    /// subprocess and therefore overlaps well — but the app imports through
+    /// `MediaEngine`, which decodes in-process and is CPU-bound. Measured over
+    /// four real files: running them together saved 0.27s of 22.10s while
+    /// making the first clip appear 4x later. Import feels fast because clips
+    /// land one after another, not together at the end.
+    ///
+    /// The frame target was 480 here against 240 in `media::scrub_proxy` — the
+    /// same scrub strip, twice the decoding, on the path that actually runs.
+    #[test]
+    fn import_stays_sequential_and_asks_for_one_frame_budget() {
+        assert_eq!(
+            IMPORT_CONCURRENCY, 1,
+            "in-process decode is CPU-bound: concurrency costs first-clip latency and buys ~1%"
+        );
+
+        // Both paths derive scrub_fps from the same constant. If someone
+        // reintroduces a literal here, this catches the divergence.
+        let src = include_str!("main.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            code.contains("cutlass_core::media::MAX_SCRUB_FRAMES / duration_s"),
+            "the engine import path must use MAX_SCRUB_FRAMES, not its own number"
+        );
+        assert!(
+            !code.contains("480.0 / duration_s"),
+            "a second frame budget is back — that doubled the decoding once already"
+        );
     }
 
     /// The VFR conform now runs in the background, so an export has to be able
