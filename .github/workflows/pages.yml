@@ -32,6 +32,14 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      # Stamp the page with when it was published, so a stale copy in
+      # somebody's browser is visible rather than something you have to
+      # diff against the repo to notice.
+      - name: Stamp the build date
+        run: |
+          STAMP="updated $(date -u '+%Y-%m-%d %H:%M UTC') · $(git rev-parse --short HEAD)"
+          sed -i "s|__BUILD_STAMP__|$STAMP|g" site/index.html
+          grep -o 'updated [^<]*' site/index.html | head -1
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

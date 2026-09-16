@@ -136,6 +136,7 @@
   footer { border-top: 1px solid var(--border); padding: 28px 0; font-size: 13px; color: var(--muted); }
   footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; width: 100%; }
   footer span:first-child { margin-right: auto; }
+  footer .stamp { opacity: .55; font-variant-numeric: tabular-nums; }
 
   @media (max-width: 760px) {
     .spot-grid { grid-template-columns: 1fr; gap: 30px; }
@@ -379,6 +380,10 @@
 <footer>
   <div class="wrap">
     <span>Cutlass — Cut sharper. Own everything.</span>
+    <!-- Stamped at deploy by .github/workflows/pages.yml. Exists so "is this
+         page current, or is my browser showing me something old?" can be
+         answered by looking, which it could not be before. -->
+    <span class="stamp" title="When this page was published">__BUILD_STAMP__</span>
     <span>© 2026 Cutlass</span>
   </div>
 </footer>
