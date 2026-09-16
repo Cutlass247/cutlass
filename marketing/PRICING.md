@@ -2,6 +2,13 @@
 
 Decided pre-launch (during beta) so it's ready to apply. Model is locked; exact feature-line and final number get a sanity check from beta signal before going live.
 
+> **What actually shipped (2026-09-16) is not the three tiers below.** The beta
+> sells as a **7-day free trial, then $49 once, everything included** — no free
+> tier, no Free/Pro feature gate. The numbers here have been corrected to $49,
+> but the *structure* below is the plan as it stood before that call, kept
+> because the reasoning is still useful. Read it as options considered, not as
+> a description of the product.
+
 ## The principle
 
 Local features you **own**; cloud features you **rent**. That's the whole model, and it maps to both our cost structure and the ownership pledge (*"a one-time purchase will always be an option; subscriptions only pay for optional cloud"*). Never violate it — it's why subscription-refugees trust us.
@@ -21,7 +28,7 @@ Includes:
 - **Export: H.264 up to 1080p**, no watermark
 - Save/open projects, auto-save
 
-### Pro — $99 one-time (own it forever)
+### Pro — $49 one-time (own it forever)
 Everything in Free, plus the pro polish, delivery formats, and power tools:
 - Full **grading**: all LUTs (.cube), green-screen / chroma key, all stylize effects (grain, sharpen, vignette, hue)
 - **Keyframes** (animate any parameter)
@@ -39,7 +46,7 @@ The only recurring charge, because it's the only thing that costs us servers:
 - Cloud project **sync + backup**
 - **Team seats** / shared workspaces
 
-## Price anchoring (why $99 works)
+## Price anchoring (why $49 works)
 
 | Competitor | Price | Model |
 |---|---|---|
@@ -47,11 +54,15 @@ The only recurring charge, because it's the only thing that costs us servers:
 | Adobe Premiere | ~$276/yr | Subscription |
 | Final Cut Pro | $300 | One-time (Mac) |
 | DaVinci Resolve Studio | $295 | One-time |
-| **Cutlass Pro** | **$99** | **One-time — less than one year of Descript, yours forever** |
+| **Cutlass** | **$49** | **One-time — a third of a year of Descript, yours forever** |
+
+At $49 the anchor is no longer "cheaper than a year of Descript" — it's
+"cheaper than four months of it." That is a far easier sentence to say, and it
+puts Cutlass below the impulse-purchase line that $99 sits above.
 
 ## Launch tactics
 
-- **Founder's price: ~$59 lifetime** for the first buyers. **Beta testers get Pro free, for life** — a thank-you and a base of advocates.
+- **Founder's price: superseded, needs a decision.** This assumed ~$59 for first buyers against a $99 list price. The beta already sells at **$49**, which is below that — so either the launch discount goes away, or $49 *is* the founder's price and list rises afterwards. Don't run a "discount" that costs more than the current price. **Beta testers get it free, for life** — a thank-you and a base of advocates.
 - Frame it with honest urgency: *"Founder's price won't last."* No fake countdowns.
 - Regional / purchasing-power pricing and an education discount: consider post-launch, not day one.
 
@@ -59,7 +70,7 @@ The only recurring charge, because it's the only thing that costs us servers:
 
 - Ask testers point-blank: **"What would you pay for this?"** and **"Which feature would you happily pay to unlock?"**
 - Watch which features they actually reach for — that's where the free/Pro line really belongs. Move a line or two based on signal (e.g., if everyone lives in the LUTs, that's clearly Pro; if captions are what makes them tell friends, keep it free).
-- Confirm the $99 anchor feels like a no-brainer, not a wince.
+- Confirm the $49 anchor feels like a no-brainer, not a wince.
 
 ## Implementation (later, not now)
 
