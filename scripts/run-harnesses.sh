@@ -52,6 +52,7 @@ run escaping_check  "$CLIP" "$OUT/escaping"
 run limits_check    "$CLIP" "$OUT/limits"
 run failure_modes   "$CLIP" "$OUT/failures"
 run cancel_staged   "$CLIP" "$OUT/cancel"
+run denoise_check   "$CLIP" "$OUT/denoise"
 
 printf '\n%s\n' "----------------------------------------"
 echo "$pass ok, $fail with failures"
