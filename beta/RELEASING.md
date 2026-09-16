@@ -45,6 +45,18 @@ manager alongside the licensing key.
    cd apps/desktop && npm run tauri build
    ```
 
+   **Check it is signed.** A signing step that fails produces an unsigned
+   installer that looks identical until a user hits SmartScreen:
+
+   ```powershell
+   Get-AuthenticodeSignature "target\release\bundle\nsis\Cutlass_<version>_x64-setup.exe"
+   # status must be Valid, signer must be CN=Isaiah Aniemeka
+   ```
+
+   Do **not** check `target\release\cutlass-desktop.exe`. It reads NotSigned
+   even on a good build, because Tauri patches it with bundle metadata after
+   signing. See `beta/CODE-SIGNING.md`.
+
    Confirm it produced *both* files:
 
    ```bash
@@ -141,11 +153,22 @@ build too, and has fooled me before:
 cargo tree -p cutlass-desktop -f "{p} [{f}]" --depth 0   # trial: []
 ```
 
-### Don't sign the Creator edition
+### Two different signatures — don't confuse them
 
-Build it without `TAURI_SIGNING_PRIVATE_KEY` set. Tauri prints an error at the
-signing step and still produces the installer, which is the outcome you want:
-the Creator edition never checks for updates, so the signature would do nothing
-useful, and a *signed* owner installer is a genuinely dangerous thing to have
-lying around — one accidental upload away from replacing every user's trial
-with your unrestricted build, verifying perfectly on the way in.
+Every build now carries two, doing unrelated jobs:
+
+| | Proves | Comes from | Fails how |
+|---|---|---|---|
+| **Authenticode** | *who published it* — stops SmartScreen saying "unknown publisher" | Azure, via `signCommand` | build fails loudly |
+| **Updater (minisign)** | *this is a genuine update* — installed copies accept it | `~/.cutlass-keys/updater.key` | silently absent |
+
+**The Creator edition gets Authenticode but must NOT get the updater
+signature.** Build it with `TAURI_SIGNING_PRIVATE_KEY` unset. Tauri prints an
+error at that step and still produces the installer, which is the outcome you
+want: the Creator edition never checks for updates, so the minisign signature
+would do nothing useful — and a *minisign-signed* owner installer is genuinely
+dangerous, one accidental upload from replacing every user's trial with your
+unrestricted build and verifying perfectly on the way in.
+
+Authenticode on the owner build is fine and desirable: it is your own machine,
+and it means you don't fight SmartScreen on your own software.

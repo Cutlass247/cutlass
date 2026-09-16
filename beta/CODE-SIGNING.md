@@ -67,23 +67,69 @@ at $150–300/yr with a USB token or cloud HSM. Not EV — see above.
 Source: [Quickstart: Set up Artifact Signing](https://learn.microsoft.com/en-us/azure/trusted-signing/quickstart)
 (Microsoft Learn, updated 2026-09-12).
 
-### Where this stands (2026-09-15)
+### ✅ Working as of 2026-09-15
 
-Set up, awaiting Microsoft's review. None of this is secret.
+Builds are signed. `Cutlass_0.1.4_x64-setup.exe` verifies as:
+
+```
+status : Valid
+signer : CN=Isaiah Aniemeka, O=Isaiah Aniemeka, L=Brooklyn, S=ny, C=US
+issuer : CN=Microsoft ID Verified CS EOC CA 03, O=Microsoft Corporation
+```
 
 | | |
 |---|---|
-| Signing account | `cutlasssigning` |
-| Region | East US |
+| Signing account | `cutlasssigning`, East US |
 | Endpoint | `https://eus.codesigning.azure.net` |
-| Resource group | `cutlass` |
-| SKU | Basic (~$9.99/mo) |
-| Roles assigned | Identity Verifier · Certificate Profile Signer |
-| Identity validation | Individual / Public — **Verified ID completed 2026-09-15**, awaiting Microsoft (1–20 business days) |
-| Certificate profile | **not yet created** — blocked until validation completes |
+| Certificate profile | `cutlass-release` (Public Trust) |
+| Service principal | `cutlass-signing`, appId `77ab41e6-c06b-4152-9a4e-914208d0a8a4` |
+| Role | Artifact Signing Certificate Profile Signer, scoped to that account only |
+| Credential | `~/.cutlass-keys/azure-signing-sp.json` — **secret, never commit**, see the README beside it |
+| Wrapper | `C:\cutlass-tools\sign.cmd` → `sign-windows.ps1` (copy of `scripts/sign-windows.ps1`) |
 
-Next, in order: validation reaches **Completed** → create a **Public Trust**
-certificate profile bound to it → wire `signCommand` → sign and verify.
+### Four things that cost time, so they are written down
+
+**`az login` is not enough.** `artifact-signing-cli` requires an explicit
+client id / tenant / secret. Microsoft's own dlib is supposed to accept an az
+session via `DefaultAzureCredential`, but this build (1.0.95) throws
+*"Invalid tenant id provided"* on a perfectly valid GUID while constructing
+`SharedTokenCacheCredential`, and hangs indefinitely before that if the
+blocking credential sources are not excluded. Hence the service principal.
+
+**The role names moved with the rename.** `az role definition list` at the
+account scope shows **`Artifact Signing Certificate Profile Signer`**, not the
+`Trusted Signing …` name still in much of the documentation. Assigning the old
+name fails with *"Role doesn't exist."*
+
+**`signCommand` cannot cope with spaces.** Pointing it at a script under
+`D:\Video Editing Idea\scripts\` fails with *"failed to run powershell"*
+however it is quoted — both the project path and the user profile contain
+spaces. The fix is the space-free `C:\cutlass-tools\sign.cmd` shim, which
+invokes PowerShell by absolute path. That shim lives **outside the repo**, so a
+fresh checkout must recreate it (`scripts/sign-windows.ps1` is the source of
+truth; copy it there).
+
+**Do not verify by checking `target/release/cutlass-desktop.exe`.** It reads
+`NotSigned` even on a good build, because Tauri patches it with bundle metadata
+*after* signing. The only honest check is the installer, and the exe it
+actually installs:
+
+```powershell
+Get-AuthenticodeSignature "targeteleaseundle
+sis\Cutlass_<version>_x64-setup.exe"
+# and, having installed it:
+Get-AuthenticodeSignature "$env:LOCALAPPDATA\Cutlass\cutlass-desktop.exe"
+```
+
+### Why the certificate expires in three days
+
+Azure issues deliberately short-lived certificates — the one that signed 0.1.4
+runs 2026-09-15 to 2026-09-18. **This is not a problem and needs no renewal.**
+The RFC-3161 countersignature from Microsoft's timestamp authority records
+*when* the signing happened, so the signature stays valid long after the
+certificate expires. It also means the timestamp server is load-bearing: if
+`--tr` ever fails, the build must fail rather than ship an untimestamped
+binary that stops verifying within days.
 
 ### Read this before you start anything
 

@@ -1,4 +1,4 @@
-# Cutlass 0.1.3 — buying works wherever the store moves
+# Cutlass 0.1.4 — Windows can see who made it
 
 **Cut sharper. Own everything.**
 
@@ -6,22 +6,26 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.1.3_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.1.4_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
-Already on 0.1.2? You don't need this page. Cutlass will offer the update itself.
-
-On first run, Windows SmartScreen may warn *"Windows protected your PC"* because this beta isn't code-signed yet. Click **More info → Run anyway**.
+Already on 0.1.2 or later? You don't need this page. Cutlass will offer the update itself.
 
 ## What's new
 
-**Buying works when purchasing opens.** Cutlass now asks where to send you when you buy, instead of using an address fixed when the app was built. That address changes the day the store opens for real payments — so without this, a copy of Cutlass installed today would have sent you to a checkout that couldn't take your money, and only a new download would have fixed it.
+**Cutlass is now code-signed.** Every previous build was unsigned, so Windows called it software from an *"unknown publisher"* — no name, no way to tell where it came from. This one carries a verified signature, and Windows now shows it as published by **Isaiah Aniemeka**.
 
-Nothing else changed. Everything in **0.1.2** — the audio fix, automatic updates, the crash recovery screen — is here too, and if you're coming from 0.1.1 or earlier its notes are still worth reading.
+You can check it yourself: right-click the installer → **Properties** → **Digital Signatures**.
+
+**Being honest about what this doesn't fix yet:** Windows SmartScreen may still warn on first download. Signing identifies the publisher; the warning goes away once enough people have installed a build signed with the same identity, and that reputation has to accumulate. Microsoft removed the option to buy your way past it in 2024. So the warning fades over the next few releases rather than disappearing today — but from now on it says who made it instead of nobody knows.
+
+If you do see it: **More info → Run anyway**.
+
+Nothing else changed. Everything from **0.1.3** and **0.1.2** — the audio fix and its strength slider, automatic updates, the crash recovery screen — is here too.
 
 ## Known limits
 
 - Windows only.
-- Not code-signed yet, so SmartScreen will warn on first run.
+- SmartScreen reputation is still building — see above.
 - 4K exports are slow by nature. Export at 1080p for long videos.
 - Collaboration isn't available in this build.
 
