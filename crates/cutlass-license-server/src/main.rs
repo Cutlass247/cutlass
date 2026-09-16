@@ -434,7 +434,7 @@ async fn buy(State(state): State<AppState>, Path(what): Path<String>) -> Respons
         _ => state.cfg.ls_checkout_license.clone(),
     };
     let to = link.unwrap_or_else(|| {
-        "https://cutlass247.github.io/cutlass/#download".to_string()
+        "https://cutlass247.github.io/#download".to_string()
     });
     // 302, not 301: browsers cache a permanent redirect, and this target
     // changes the day the store goes live.

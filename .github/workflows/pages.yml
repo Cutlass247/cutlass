@@ -1,16 +1,25 @@
 name: Landing page
 
-# Publishes site/ to GitHub Pages.
+# This repo's Pages site (https://cutlass247.github.io/cutlass/) now serves
+# nothing but a redirect.
 #
-# A workflow rather than the simpler branch-and-folder setting, because that
-# one can only serve the repository root or /docs, and several docs already
-# point at site/index.html. Moving the file to satisfy the setting would break
-# those instead.
+# The landing page itself lives at https://cutlass247.github.io/, which is a
+# GitHub *user site* served from a different repository. For months both
+# addresses served a copy of the page — this one deployed from site/, the root
+# one hand-edited — and they drifted far enough apart that the root was still
+# offering a button that had been replaced and a feature that had been pulled.
+#
+# So: one page, one URL. site/index.html is still the source, and
+# scripts/publish-site.sh pushes it to the root site. The check job below is
+# what stops the two drifting again — it fails when the published page no
+# longer matches site/index.html, which is the thing nobody noticed by eye.
 on:
   push:
     branches: [main]
     paths:
       - "site/**"
+      - "site-redirect/**"
+      - "scripts/publish-site.sh"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -25,6 +34,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Fails when https://cutlass247.github.io/ is serving something other than
+  # site/index.html. Expected to fail on the commit that changes the page and
+  # to pass once scripts/publish-site.sh has been run — a red check here means
+  # "you edited the page and didn't publish it", not "the build is broken".
+  check-root-site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/publish-site.sh --verify
+
   deploy:
     runs-on: ubuntu-latest
     environment:
@@ -32,17 +51,9 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      # Stamp the page with when it was published, so a stale copy in
-      # somebody's browser is visible rather than something you have to
-      # diff against the repo to notice.
-      - name: Stamp the build date
-        run: |
-          STAMP="updated $(date -u '+%Y-%m-%d %H:%M UTC') · $(git rev-parse --short HEAD)"
-          sed -i "s|__BUILD_STAMP__|$STAMP|g" site/index.html
-          grep -o 'updated [^<]*' site/index.html | head -1
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: site-redirect
       - id: deploy
         uses: actions/deploy-pages@v4

@@ -9,7 +9,7 @@ software the customer downloads and installs on their own computer. The
 editing itself runs entirely on their machine — importing, cutting, colour
 grading, and exporting the finished video never involve our servers.
 
-Public download and product page: https://cutlass247.github.io/cutlass/
+Public download and product page: https://cutlass247.github.io/
 Source and releases: https://github.com/Cutlass247/cutlass
 
 ## What is sold

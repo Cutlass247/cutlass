@@ -39,6 +39,9 @@ manager alongside the licensing key.
    `site/index.html`. The filename appears in more places than the badge does;
    it has been missed before.
 
+   Editing `site/index.html` is only half of publishing it — see
+   [The landing page is served from a different repo](#the-landing-page-is-served-from-a-different-repo).
+
 3. **Build the trial installer** with the signing variables above set:
 
    ```bash
@@ -115,6 +118,35 @@ manager alongside the licensing key.
    Last, not first — do it only once step 7 has confirmed the new release is
    actually reachable. Drafting the previous one before that leaves nothing
    downloadable if the new one turns out to be broken.
+
+## The landing page is served from a different repo
+
+**https://cutlass247.github.io/ is not published by this repository.** It is a
+GitHub *user site*, served from `Cutlass247/Cutlass247.github.io`, which holds
+a single `index.html`.
+
+`site/index.html` here is the source. Pushing it does not publish it:
+
+```bash
+scripts/publish-site.sh          # copy site/index.html to the live page
+scripts/publish-site.sh --verify # check the live page matches
+```
+
+This caught fire once already. Both addresses used to serve a copy of the page
+— the root hand-edited, `/cutlass/` deployed from `site/` — and they drifted
+for weeks without anyone noticing. The root went on showing a "See the AI in
+action" button after it had been replaced by **Buy now — $49**, and went on
+advertising collaboration after the feature was pulled from the build. Two
+prices, two feature lists, decided by which link someone happened to have.
+
+Now `/cutlass/` serves only a redirect (`site-redirect/index.html`), kept alive
+because links to it are already out in the world — the Lemon Squeezy review
+among them. And the Pages workflow runs `--verify` on every push that touches
+`site/`, so **editing the page without publishing it fails a check** instead of
+going quietly stale. A red `check-root-site` means exactly one thing: run the
+publish script.
+
+Publish *before* you push, and the check is green on the same commit.
 
 ## Only the latest release is public
 

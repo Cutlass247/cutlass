@@ -62,7 +62,7 @@ attached, or an unlisted YouTube/Drive link if it is too large. Include the
 pricing breakdown in the same reply — `beta/PRICING.md`.
 
 Worth adding one line pointing at the public product page
-(https://cutlass247.github.io/cutlass/) and the public releases
+(https://cutlass247.github.io/) and the public releases
 (https://github.com/Cutlass247/cutlass/releases), since a reviewer can
 download and run the real thing themselves. That is stronger evidence than any
 video, and most applicants cannot offer it.
