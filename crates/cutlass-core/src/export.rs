@@ -1129,6 +1129,26 @@ fn sweep_abandoned_work_dirs(parent: &Path) {
     sweep_work_dirs_older_than(parent, std::time::Duration::from_secs(ABANDONED_AFTER_S));
 }
 
+/// Remove a staging folder, giving Windows a moment to let go of it first.
+///
+/// Killing ffmpeg is asynchronous. It can still hold its part file open for a
+/// few milliseconds after `kill()` returns, and on Windows an open handle does
+/// not delay a delete — it fails it. A single attempt therefore loses the race
+/// on a cancelled export and strands the folder in the user's *own output
+/// directory*, next to their video, where it sits until some later export
+/// sweeps it six hours on.
+///
+/// Costs nothing in the normal case: a finished export has no open handles and
+/// the first attempt succeeds.
+fn remove_work_dir(work: &Path) {
+    for attempt in 0..10u32 {
+        if !work.exists() || std::fs::remove_dir_all(work).is_ok() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25 * u64::from(attempt + 1)));
+    }
+}
+
 /// The body of [`sweep_abandoned_work_dirs`], with the age threshold exposed
 /// so a test doesn't have to wait six hours to see it work.
 fn sweep_work_dirs_older_than(parent: &Path, max_age: std::time::Duration) {
@@ -1794,6 +1814,9 @@ fn run_export_chunked(
         for event in child.iter()? {
             if cancel.load(Ordering::Relaxed) {
                 let _ = child.kill();
+                // Reap it before anything tries to delete what it was writing.
+                // kill() only asks; the handle lives until the process is gone.
+                let _ = child.wait();
                 let _ = std::fs::remove_file(out);
                 anyhow::bail!("export cancelled");
             }
@@ -1824,7 +1847,9 @@ fn run_export_chunked(
 
     let res = render(log);
     // Parts are large; clear them whether we finished, failed or were cancelled.
-    let _ = std::fs::remove_dir_all(&work);
+    // Retrying rather than a single best-effort attempt: on cancel this runs
+    // moments after ffmpeg was killed, and it used to lose that race.
+    remove_work_dir(&work);
     res
 }
 
@@ -2248,6 +2273,10 @@ fn run_export(
         if cancel.load(Relaxed) {
             watching.store(false, Relaxed);
             let _ = child.kill();
+            // Reap it before deleting what it was writing: kill() only asks,
+            // and on Windows the open handle fails the delete rather than
+            // queueing it.
+            let _ = child.wait();
             let _ = std::fs::remove_file(out); // drop the partial output
             anyhow::bail!("export cancelled");
         }
