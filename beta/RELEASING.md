@@ -106,6 +106,70 @@ manager alongside the licensing key.
    file; that convention is dropped. The manifest points at the name the build
    produced, and a rename breaks every update silently.
 
+8. **Hide the release it replaces**, so the page shows one download:
+
+   ```bash
+   gh release edit v<previous> --draft
+   ```
+
+   Last, not first — do it only once step 7 has confirmed the new release is
+   actually reachable. Drafting the previous one before that leaves nothing
+   downloadable if the new one turns out to be broken.
+
+## Only the latest release is public
+
+Every release except the newest is a **draft**. Drafts are visible to accounts
+with write access and invisible to everyone else, so the releases page shows
+one download and nobody has to work out which build to take.
+
+Nothing is deleted. Drafts keep their notes, their assets and their tag, and
+the git tags all remain on the remote — `git ls-remote --tags origin` still
+lists every one.
+
+**After publishing a new release, draft the one it replaced:**
+
+```bash
+gh release edit v<previous> --draft
+```
+
+The consequence to know about: a drafted release's download URL returns **404**
+to the public. If you have ever sent someone a direct link to a specific
+installer, that link dies when you draft it.
+
+## Rolling back a bad release
+
+This is not hypothetical — 0.1.5 shipped an import regression and was pulled
+the same day. Do it the moment you know, not after deciding whose fault it is.
+
+Because older releases are drafts, un-hiding comes first. **One command, two
+flags:**
+
+```bash
+gh release edit v<previous> --draft=false --latest
+```
+
+`--latest` alone is not enough: a draft cannot be latest, so without
+`--draft=false` the command appears to work and changes nothing. Then check
+what the world sees, which is the only test that counts:
+
+```bash
+scripts/release-manifest.sh --verify <previous>
+```
+
+It must report the previous version and a downloadable installer. Both the
+download button and every installed copy's updater follow `latest`, so this one
+command moves everybody.
+
+Then mark the bad release so nobody installs it from the releases page — it is
+still there, and its title will otherwise look like a normal build:
+
+```bash
+gh release edit v<bad> --title "Cutlass <bad> — superseded by <good>" --draft
+```
+
+Keep it rather than deleting it. A pulled release that quietly vanishes is
+worse than one that says why it was pulled.
+
 ## The Creator edition does not update
 
 The owner build (`--features owner`) never checks. The endpoint serves the
