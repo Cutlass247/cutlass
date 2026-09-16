@@ -298,6 +298,34 @@ mod tests {
         assert_eq!(title_of(&late.doc).as_deref(), Some("started without you"));
     }
 
+    /// The test above proves the document converges, not that the *server*
+    /// starts the conversation. Automerge sync is symmetric, so a client that
+    /// gets pumped at all arrives there by itself — delete the offer in `join`
+    /// and every other test in this file stays green. This is the one that
+    /// notices, and it exists only because deleting that offer was tried.
+    #[test]
+    fn the_server_speaks_first_to_a_peer_that_has_said_nothing() {
+        let mut room = Room::default();
+        let mut author = join(&mut room, 1);
+        settle(&mut room, &mut author);
+        set_title(&mut author.doc, "already here");
+        settle(&mut room, &mut author);
+
+        let mut fresh = join(&mut room, 2);
+
+        // Receive only. The client generates nothing at all, so whatever it
+        // ends up holding was volunteered rather than asked for.
+        let mut frames = 0;
+        while let Ok(msg) = fresh.rx.try_recv() {
+            if let WsMessage::Binary(b) = msg {
+                let m = SyncMessage::decode(&b).expect("server sent a decodable frame");
+                fresh.doc.receive_sync_message(&mut fresh.state, m).expect("client accepts it");
+                frames += 1;
+            }
+        }
+        assert!(frames > 0, "the server volunteered nothing to a peer that had just joined");
+    }
+
     #[test]
     fn two_peers_editing_at_once_both_survive() {
         let mut room = Room::default();
