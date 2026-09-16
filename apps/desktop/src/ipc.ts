@@ -1507,9 +1507,34 @@ export interface AiMoment {
   reason: string; // why it stands out
 }
 
+/// Why an AI highlights call failed. Mirrors `license::AiError` in Rust.
+///
+/// `offline` means nothing answered. `failed` means the server answered and
+/// the answer was unusable — an expired licence, a spent allowance, an
+/// unconfigured server. Only `offline` may fall back to the on-device finder:
+/// running it on a refusal would route around the gate rather than the network.
+export type AiFailure =
+  | { kind: "offline"; message: string }
+  | { kind: "failed"; status: number; message: string };
+
+/// True when the machine could not reach the server at all — the one case the
+/// caller is allowed to answer with `findHighlights` from ./highlights.
+export function isOffline(e: unknown): e is Extract<AiFailure, { kind: "offline" }> {
+  return typeof e === "object" && e !== null && (e as { kind?: unknown }).kind === "offline";
+}
+
+/// Readable text for any highlights failure, including one that isn't an
+/// AiFailure at all (a thrown string, a bug in the bridge).
+export function aiFailureText(e: unknown): string {
+  if (typeof e === "object" && e !== null && "message" in e) {
+    return String((e as { message: unknown }).message);
+  }
+  return String(e);
+}
+
 /// Ask the AI for the best short-form moments. The transcript TEXT is sent to
 /// the licensing server (which calls Claude); the video never leaves the
-/// machine. Throws with a readable message on failure.
+/// machine. Rejects with an {@link AiFailure}.
 export async function aiHighlights(transcript: Word[], count = 8): Promise<AiMoment[]> {
   if (!inTauri) {
     await new Promise((r) => setTimeout(r, 1400)); // simulate the model call

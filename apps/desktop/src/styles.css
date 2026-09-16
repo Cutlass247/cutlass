@@ -917,6 +917,16 @@ button {
   line-height: 1.35;
   color: var(--muted);
 }
+/* Offline results came from the on-device finder, not the AI. Warm rather
+   than red: nothing failed, the moments are real, they are just rougher. */
+.cf-offline {
+  color: var(--warn, #f0b429);
+  background: rgba(240, 180, 41, 0.08);
+  border: 1px solid rgba(240, 180, 41, 0.25);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
 .cf-shorts {
   display: flex;
   flex-direction: column;

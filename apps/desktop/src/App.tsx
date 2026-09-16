@@ -11,7 +11,9 @@ import {
   addCaptions,
   addClipFromMedia,
   addTitle,
+  aiFailureText,
   aiHighlights,
+  isOffline,
   aiUsage,
   AiUsage,
   audioClock,
@@ -88,6 +90,7 @@ import {
   trimClip,
   undoEdit,
 } from "./ipc";
+import { findHighlights } from "./highlights";
 import { Mode, TopBar } from "./components/TopBar";
 import { MediaPanel } from "./components/MediaPanel";
 import { Monitor, RESOLUTIONS, Resolution, CensorItem } from "./components/Monitor";
@@ -314,6 +317,11 @@ export default function App() {
   // auto-split / highlights: candidate shorts (source-time ranges) + loaded one
   const [shorts, setShorts] = useState<ShortSeg[]>([]);
   const [activeShort, setActiveShort] = useState<number | null>(null);
+  // true when the moments on screen came from the on-device finder because the
+  // server was unreachable. It scores audio and wording rather than reading the
+  // transcript, so the results are rougher — and a quietly worse result that
+  // looks identical reads as "the AI got worse", not "you're offline".
+  const [shortsOffline, setShortsOffline] = useState(false);
   // whether picking a moment also burns captions onto the clip. Off by default
   // — captions are opt-in, never applied automatically. Persisted.
   const [captionsOn, setCaptionsOn] = useState<boolean>(
@@ -415,6 +423,7 @@ export default function App() {
         setTranscripts(res.transcripts ?? {});
         setSelectedIds([]);
         setShorts([]);
+        setShortsOffline(false);
         setActiveShort(null);
         setDrag(null);
         setWordSel(null);
@@ -1788,6 +1797,7 @@ export default function App() {
           return n;
         });
         setShorts([]);
+        setShortsOffline(false);
         setActiveShort(null);
         // drop any now-deleted clips from the selection
         setSelectedIds((prev) => prev.filter((id) => snap.clips.some((c) => c.id === id)));
@@ -2355,6 +2365,7 @@ export default function App() {
       }
     }
     setShorts(segs);
+    setShortsOffline(false); // an even split, not the on-device finder
     setActiveShort(null);
   }, [createClip, media, transcripts]);
 
@@ -2476,15 +2487,41 @@ export default function App() {
             reasons: m.reason ? [m.reason] : [],
           }))
         );
+        setShortsOffline(false);
         setActiveShort(null);
       } catch (e) {
-        setError(`Couldn't find moments: ${String(e)}`);
+        // Only a machine that could not reach the server gets the on-device
+        // finder. Every other failure — lapsed licence, spent allowance, AI
+        // not configured — is the server saying no, and answering that with
+        // a local pass would be handing out the paid feature.
+        if (!isOffline(e)) {
+          setError(`Couldn't find moments: ${aiFailureText(e)}`);
+          return;
+        }
+        const m = media[mediaId];
+        const local = findHighlights(ws, m?.waveform ?? [], m?.duration_s ?? 0, 8);
+        if (local.length === 0) {
+          setError(
+            "You're offline, and the on-device finder couldn't pick out clear moments in this clip. Reconnect for the full AI pass."
+          );
+          return;
+        }
+        setShorts(
+          local.map((h) => ({
+            start: h.start,
+            end: h.end,
+            label: h.label,
+            reasons: h.reasons,
+          }))
+        );
+        setShortsOffline(true);
+        setActiveShort(null);
       } finally {
         setAiFinding(false);
         refreshUsage();
       }
     },
-    [transcripts, refreshUsage]
+    [transcripts, media, refreshUsage]
   );
 
   // ONE button. Transcribe the clip on-device if needed (progress shows on the
@@ -2515,6 +2552,7 @@ export default function App() {
   const createMediaId = createClip?.media ?? null;
   useEffect(() => {
     setShorts([]);
+    setShortsOffline(false);
     setActiveShort(null);
   }, [createMediaId]);
 
@@ -2642,6 +2680,7 @@ export default function App() {
               onExport={exportClip}
               canSplit={createClip !== null && createDur > 75}
               shorts={shorts}
+              shortsOffline={shortsOffline}
               activeShort={activeShort}
               onSplit={onSplitShorts}
               onPickShort={onPickShort}

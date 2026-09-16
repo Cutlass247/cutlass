@@ -283,7 +283,7 @@ pub struct TWord {
     pub end: f64,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Moment {
     pub start: f64,
     pub end: f64,
@@ -292,11 +292,46 @@ pub struct Moment {
     pub reason: String,
 }
 
+/// Why a highlights request failed.
+///
+/// The app falls back to its on-device finder for `Offline` and must never do
+/// so for `Failed`. That line is the entire reason this type exists: "nothing
+/// answered" is a reason to do the work locally, while "the server answered
+/// and said no" — no licence, allowance spent, AI not configured — is a gate.
+/// Falling back there would hand out the paid feature through another door.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum AiError {
+    /// Nothing answered: no network, DNS failure, refused connection, timeout.
+    Offline { message: String },
+    /// The server answered, and the answer was not usable.
+    Failed { status: u16, message: String },
+}
+
+impl std::fmt::Display for AiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AiError::Offline { message } => write!(f, "{message}"),
+            AiError::Failed { status, message } => write!(f, "{status}: {message}"),
+        }
+    }
+}
+
 /// Send the transcript (text only — never the video) to the server, which asks
 /// Claude for the best moments. Long timeout; the model call takes a while.
-pub fn ai_highlights(transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, String> {
+pub fn ai_highlights(transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, AiError> {
+    ai_highlights_at(&server_url(), transcript, count)
+}
+
+/// The body of [`ai_highlights`], with the server address passed in.
+///
+/// Split out so a test can point it at a closed port and check that a refused
+/// connection comes back as `Offline`. That mapping is what decides whether
+/// the on-device finder runs, and it cannot be checked through `server_url()`
+/// without mutating the environment out from under every other test.
+fn ai_highlights_at(base: &str, transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, AiError> {
     let hwid = machine_id();
-    let url = format!("{}/highlights", server_url().trim_end_matches('/'));
+    let url = format!("{}/highlights", base.trim_end_matches('/'));
     let body = serde_json::json!({
         "hwid": hwid,
         "transcript": transcript,
@@ -304,12 +339,26 @@ pub fn ai_highlights(transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, 
         "app_version": env!("CARGO_PKG_VERSION"),
     });
     match agent().post(&url).timeout(Duration::from_secs(120)).send_json(body) {
-        Ok(resp) => resp.into_json::<Vec<Moment>>().map_err(|e| e.to_string()),
+        Ok(resp) => {
+            // Read the status before the body is consumed. A reply we cannot
+            // parse still came from the server, so it is Failed, not Offline —
+            // a garbled response must not unlock the local fallback either.
+            let status = resp.status();
+            resp.into_json::<Vec<Moment>>().map_err(|e| AiError::Failed {
+                status,
+                message: e.to_string(),
+            })
+        }
         Err(ureq::Error::Status(code, r)) => {
             let msg = r.into_string().unwrap_or_default();
-            Err(format!("{code}: {}", msg.chars().take(200).collect::<String>()))
+            Err(AiError::Failed {
+                status: code,
+                message: msg.chars().take(200).collect::<String>(),
+            })
         }
-        Err(e) => Err(format!("Couldn't reach the highlights service: {e}")),
+        Err(e) => Err(AiError::Offline {
+            message: format!("Couldn't reach the highlights service: {e}"),
+        }),
     }
 }
 
@@ -379,6 +428,46 @@ mod tests {
     use cutlass_license::{Lease, Status, NEVER};
 
     const DAY: i64 = 86_400;
+
+    /// The frontend decides whether to run the on-device finder by switching on
+    /// `kind`. Rename a variant and one of two things happens silently: the app
+    /// stops falling back when offline, or it starts falling back when the
+    /// server refused — and the second one gives the paid feature away to
+    /// anyone whose licence has lapsed. Neither shows up as a failing build.
+    #[test]
+    fn being_offline_looks_different_to_being_refused() {
+        let offline = serde_json::to_value(AiError::Offline {
+            message: "dns error".into(),
+        })
+        .unwrap();
+        assert_eq!(offline["kind"], "offline");
+
+        let refused = serde_json::to_value(AiError::Failed {
+            status: 402,
+            message: "monthly AI allowance spent".into(),
+        })
+        .unwrap();
+        assert_eq!(refused["kind"], "failed");
+        assert_eq!(refused["status"], 402);
+    }
+
+    /// The mapping the fallback actually hangs on: a machine that cannot open
+    /// the connection must come back `Offline`, so the on-device finder runs.
+    /// Port 1 is reserved and nothing listens on it, so this is a refused
+    /// connection — the same class of failure as having no network — without
+    /// needing the test host to be offline.
+    #[test]
+    fn a_connection_that_never_opens_is_offline_not_a_refusal() {
+        let words = vec![TWord {
+            text: "hello".into(),
+            start: 0.0,
+            end: 0.5,
+        }];
+        match ai_highlights_at("http://127.0.0.1:1", words, 8) {
+            Err(AiError::Offline { .. }) => {}
+            other => panic!("expected Offline, got {other:?}"),
+        }
+    }
 
     fn lease(status: Status, expires_at: i64, lease_expires_at: i64) -> Lease {
         Lease {

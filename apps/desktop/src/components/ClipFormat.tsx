@@ -56,6 +56,11 @@ export function ClipFormat(p: {
   // manual fallback: chop one long clip into even short-ready segments
   canSplit: boolean;
   shorts: ShortSeg[];
+  /// These moments came from the on-device finder because the server couldn't
+  /// be reached. Say so — results found by scoring audio and wording are
+  /// rougher than results found by reading the transcript, and an unexplained
+  /// drop in quality reads as the AI getting worse.
+  shortsOffline: boolean;
   activeShort: number | null;
   onSplit: () => void;
   onPickShort: (i: number) => void;
@@ -192,6 +197,13 @@ export function ClipFormat(p: {
 
       {p.shorts.length > 0 && (
         <div className="cf-shorts-wrap">
+          {p.shortsOffline && (
+            <div className="cf-split-hint cf-offline">
+              📴 Found on your machine — no connection. These come from audio and
+              wording rather than the AI reading the clip, so they're rougher. Run
+              it again once you're online.
+            </div>
+          )}
           <div className="cf-split-hint">
             Pick a moment to load it{p.captionsOn ? " (with captions)" : ""} — then Export it in the
             shape above.

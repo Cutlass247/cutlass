@@ -2564,11 +2564,17 @@ fn license_machine_id() -> String {
 async fn ai_highlights(
     transcript: Vec<license::TWord>,
     count: Option<u32>,
-) -> Result<Vec<license::Moment>, String> {
+) -> Result<Vec<license::Moment>, license::AiError> {
     let n = count.unwrap_or(8);
     tauri::async_runtime::spawn_blocking(move || license::ai_highlights(transcript, n))
         .await
-        .map_err(|e| e.to_string())?
+        // A panic in the worker is not being offline. Status 0 because no
+        // server was involved — what matters is that it isn't `Offline`, so
+        // the frontend reports it rather than quietly finding moments locally.
+        .map_err(|e| license::AiError::Failed {
+            status: 0,
+            message: e.to_string(),
+        })?
 }
 
 #[tauri::command]
