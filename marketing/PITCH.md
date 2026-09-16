@@ -20,8 +20,10 @@ controversy factually with a link.
 2. **Talking-head creators** (tutorials, podcasts, course makers). Their
    whole edit is "remove the ums and the dead air." That's two clicks in
    Cutlass and a lost evening in a track editor.
-3. **Small teams** who share project files over Drive and overwrite each
-   other. Multiplayer timelines are the unlock nobody else ships.
+3. **Screen recorders and streamers** — OBS captures, gameplay, long
+   sessions. Variable frame rate is conformed on import so audio never
+   drifts, background music comes off the clip while the voice stays, and
+   anything on screen can be blurred with the blur tracking the subject.
 
 ## The 90-second demo script
 
@@ -34,8 +36,9 @@ controversy factually with a link.
 4. Effects tab → click **Cinematic**. *"That's the whole grade — one
    click, previewing live."* (Optional: drop a .cube LUT, or **Generate
    captions** and watch them appear on V2.)
-5. Open a second window in the same room. Drag a clip in one — it moves
-   in the other, live cursors visible.
+5. Create tab → **✨ Find the best moments.** *"It reads the whole
+   recording and pulls the ones that actually land."* Pick one — it comes
+   out vertical and captioned, ready to post.
 6. Export. Hardware-encoded, done in seconds. *"No watermark. And the
    terms fit on one page: your content is yours."*
 
@@ -49,7 +52,8 @@ controversy factually with a link.
   does the 80% that talking-head creators do daily, 10× faster: transcript
   editing, smart cuts, one-click Looks and LUT grading, chroma key,
   auto-captions, titles, and keyframes. And it does two things Premiere
-  can't do at all (edit-by-transcript natively, live multiplayer).
+  can't do at all: edit by transcript natively, and turn a long recording
+  into captioned vertical clips on its own.
 - **"Mac?"** Windows beta first; the stack (Rust/Tauri/wgpu) is
   cross-platform and macOS is next.
 
@@ -70,5 +74,9 @@ controversy factually with a link.
 
 ## Not yet true (don't claim)
 
-- macOS/Linux builds, hosted collab relay (rooms currently need a
-  self-run relay), auto-updates, mobile, background removal / masks.
+- macOS/Linux builds, collaboration (not in this build at all — it is not
+  a relay problem any more, the feature is gone), mobile, background
+  removal / masks.
+
+  Auto-updates came off this list at 0.1.2: every build from then on
+  updates itself, and it is safe to claim.
