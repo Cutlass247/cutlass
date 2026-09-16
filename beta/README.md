@@ -29,7 +29,7 @@ A video editor where your transcript is your timeline — delete the words, and 
 ## Install
 
 1. Download **Cutlass_0.1.4_x64-setup.exe** from the [latest release](../../releases/latest).
-2. Run it. Windows SmartScreen will likely say *"Windows protected your PC"* — that's because this beta isn't code-signed yet, not because anything's wrong. Click **More info → Run anyway**.
+2. Run it. Cutlass is code-signed, so Windows shows the publisher as **Isaiah Aniemeka** — you can check under Properties → Digital Signatures. SmartScreen may still warn on a new release while its reputation builds; if it does, click **More info → Run anyway**.
 3. Launch **Cutlass** from the Start menu.
 
 ## First 90 seconds
