@@ -1,52 +1,50 @@
-# Cutlass — pricing strategy
+# Cutlass — pricing
 
-Decided pre-launch (during beta) so it's ready to apply. Model is locked; exact feature-line and final number get a sanity check from beta signal before going live.
+What ships today, and the reasoning behind it. Everything here describes the
+product as sold; anything still undecided says so.
 
-> **What actually shipped (2026-09-16) is not the three tiers below.** The beta
-> sells as a **7-day free trial, then $49 once, everything included** — no free
-> tier, no Free/Pro feature gate. The numbers here have been corrected to $49,
-> but the *structure* below is the plan as it stood before that call, kept
-> because the reasoning is still useful. Read it as options considered, not as
-> a description of the product.
+## The model
 
-## The principle
+**Free 7-day trial, then $49 once. Everything included.**
 
-Local features you **own**; cloud features you **rent**. That's the whole model, and it maps to both our cost structure and the ownership pledge (*"a one-time purchase will always be an option; subscriptions only pay for optional cloud"*). Never violate it — it's why subscription-refugees trust us.
+No free tier, no Pro/Free feature gate, no watermark, no subscription. The
+trial is the full app — the same build a buyer runs — and it ends by asking for
+$49, not by taking features away.
 
-## The three tiers
+The trial is server-backed (an anonymous machine ID, never your footage), so it
+can't be reset by reinstalling. Your licence keeps working offline for **30
+days** after its last check; the trial gets 3.
 
-### Free — growth-first, genuinely complete
-The goal: a solo creator can make a great talking-head video and **publish it, watermark-free**, without paying. This is our funnel and our CapCut counter-punch. It's affordable to give away because editing runs **on-device** — near-zero marginal cost per free user.
+### The principle it comes from
 
-Includes:
-- Full **transcript editing** + click-to-cut (the hook — always free)
-- **Smart cuts** (filler words + silences)
-- **Auto-captions** from the transcript
-- Core timeline editing: trim, blade, up to **2 video + 1 audio track**
-- Core **Looks** + basic color (brightness/contrast/saturation/temp)
-- Transitions, titles/lower-thirds
-- **Export: H.264 up to 1080p**, no watermark
-- Save/open projects, auto-save
+Local features you **own**; cloud features you **rent**. That maps to the cost
+structure — editing runs on-device, at near-zero marginal cost per user — and to
+the ownership pledge: *a one-time purchase will always be an option;
+subscriptions only ever pay for optional cloud.* Never violate it. It is why
+subscription-refugees trust us, and it is the whole argument against Descript.
 
-### Pro — $49 one-time (own it forever)
-Everything in Free, plus the pro polish, delivery formats, and power tools:
-- Full **grading**: all LUTs (.cube), green-screen / chroma key, all stylize effects (grain, sharpen, vignette, hue)
-- **Keyframes** (animate any parameter)
-- **Unlimited tracks**
-- **4K export**
-- **ProRes master** + all export formats
-- Speed/retime, motion presets
-- (Provisional — beta tells us which of these creators expect free vs. pay for.)
+### Ownership terms
 
-**Ownership terms:** you own the current major version forever. Big new versions (v2, v3) are **optional paid upgrades** (~50% off for existing owners). This is how a one-time model stays sustainable without ever forcing a subscription (the Affinity / Sublime model).
+You own the current major version forever. Big new versions (v2, v3) would be
+**optional paid upgrades** (~50% off for existing owners) — the Affinity /
+Sublime model, which is how a one-time price stays sustainable without ever
+forcing a subscription.
 
-### Cloud / Teams — ~$8–12 per user / month (optional)
-The only recurring charge, because it's the only thing that costs us servers:
-- Hosted **multiplayer collaboration**
-- Cloud project **sync + backup**
-- **Team seats** / shared workspaces
+> Not yet said publicly anywhere. The README and the landing page promise
+> "$49 once — yours forever", which is true of the version someone buys but
+> does not mention paid major upgrades. Decide whether to state it before v2
+> exists, not after — announcing it later reads as a change of terms even when
+> it wasn't one.
 
-## Price anchoring (why $49 works)
+### AI usage
+
+Finding moments and cloud transcription are included, with generous fair use
+for everyday editing. On-device transcription is always unlimited and free,
+and with no connection the moment finder runs on-device too. Cloud AI is the
+only part with a real marginal cost, and it is metered per machine rather than
+sold as a tier.
+
+## Why $49
 
 | Competitor | Price | Model |
 |---|---|---|
@@ -56,24 +54,56 @@ The only recurring charge, because it's the only thing that costs us servers:
 | DaVinci Resolve Studio | $295 | One-time |
 | **Cutlass** | **$49** | **One-time — a third of a year of Descript, yours forever** |
 
-At $49 the anchor is no longer "cheaper than a year of Descript" — it's
-"cheaper than four months of it." That is a far easier sentence to say, and it
-puts Cutlass below the impulse-purchase line that $99 sits above.
+$49 is below the line where people deliberate. "Cheaper than four months of
+Descript, and you keep it" is a sentence a creator can repeat to a friend
+without doing arithmetic.
 
-## Launch tactics
+## Still undecided
 
-- **Founder's price: superseded, needs a decision.** This assumed ~$59 for first buyers against a $99 list price. The beta already sells at **$49**, which is below that — so either the launch discount goes away, or $49 *is* the founder's price and list rises afterwards. Don't run a "discount" that costs more than the current price. **Beta testers get it free, for life** — a thank-you and a base of advocates.
-- Frame it with honest urgency: *"Founder's price won't last."* No fake countdowns.
-- Regional / purchasing-power pricing and an education discount: consider post-launch, not day one.
+- **Founder's price.** The original plan was ~$59 for first buyers against a
+  $99 list. That is dead: the beta already sells at $49, so a $59 "discount"
+  would cost more than not having one. Either there is no launch discount, or
+  $49 *is* the founder's price and list rises afterwards. Pick one before the
+  store goes live, because the second option needs saying up front to be
+  honest.
+- **Regional / purchasing-power pricing and an education discount.**
+  Post-launch, not day one.
+- **Cloud / Teams**, if collaboration is ever finished: ~$8–12 per user/month
+  for hosted collaboration, cloud project sync and backup, and team seats. The
+  only recurring charge we would ever add, because it is the only thing that
+  costs us servers. **Collaboration is not in the build today** — this is a
+  future option, not an unshipped promise, and must not be sold as one.
 
-## Validate during beta (don't finalize blind)
+## What beta should tell us
 
-- Ask testers point-blank: **"What would you pay for this?"** and **"Which feature would you happily pay to unlock?"**
-- Watch which features they actually reach for — that's where the free/Pro line really belongs. Move a line or two based on signal (e.g., if everyone lives in the LUTs, that's clearly Pro; if captions are what makes them tell friends, keep it free).
-- Confirm the $49 anchor feels like a no-brainer, not a wince.
+- Ask testers point-blank: **"What would you pay for this?"** — and listen for
+  a wince at $49, which would mean the anchor is wrong rather than the pitch.
+- Watch which features they actually reach for. That no longer decides a
+  free/paid line, but it decides what the landing page leads with.
+- **Beta testers get it free, for life.** A thank-you, and a base of advocates
+  who were there first.
 
-## Implementation (later, not now)
+## Selling it
 
-- Sell through a **Merchant-of-Record** (Paddle or Lemon Squeezy), not raw Stripe — they handle global sales tax/VAT so we don't. License-key delivery for Pro unlock.
-- Requires the **legal entity** (same one needed for code signing) — start that early.
-- Free vs Pro is enforced by a license check gating the Pro features listed above; the app stays fully on-device either way.
+- **Merchant of Record: Lemon Squeezy**, not raw Stripe — they handle global
+  sales tax and VAT so we don't. Currently in **test mode, awaiting their
+  review**; going live means copying the products to Live Mode, pointing the
+  webhook at the licence server, and setting the five `CUTLASS_LS_*` variables
+  on Railway.
+- Licence keys are minted and checked by the licence server on Railway. The app
+  stays fully on-device either way — the server settles entitlement, never
+  touches footage.
+- **No legal entity needed to sell.** The old plan treated forming one as a
+  prerequisite. It isn't for either half: code signing goes through Azure's
+  individual tier (US/Canada, no LLC, no hardware token — see
+  `beta/CODE-SIGNING.md`), and Lemon Squeezy acts as Merchant of Record for
+  individuals too. Whether to form one later is a separate question, and not
+  one that blocks taking money.
+
+---
+
+<sub>Superseded 2026-09-16: this document previously described a three-tier
+Free / Pro / Cloud model with a feature gate — a free tier capped at 1080p,
+with grading, keyframes, unlimited tracks and 4K behind a $99 "Pro" unlock.
+None of it shipped. It is recorded here so the change is visible rather than
+silently rewritten.</sub>
