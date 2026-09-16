@@ -35,7 +35,6 @@ import {
   pickExportDir,
   getProject,
   hydrateMedia,
-  importMedia,
   inTauri,
   joinSession,
   moveClip,
@@ -60,7 +59,8 @@ import {
   openUrl,
   openCheckout,
   pauseAudio,
-  pickVideo,
+  pickVideos,
+  importMediaMany,
   playAudio,
   razorOut,
   redoEdit,
@@ -1284,13 +1284,36 @@ export default function App() {
 
   const doImport = useCallback(async () => {
     setError(null);
-    const path = await pickVideo();
-    if (!path) return;
-    setBusy(`Importing ${path.split(/[\\/]/).pop()}…`);
+    const paths = await pickVideos();
+    if (!paths.length) return;
+    const nameOf = (p: string) => p.split(/[\\/]/).pop() ?? p;
+    setBusy(
+      paths.length === 1 ? `Importing ${nameOf(paths[0])}…` : `Importing 0 of ${paths.length}…`
+    );
     try {
-      const res = await importMedia(path);
-      setMedia((m) => ({ ...m, [res.media.id]: res.media }));
+      // Reports each file as it lands, so a long import shows movement rather
+      // than one frozen message until the last one finishes.
+      const res = await importMediaMany(paths, (done, total, who) => {
+        setBusy(total === 1 ? `Importing ${who}…` : `Importing ${done} of ${total} — ${who}`);
+      });
+      setMedia((m) => {
+        const next = { ...m };
+        for (const item of res.media) next[item.id] = item;
+        return next;
+      });
       applyEdit(res.project);
+      // One unreadable file must not look like a failed import of everything,
+      // and must not pass silently either.
+      if (res.failed.length) {
+        const names = res.failed
+          .map((f) => f.name)
+          .slice(0, 3)
+          .join(", ");
+        const rest = res.failed.length > 3 ? ` and ${res.failed.length - 3} more` : "";
+        setError(
+          `Imported ${res.media.length} of ${paths.length}. Couldn't read ${names}${rest} — ${res.failed[0].why}`
+        );
+      }
       // No auto-transcribe on import anymore — "Find the best moments" fetches
       // the transcript on demand (cloud is fast enough that a head-start pass
       // would just waste CPU, or upload audio the user didn't ask to send yet).

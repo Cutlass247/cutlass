@@ -1169,6 +1169,7 @@ version = "0.1.4"
 dependencies = [
  "anyhow",
  "cpal",
+ "cutlass-core",
  "ffmpeg-the-third",
  "hound",
  "image",

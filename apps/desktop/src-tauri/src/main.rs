@@ -907,6 +907,83 @@ async fn checkout_links() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "license": lic, "credits": cred }))
 }
 
+/// How many files to import at once.
+///
+/// Import is mostly waiting on ffmpeg — decoding thumbnails, reading audio —
+/// so running several at once is close to free on wall-clock time. Not
+/// unbounded, though: each one holds an open decoder, and a 4K source costs
+/// real memory, so dropping twenty files should not start twenty decoders.
+const IMPORT_CONCURRENCY: usize = 4;
+
+/// Import several files, a few at a time, reporting each as it lands.
+///
+/// Sequentially this was the sum of every file's cost, with the window frozen
+/// on "Importing…" throughout and no sign of progress. The slow part is
+/// waiting on subprocesses, which is exactly what overlaps well.
+#[tauri::command]
+async fn import_media_many(
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use tauri::Emitter;
+    let total = paths.len();
+    let mut media_out: Vec<serde_json::Value> = Vec::new();
+    let mut failed: Vec<serde_json::Value> = Vec::new();
+    let mut done = 0usize;
+
+    for batch in paths.chunks(IMPORT_CONCURRENCY) {
+        let mut jobs = Vec::new();
+        for p in batch {
+            let p = p.clone();
+            jobs.push(tauri::async_runtime::spawn_blocking(move || {
+                (p.clone(), import_any(Path::new(&p)))
+            }));
+        }
+        for job in jobs {
+            let (path, result) = job.await.map_err(err_str)?;
+            done += 1;
+            let name = file_name_of(&path);
+            match result {
+                Ok(info) => {
+                    // Register each as it arrives rather than batching at the
+                    // end: a long import should put clips in the bin as they
+                    // finish, not all at once when the last one lands.
+                    if let Ok(v) = media_json(&info) {
+                        let _ = with_undo(&state, |project| {
+                            project
+                                .set_media(&info.id, &info.name, &info.path, info.duration_s)
+                                .map_err(err_str)
+                        });
+                        state.media.lock_ok().insert(info.id.clone(), info);
+                        media_out.push(v);
+                    }
+                }
+                // One unreadable file must not lose the other nineteen.
+                Err(e) => {
+                    eprintln!("import failed for {path}: {e:#}");
+                    failed.push(serde_json::json!({ "name": name, "why": format!("{e:#}") }));
+                }
+            }
+            let _ = app.emit(
+                "import-progress",
+                serde_json::json!({ "done": done, "total": total, "name": name }),
+            );
+        }
+    }
+
+    let snap = state.project.lock_ok().snapshot();
+    Ok(serde_json::json!({ "media": media_out, "failed": failed, "project": snap }))
+}
+
+/// Just the file name, for messages.
+fn file_name_of(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string())
+}
+
 /// Whether a collab relay is configured for this install.
 ///
 /// There is no hosted relay, so for everyone running Cutlass today this is
@@ -2393,6 +2470,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             import_media,
+            import_media_many,
             add_clip_from_media,
             remove_track,
             reveal_file,

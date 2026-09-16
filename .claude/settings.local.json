@@ -539,7 +539,14 @@
       "Bash(curl -s -o /dev/null -w \"nuget Microsoft.Trusted.Signing.Client -> HTTP %{http_code}\\\\n\" \"https://api.nuget.org/v3-flatcontainer/microsoft.trusted.signing.client/index.json\")",
       "Bash(curl -s \"https://api.nuget.org/v3-flatcontainer/microsoft.trusted.signing.client/index.json\")",
       "Bash(xargs -I{} echo \"  control chars: {}\")",
-      "Bash(xargs -I{} echo \"  credential-shaped lines in the diff: {}\")"
+      "Bash(xargs -I{} echo \"  credential-shaped lines in the diff: {}\")",
+      "Bash(bash scripts/release-manifest.sh --verify 0.1.4)",
+      "Bash(grep -oiE \"[^<>]{0,90}\\(smartscreen|unsigned|unknown publisher|code.sign\\)[^<>]{0,90}\")",
+      "Bash(grep -noE \"[^<>]{0,70}\\(trust|safe|verified\\)[^<>]{0,70}\" site/index.html)",
+      "Bash(sed -n '/^fn import_any/,/^}/p' apps/desktop/src-tauri/src/main.rs)",
+      "Bash(sed -n '/fn conform_if_vfr/,/^}/p' apps/desktop/src-tauri/src/main.rs)",
+      "Bash(sed -n '/pub fn conform_to_cfr/,/^}/p' crates/cutlass-core/src/media.rs)",
+      "Bash(sed -n '/pub fn probe_dimensions/,/^}/p' crates/cutlass-core/src/media.rs)"
     ]
   }
 }

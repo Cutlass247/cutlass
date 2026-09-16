@@ -155,16 +155,57 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   return invoke<T>(cmd, args);
 }
 
+const VIDEO_FILTERS = [
+  { name: "Video", extensions: ["mp4", "mov", "mkv", "webm", "avi", "m4v"] },
+];
+
 export async function pickVideo(): Promise<string | null> {
   if (!inTauri) return "mock://sample.mp4";
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const file = await open({
-    multiple: false,
-    filters: [
-      { name: "Video", extensions: ["mp4", "mov", "mkv", "webm", "avi", "m4v"] },
-    ],
-  });
+  const file = await open({ multiple: false, filters: VIDEO_FILTERS });
   return typeof file === "string" ? file : null;
+}
+
+/// Pick one or more files. Returns [] if the dialog was cancelled.
+export async function pickVideos(): Promise<string[]> {
+  if (!inTauri) return ["mock://sample.mp4"];
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ multiple: true, filters: VIDEO_FILTERS });
+  if (!picked) return [];
+  return Array.isArray(picked) ? picked : [picked];
+}
+
+export interface ImportManyResult {
+  media: MediaItem[];
+  /// Files that couldn't be read. One bad file must not lose the rest, so
+  /// these are reported rather than thrown.
+  failed: { name: string; why: string }[];
+  project: ProjectSnapshot;
+}
+
+/// Import several files, a few at a time. `onProgress` fires as each lands.
+export async function importMediaMany(
+  paths: string[],
+  onProgress?: (done: number, total: number, name: string) => void
+): Promise<ImportManyResult> {
+  if (!inTauri) {
+    const r = await mockImport(paths[0]);
+    return { media: [r.media], failed: [], project: r.project };
+  }
+  let un: (() => void) | undefined;
+  if (onProgress) {
+    const { listen } = await import("@tauri-apps/api/event");
+    const stop = await listen<{ done: number; total: number; name: string }>(
+      "import-progress",
+      (e) => onProgress(e.payload.done, e.payload.total, e.payload.name)
+    );
+    un = stop;
+  }
+  try {
+    return await invoke<ImportManyResult>("import_media_many", { paths });
+  } finally {
+    un?.();
+  }
 }
 
 export async function importMedia(path: string): Promise<ImportResult> {
