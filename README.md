@@ -48,7 +48,7 @@ The video editor you don't have to learn. Drop in a long video and **AI finds yo
 
 Every other editor wants a recurring piece of you — a monthly rental, a watermark, or a license to your work. OpusClip and Premiere are **subscriptions, forever**. Cutlass is **$49, one time** — and it's yours to keep.
 
-- **Pay once — $49, and it's yours.** No subscription, ever. Buy it and own it, right on your machine.
+- **Pay once — $49, and it's yours.** No subscription, ever. Buy it and own it, right on your machine. **Every update to the version you own is free.** If a big new version ever arrives, it'll be an *optional* paid upgrade at a discount for people who already own Cutlass — and the copy you bought keeps working exactly as it does today. Saying so now rather than the day it happens.
 - **AI included.** Finding moments and cloud transcription come with the app — generous fair use for everyday editing, and on-device transcription is always unlimited.
 - **Your video never leaves your machine.** The AI features send only your audio or transcript to process, then discard it — never your footage. **Private** mode keeps transcription on your machine too, so the only thing that ever leaves is the transcript, and only when you ask for AI moments.
 - **Your content is yours.** Cutlass claims no license, ever, to anything you make.

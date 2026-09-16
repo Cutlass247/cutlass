@@ -30,11 +30,19 @@ You own the current major version forever. Big new versions (v2, v3) would be
 Sublime model, which is how a one-time price stays sustainable without ever
 forcing a subscription.
 
-> Not yet said publicly anywhere. The README and the landing page promise
-> "$49 once — yours forever", which is true of the version someone buys but
-> does not mention paid major upgrades. Decide whether to state it before v2
-> exists, not after — announcing it later reads as a change of terms even when
-> it wasn't one.
+**Stated publicly as of 2026-09-16**, in the README's ownership section and in
+the pledge on the landing page: every update to the version you own is free, a
+big new version would be an optional discounted upgrade, and the copy you
+bought keeps working either way.
+
+Said before v2 exists, deliberately. The same sentence published the day a paid
+upgrade appears reads as a change of terms, however true it was all along —
+and the people most likely to notice are exactly the subscription-refugees this
+whole model is aimed at.
+
+The **~50% owner discount** is still internal. The public copy commits to "a
+discount" without a number, which is the honest position while the number is
+not actually decided. Pin it before v2 is announced, not during.
 
 ### AI usage
 
