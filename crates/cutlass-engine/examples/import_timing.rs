@@ -58,6 +58,24 @@ fn main() -> anyhow::Result<()> {
         let _ = cutlass_core::media::waveform(path);
         let wave = secs(t);
 
+        let import = secs(all);
+
+        // The conform is the expensive part, and the whole reason import used
+        // to stall on screen recordings. Timed separately because it now runs
+        // in the background: this is the wait the user no longer sits through.
+        let conform = if vfr {
+            let dir = cutlass_core::media::cache_dir(path).ok();
+            if let Some(d) = &dir {
+                let _ = std::fs::remove_file(d.join("cfr30.mp4"));
+                let _ = std::fs::remove_file(d.join("cfr60.mp4"));
+            }
+            let t = Instant::now();
+            let _ = cutlass_core::media::conform_to_cfr(path, 30, 12_000_000);
+            Some(secs(t))
+        } else {
+            None
+        };
+
         println!(
             "{:<26} {:>6.1}s {:>8} {:>8.2}s {:>8.2}s {:>8.2}s {:>8.2}s",
             path.file_name().unwrap_or_default().to_string_lossy(),
@@ -66,12 +84,21 @@ fn main() -> anyhow::Result<()> {
             probe,
             thumbs,
             wave,
-            secs(all)
+            import
         );
+        if let Some(c) = conform {
+            println!(
+                "{:<26} {:>52}  conform {:.2}s  ({:.0}% of what the old import waited for)",
+                "",
+                "",
+                c,
+                100.0 * c / (c + import)
+            );
+        }
     }
 
     println!();
-    println!("A VFR file additionally re-encodes end to end before any of this,");
-    println!("which is not measured here — run it through the app to see that cost.");
+    println!("The conform now runs in the background, so the figure in TOTAL is");
+    println!("what the user waits for. It used to be TOTAL + conform.");
     Ok(())
 }

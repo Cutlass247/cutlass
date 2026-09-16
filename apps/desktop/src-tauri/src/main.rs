@@ -67,6 +67,14 @@ struct AppState {
     /// a .cutlass path the app was launched with (double-clicked file),
     /// consumed once by the frontend on mount via `take_startup_file`
     startup_file: Mutex<Option<String>>,
+    /// One lock per source file being conformed from VFR to CFR.
+    ///
+    /// The conform is slow, cached on disk, and now runs in the background —
+    /// so an export can arrive while one is still going. Whoever needs the
+    /// conformed copy takes this lock, which means the export waits for the
+    /// background job rather than starting a second transcode of the same
+    /// file over the same temp name.
+    conform_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Pull the first `.cutlass` path out of a launch argv (skips the exe).
@@ -296,18 +304,30 @@ fn conform_if_vfr(path: &Path) -> Option<PathBuf> {
 }
 
 /// Engine first; ffmpeg-CLI fallback for containers libav chokes on.
+/// Read a file into the media pool, WITHOUT conforming it first.
+///
+/// The VFR conform re-encodes the whole file, which for a screen recording or
+/// phone video is the entire reason import felt slow — the window sat frozen
+/// through a full transcode before a clip ever appeared. That work now happens
+/// in the background (see `spawn_conform`), so this returns as soon as the
+/// thumbnails and waveform are ready.
+///
+/// Thumbnails come from the original VFR file. Their timestamps can be
+/// fractionally off where the cadence is irregular, which is invisible in a
+/// scrub strip and worth it for an import that finishes.
 fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
-    let conformed = conform_if_vfr(path);
-    let working = conformed.as_deref().unwrap_or(path);
-    let mut info = import_with_engine(working).or_else(|e| {
+    // A conform done on a previous run is cached on disk; use it if it's
+    // already there, since it costs nothing and is strictly more correct.
+    let working = cached_conform(path);
+    let working_path = working.as_deref().unwrap_or(path);
+    let mut info = import_with_engine(working_path).or_else(|e| {
         eprintln!("engine import failed ({e:#}); falling back to ffmpeg CLI");
         media::ensure_ffmpeg()?;
-        media::import(working)
+        media::import(working_path)
     })?;
     // Keep the media's identity tied to the ORIGINAL file: the bin shows its
-    // real name and re-importing the same source stays idempotent. `path`
-    // (used for preview + export) points at the conformed CFR copy.
-    if conformed.is_some() {
+    // real name and re-importing the same source stays idempotent.
+    if working.is_some() {
         info.id = format!("m{:016x}", media::path_hash(path));
         info.name = path
             .file_name()
@@ -315,6 +335,32 @@ fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
             .unwrap_or_else(|| "clip".into());
     }
     Ok(info)
+}
+
+/// A conformed copy that already exists on disk, or None. Never does work.
+fn cached_conform(path: &Path) -> Option<std::path::PathBuf> {
+    if is_conform_output(path) {
+        return Some(path.to_path_buf()); // already the CFR copy
+    }
+    let dir = media::cache_dir(path).ok()?;
+    for fps in [30u32, 60] {
+        let p = dir.join(format!("cfr{fps}.mp4"));
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Is this path already a conform result? Named `cfr<fps>.mp4` by
+/// `conform_to_cfr`. Checked by name so an export doesn't reopen and re-probe
+/// every source just to rediscover it is already CFR.
+fn is_conform_output(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("cfr"))
+        .and_then(|r| r.strip_suffix(".mp4"))
+        .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Import a video: probe, build scrub proxy, register it in the media
@@ -325,8 +371,10 @@ fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
 #[tauri::command]
 async fn import_media(
     path: String,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    let src = std::path::PathBuf::from(&path);
     let info = tauri::async_runtime::spawn_blocking(move || import_any(Path::new(&path)))
         .await
         .map_err(err_str)?
@@ -340,7 +388,12 @@ async fn import_media(
             .set_media(&info.id, &info.name, &info.path, info.duration_s)
             .map_err(err_str)
     })?;
+    let id = info.id.clone();
     state.media.lock_ok().insert(info.id.clone(), info);
+    // A variable-frame-rate source still needs a CFR copy, but not before the
+    // clip appears. This finishes in the background and repoints the project
+    // at it; an export that arrives first waits on the same lock.
+    spawn_conform(app, id, src);
     Ok(json!({ "media": media_value, "project": snap }))
 }
 
@@ -907,6 +960,65 @@ async fn checkout_links() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "license": lic, "credits": cred }))
 }
 
+/// Make sure `src` has a CFR copy, doing the work if nobody has yet.
+///
+/// The single place a conform happens. Everything that needs the conformed
+/// file comes through here, so a background job and an export asking at the
+/// same moment cannot both start transcoding — the second waits on the lock
+/// and then finds the finished file.
+///
+/// Returns None when the source is already CFR, or when conforming failed and
+/// the original has to be used as-is.
+async fn ensure_conformed(
+    state: &AppState,
+    src: std::path::PathBuf,
+) -> Option<std::path::PathBuf> {
+    let key = src.to_string_lossy().to_string();
+    let lock = {
+        let mut locks = state.conform_locks.lock_ok();
+        locks.entry(key).or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(()))).clone()
+    };
+    let _held = lock.lock().await;
+    // Cheap re-check under the lock: whoever we queued behind may have done it.
+    if let Some(p) = cached_conform(&src) {
+        return Some(p);
+    }
+    tauri::async_runtime::spawn_blocking(move || conform_if_vfr(&src)).await.ok().flatten()
+}
+
+/// Conform a newly imported file in the background, then point the project at
+/// the CFR copy. The clip is already usable while this runs.
+fn spawn_conform(app: tauri::AppHandle, media_id: String, src: std::path::PathBuf) {
+    tauri::async_runtime::spawn(async move {
+        use tauri::{Emitter, Manager};
+        let state = app.state::<AppState>();
+        let Some(conformed) = ensure_conformed(&state, src.clone()).await else {
+            return; // already CFR, or it failed and the original stands
+        };
+        let path = conformed.to_string_lossy().to_string();
+
+        // Both have to move: playback reads state.media, export reads the
+        // project document. Leaving either behind would silently export the
+        // un-conformed file and reintroduce the A/V drift this exists to stop.
+        let (name, dur) = {
+            let mut pool = state.media.lock_ok();
+            match pool.get_mut(&media_id) {
+                Some(m) => {
+                    m.path = path.clone();
+                    (m.name.clone(), m.duration_s)
+                }
+                None => return, // media removed while we worked
+            }
+        };
+        {
+            let mut project = state.project.lock_ok();
+            let _ = project.set_media(&media_id, &name, &path, dur);
+        }
+        eprintln!("conformed in background: {}", conformed.display());
+        let _ = app.emit("media-conformed", serde_json::json!({ "id": media_id, "name": name }));
+    });
+}
+
 /// How many files to import at once.
 ///
 /// Import is mostly waiting on ffmpeg — decoding thumbnails, reading audio —
@@ -955,8 +1067,12 @@ async fn import_media_many(
                                 .set_media(&info.id, &info.name, &info.path, info.duration_s)
                                 .map_err(err_str)
                         });
+                        let id = info.id.clone();
                         state.media.lock_ok().insert(info.id.clone(), info);
                         media_out.push(v);
+                        // Conform after the clip is usable, not before it
+                        // appears. See `spawn_conform`.
+                        spawn_conform(app.clone(), id, std::path::PathBuf::from(&path));
                     }
                 }
                 // One unreadable file must not lose the other nineteen.
@@ -2077,6 +2193,33 @@ async fn export_project(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     use tauri::Emitter;
+
+    // Anything still converting must finish first. A VFR source exported
+    // before its CFR copy exists drifts out of sync — which is the whole
+    // reason the conform exists, and it would be invisible until someone
+    // watched the finished video. Waiting costs time; shipping the wrong
+    // file costs trust.
+    {
+        let pending: Vec<(String, String, f64, std::path::PathBuf)> = state
+            .project
+            .lock_ok()
+            .media_entries()
+            .into_iter()
+            .filter(|(_, _, p, _)| cached_conform(Path::new(p)).is_none())
+            .map(|(id, name, p, d)| (id, name, d, std::path::PathBuf::from(p)))
+            .collect();
+        for (id, name, dur, src) in pending {
+            let _ = app.emit("export-progress", json!({ "phase": "preparing", "name": name }));
+            if let Some(conformed) = ensure_conformed(&state, src).await {
+                let path = conformed.to_string_lossy().to_string();
+                if let Some(m) = state.media.lock_ok().get_mut(&id) {
+                    m.path = path.clone();
+                }
+                let _ = state.project.lock_ok().set_media(&id, &name, &path, dur);
+            }
+        }
+    }
+
     let (clips, overlays, titles) = {
         let mut project = state.project.lock_ok();
         let paths: HashMap<String, String> = project
@@ -2607,6 +2750,30 @@ mod tests {
         );
         #[cfg(not(feature = "owner"))]
         assert!(updates_enabled(), "the shipping build has to be reachable");
+    }
+
+    /// The VFR conform now runs in the background, so an export has to be able
+    /// to tell "already CFR" from "still converting" — cheaply, without
+    /// reopening every source. Getting this wrong in the permissive direction
+    /// exports a file that drifts out of sync, and nobody finds out until they
+    /// watch it.
+    #[test]
+    fn a_conform_result_is_recognised_without_touching_the_disk() {
+        for p in ["cfr30.mp4", "cfr60.mp4", "cfr24.mp4"] {
+            assert!(is_conform_output(Path::new(p)), "{p} is a conform output");
+        }
+        for p in [
+            "holiday.mp4",            // an ordinary source
+            "cfr.mp4",                // no fps
+            "cfr30.mov",              // wrong extension
+            "cfr30.partial.mp4",      // the half-written temp file
+            "my cfr30.mp4",           // merely contains the pattern
+            "cfr30x.mp4",             // trailing junk
+        ] {
+            assert!(!is_conform_output(Path::new(p)), "{p} is NOT a conform output");
+        }
+        // and it must work on a full path, not just a bare name
+        assert!(is_conform_output(Path::new(r"C:\Users\x\AppData\Local\Temp\cutlass-cache\ab\cfr30.mp4")));
     }
 
     /// Every mutex here must go through `lock_ok`, and this reads the file's
