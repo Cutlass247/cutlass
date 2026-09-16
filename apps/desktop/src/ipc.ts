@@ -781,6 +781,41 @@ export async function revealFile(path: string): Promise<void> {
   }
 }
 
+/// Collab relay trouble — a failed connect, or the session ending. The
+/// backend emitted these from the start and nothing listened, so a collab
+/// session that never connected simply did nothing visible.
+export async function onCollabError(cb: (why: string) => void): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<string>("collab-error", (e) => cb(e.payload));
+}
+
+/// Fires when a background frame-rate conversion finishes and the media now
+/// points at the converted copy. The UI decodes preview frames from its own
+/// copy of the path, so it has to follow.
+export async function onMediaConformed(
+  cb: (id: string, path: string) => void
+): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ id: string; path: string }>("media-conformed", (e) =>
+    cb(e.payload.id, e.payload.path)
+  );
+}
+
+/// Fires while export waits for variable-frame-rate footage to finish
+/// converting. `name` is null once that's done and real progress resumes.
+///
+/// Deliberately separate from onExportProgress, whose payload is a bare
+/// number fed straight into the progress bar's arithmetic.
+export async function onExportPreparing(
+  cb: (name: string | null) => void
+): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ name: string | null }>("export-preparing", (e) => cb(e.payload.name));
+}
+
 export async function onExportProgress(
   cb: (progress: number) => void
 ): Promise<() => void> {

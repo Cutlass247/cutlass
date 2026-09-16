@@ -546,7 +546,8 @@
       "Bash(sed -n '/^fn import_any/,/^}/p' apps/desktop/src-tauri/src/main.rs)",
       "Bash(sed -n '/fn conform_if_vfr/,/^}/p' apps/desktop/src-tauri/src/main.rs)",
       "Bash(sed -n '/pub fn conform_to_cfr/,/^}/p' crates/cutlass-core/src/media.rs)",
-      "Bash(sed -n '/pub fn probe_dimensions/,/^}/p' crates/cutlass-core/src/media.rs)"
+      "Bash(sed -n '/pub fn probe_dimensions/,/^}/p' crates/cutlass-core/src/media.rs)",
+      "Bash(awk -F: '$1>940 && $1<1100')"
     ]
   }
 }

@@ -1015,7 +1015,13 @@ fn spawn_conform(app: tauri::AppHandle, media_id: String, src: std::path::PathBu
             let _ = project.set_media(&media_id, &name, &path, dur);
         }
         eprintln!("conformed in background: {}", conformed.display());
-        let _ = app.emit("media-conformed", serde_json::json!({ "id": media_id, "name": name }));
+        // The frontend holds its own copy of the path and decodes preview
+        // frames from it, so it has to move too — otherwise the monitor keeps
+        // reading the VFR original while the export uses the CFR copy.
+        let _ = app.emit(
+            "media-conformed",
+            serde_json::json!({ "id": media_id, "name": name, "path": path }),
+        );
     });
 }
 
@@ -2209,7 +2215,11 @@ async fn export_project(
             .map(|(id, name, p, d)| (id, name, d, std::path::PathBuf::from(p)))
             .collect();
         for (id, name, dur, src) in pending {
-            let _ = app.emit("export-progress", json!({ "phase": "preparing", "name": name }));
+            // Its own event, NOT export-progress — that one carries a bare
+            // number straight into the progress bar's arithmetic, so an object
+            // there would set the bar to NaN and trip the "encoder restarted"
+            // counter at the same time.
+            let _ = app.emit("export-preparing", json!({ "name": name }));
             if let Some(conformed) = ensure_conformed(&state, src).await {
                 let path = conformed.to_string_lossy().to_string();
                 if let Some(m) = state.media.lock_ok().get_mut(&id) {
@@ -2218,6 +2228,8 @@ async fn export_project(
                 let _ = state.project.lock_ok().set_media(&id, &name, &path, dur);
             }
         }
+        // Clear it so the dialog goes back to showing real progress.
+        let _ = app.emit("export-preparing", json!({ "name": serde_json::Value::Null }));
     }
 
     let (clips, overlays, titles) = {
@@ -2584,6 +2596,20 @@ fn main() {
         .manage(state)
         .setup(|app| {
             use tauri::{Emitter, Manager};
+
+            // Reclaim cached proxies and frame-rate conversions nothing has
+            // touched in a fortnight. Each import leaves a folder in temp, and
+            // a conformed copy is a whole re-encoded video — none of it was
+            // ever removed, so it grew without limit. Off the startup path so
+            // a large cache never delays the window appearing.
+            tauri::async_runtime::spawn_blocking(|| {
+                let freed = media::sweep_media_cache(std::time::Duration::from_secs(
+                    media::CACHE_KEEP_DAYS * 86_400,
+                ));
+                if freed > 0 {
+                    eprintln!("reclaimed {} MB of stale media cache", freed / 1_048_576);
+                }
+            });
             // Intercept the window close so unsaved work isn't lost: always
             // prevent the OS close and hand it to the frontend, which quits
             // immediately when clean or shows a save prompt when dirty (then

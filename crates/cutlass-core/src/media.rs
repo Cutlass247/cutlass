@@ -345,6 +345,70 @@ pub fn path_hash(path: &Path) -> u64 {
     h.finish()
 }
 
+/// How long an untouched cache entry is kept, in days.
+///
+/// Long enough that a project you return to next week still opens instantly,
+/// short enough that footage you imported once and forgot doesn't sit in temp
+/// forever.
+pub const CACHE_KEEP_DAYS: u64 = 14;
+
+/// Delete cached proxies and frame-rate conversions nothing has touched
+/// recently.
+///
+/// Every import leaves a folder here: scrub thumbnails, and for
+/// variable-frame-rate sources a full re-encoded copy of the video. None of it
+/// was ever removed. On the machine this was written on, ordinary use had
+/// already left 267 MB in temp; someone importing screen recordings all week
+/// would accumulate that per file, and nothing would ever give it back.
+///
+/// Safe to lose: anything deleted is rebuilt on next use, at the cost of
+/// re-importing that one file. Best effort throughout — this runs at startup
+/// and must never be the reason the app fails to open.
+pub fn sweep_media_cache(max_age: std::time::Duration) -> u64 {
+    sweep_cache_in(&std::env::temp_dir().join("cutlass-cache"), max_age)
+}
+
+/// The body of [`sweep_media_cache`], with the root exposed so a test can
+/// exercise it without deleting the real cache off the running machine.
+pub fn sweep_cache_in(root: &Path, max_age: std::time::Duration) -> u64 {
+    let Ok(entries) = std::fs::read_dir(root) else { return 0 };
+    let now = std::time::SystemTime::now();
+    let mut freed = 0u64;
+
+    for e in entries.flatten() {
+        if !e.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let dir = e.path();
+        // Age the folder by its NEWEST file: touching any part of a cache
+        // entry means the media is still in use, and dropping it because one
+        // thumbnail happens to be old would throw away the conform too.
+        let newest = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|f| f.metadata().ok())
+            .filter_map(|m| m.modified().ok())
+            .max();
+        let Some(newest) = newest else { continue };
+        let stale = now.duration_since(newest).is_ok_and(|age| age > max_age);
+        if !stale {
+            continue;
+        }
+        let size: u64 = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|f| f.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+        if std::fs::remove_dir_all(&dir).is_ok() {
+            freed += size;
+        }
+    }
+    freed
+}
+
 pub fn cache_dir(path: &Path) -> anyhow::Result<PathBuf> {
     let dir = std::env::temp_dir()
         .join("cutlass-cache")
@@ -366,6 +430,51 @@ pub fn read_frames(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Import leaves a cache folder per file — thumbnails, and for a
+    /// variable-frame-rate source a whole re-encoded copy of the video.
+    /// Nothing removed any of it, so temp grew without bound.
+    ///
+    /// The sweep must take stale entries and leave everything else alone: a
+    /// folder deleted while its project is open costs a re-import, and one
+    /// left behind costs disk forever.
+    #[test]
+    fn stale_cache_is_swept_and_live_cache_is_not() {
+        use std::time::Duration;
+        // A private root: sweeping the machine's real cache from a test would
+        // delete a developer's proxies mid-session.
+        let root = std::env::temp_dir().join(format!("cutlass_sweeptest_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        let stale = root.join("aaaa");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("cfr30.mp4"), vec![0u8; 4096]).unwrap();
+
+        let freed = sweep_cache_in(&root, Duration::ZERO);
+        assert!(!stale.exists(), "a stale entry should be gone");
+        assert!(freed >= 4096, "it should report what it reclaimed, got {freed}");
+
+        // With the real threshold, a just-written entry survives — deleting
+        // one while its project is open costs a re-import.
+        let live = root.join("bbbb");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("f00001.jpg"), b"x").unwrap();
+        assert_eq!(sweep_cache_in(&root, Duration::from_secs(CACHE_KEEP_DAYS * 86_400)), 0);
+        assert!(live.exists(), "a cache entry in use must not be swept");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Runs at startup, so a missing or unreadable cache must not stop the
+    /// app opening.
+    #[test]
+    fn sweeping_somewhere_that_does_not_exist_is_not_fatal() {
+        assert_eq!(
+            sweep_cache_in(Path::new("Z:/no/such/cache"), std::time::Duration::ZERO),
+            0
+        );
+    }
 
     /// The "remove music" cache must only be used when it fully covers the span
     /// a clip asks for, and must report where its first sample sits in source

@@ -39,6 +39,9 @@ import {
   joinSession,
   moveClip,
   onExportProgress,
+  onExportPreparing,
+  onMediaConformed,
+  onCollabError,
   onTrackProgress,
   onTranscribeProgress,
   removeMusic,
@@ -227,6 +230,9 @@ export default function App() {
         movedAt: number;
         /** bumped when ffmpeg restarts from zero (an encoder fallback or retry) */
         attempt: number;
+        /** set while waiting for VFR footage to finish converting; without
+         *  this the bar sits at 0% and looks hung */
+        preparing?: string | null;
       }
     | { phase: "done"; path: string; encoder: string }
     | { phase: "error"; message: string }
@@ -526,6 +532,23 @@ export default function App() {
         };
       })
     );
+    // Export can't start until any variable-frame-rate source has its CFR
+    // copy. That wait is real and can be long, so say so rather than showing
+    // a motionless 0%.
+    const unPrep = onExportPreparing((name) =>
+      setExportModal((m) => (m && m.phase === "running" ? { ...m, preparing: name } : m))
+    );
+    // A background frame-rate conversion finished: follow it, or the monitor
+    // keeps decoding the original while the export uses the converted copy.
+    const unConf = onMediaConformed((id, path) =>
+      setMedia((m) => (m[id] ? { ...m, [id]: { ...m[id], path } } : m))
+    );
+    // Collab failures were emitted and never heard, so a session that failed
+    // to connect looked identical to one that worked.
+    const unCollab = onCollabError((why) => {
+      setRoom(null);
+      setError(`Collab: ${why}`);
+    });
     const unTrack = onTrackProgress((p) => setTrackProgress(p));
     const unTx = onTranscribeProgress((media, pct) =>
       setTranscribeProgress((prev) => ({ ...prev, [media]: pct }))
@@ -549,6 +572,9 @@ export default function App() {
     return () => {
       un.then((f) => f());
       unExport.then((f) => f());
+      unPrep.then((f) => f());
+      unConf.then((f) => f());
+      unCollab.then((f) => f());
       unTrack.then((f) => f());
       unTx.then((f) => f());
       unFrame.then((f) => f());
@@ -2851,6 +2877,13 @@ export default function App() {
                   {Math.round(exportModal.progress * 100)}%
                   <span className="progress-eta">{exportEta}</span>
                 </div>
+                {exportModal.preparing && (
+                  <div className="progress-note">
+                    Converting “{exportModal.preparing}” first — it was recorded at a
+                    variable frame rate, which has to be evened out or the finished video
+                    drifts out of sync. This happens once per file.
+                  </div>
+                )}
                 {exportModal.attempt > 1 && (
                   <div className="progress-note">
                     The render hit a problem and stepped back to retry
