@@ -110,7 +110,11 @@ export function ClipFormat(p: {
         </div>
       )}
 
-      {/* speed vs privacy: cloud GPU (fast) or on-device (nothing leaves) */}
+      {/* Speed vs privacy: cloud GPU (fast) or on-device (private). Neither
+          ever sends video. Note the hint below does NOT promise that nothing
+          leaves in Private — Find the best moments sends the transcript in
+          both modes, and the mode picker is exactly where someone decides
+          they are safe offline. */}
       <div className="cf-row">
         <span className="cf-lbl">Transcribe</span>
         <Segmented
@@ -125,7 +129,7 @@ export function ClipFormat(p: {
       <div className="cf-split-hint" style={{ marginTop: -2 }}>
         {p.transcribeMode === "fast"
           ? "⚡ Cloud GPU — seconds, even for long videos. Audio (not your video) is sent to transcribe, then discarded."
-          : "🔒 On-device — nothing leaves your machine. Slower on long videos."}
+          : "🔒 On-device — your audio never leaves. Slower on long videos. Finding the best moments still sends the transcript."}
       </div>
 
       {/* captions are opt-in — never burned on automatically */}

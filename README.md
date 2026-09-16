@@ -16,7 +16,7 @@ The video editor you don't have to learn. Drop in a long video and **AI finds yo
 
 ### 🤖 Find your best moments — automatically
 - **✨ Find the best moments.** Drop in a long recording and Cutlass reads the whole thing, then pulls out the funniest, most exciting, and most pivotal moments — and turns each one into a captioned vertical clip, ready to post. Real comprehension, not keyword-guessing.
-- **Fast, or fully private.** *Fast* transcribes on cloud GPUs in seconds — even for hour-long videos. *Private* runs entirely on-device so nothing ever leaves your machine (always unlimited and free).
+- **Fast, or private.** *Fast* transcribes on cloud GPUs in seconds — even for hour-long videos. *Private* transcribes entirely on your own machine, always unlimited and free. Your video stays put either way; only finding the best moments sends the transcript.
 - **Captions, your call.** One toggle burns captions onto every clip, timed to the speech — off by default, never applied automatically.
 
 ### 📲 Make clips for social
@@ -50,7 +50,7 @@ Every other editor wants a recurring piece of you — a monthly rental, a waterm
 
 - **Pay once — $49, and it's yours.** No subscription, ever. Buy it and own it, right on your machine.
 - **AI included.** Finding moments and cloud transcription come with the app — generous fair use for everyday editing, and on-device transcription is always unlimited.
-- **Your video never leaves your machine.** The AI features send only your audio or transcript to process, then discard it — never your footage. Prefer zero cloud? **Private** mode does it all on-device.
+- **Your video never leaves your machine.** The AI features send only your audio or transcript to process, then discard it — never your footage. **Private** mode keeps transcription on your machine too, so the only thing that ever leaves is the transcript, and only when you ask for AI moments.
 - **Your content is yours.** Cutlass claims no license, ever, to anything you make.
 - **No account. No watermark. No lock-in.** Your project file is open and documented. The 7-day trial checks a license on first launch (an anonymous machine ID only — never your footage); after that, a one-time purchase keeps you editing.
 
@@ -72,7 +72,7 @@ Prefer to trim by transcript? Switch to **Studio**, click a word to jump there, 
 ## Good to know (beta)
 
 - **Windows 10/11, 64-bit.** macOS and Linux are on the roadmap.
-- **Fast transcription uses the cloud; Private stays on-device.** *Fast* sends only your audio (never your video) to transcribe and analyze, then discards it. Switch to *Private* for 100% on-device, no cloud at all.
+- **Fast transcription uses the cloud; Private stays on-device.** *Fast* sends only your audio (never your video) to transcribe, then discards it. Switch to *Private* and transcription runs on your own machine instead. **Find the best moments** sends the transcript in either mode — that one step needs a connection.
 - **Export at your source resolution.** Exporting 1080p footage at 4K just makes it softer and bigger — the app defaults to your footage's resolution and warns if you go higher.
 - **H.264 works on every machine.** ProRes (master) and WebM are also available. (H.265 is hidden for now — it depends on specific GPU support.)
 - **Moving to a new PC?** Enter your purchase code on the new machine and your licence moves with it. Renaming your PC doesn't affect it at all.

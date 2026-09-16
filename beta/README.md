@@ -23,7 +23,7 @@ A video editor where your transcript is your timeline — delete the words, and 
 ## The pledge
 
 - **Your content is yours.** Cutlass claims no license, ever, to anything you make.
-- **Your video never leaves your machine.** Editing is entirely local. The optional fast transcription sends only your audio, then discards it — choose **Private** and nothing leaves at all, airplane mode included.
+- **Your video never leaves your machine.** Editing, grading and export are entirely local. The optional fast transcription sends only your audio, then discards it — choose **Private** and transcription runs on your machine instead. The one thing that leaves in either mode is the transcript, and only when you ask the AI to find the best moments.
 - **No watermarks. No subscription required. No lock-in.** Your project file is open and documented.
 
 ## Install

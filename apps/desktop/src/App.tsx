@@ -299,7 +299,10 @@ export default function App() {
   // true while the AI is analyzing the transcript for standout moments
   const [aiFinding, setAiFinding] = useState(false);
   // how the Create tab transcribes: "fast" = cloud GPU (audio leaves machine),
-  // "private" = on-device whisper (nothing leaves, slower). Persisted.
+  // "private" = on-device whisper (slower, nothing leaves for this step).
+  // Neither mode makes the app offline-capable — Find the best moments sends
+  // the transcript to the server either way, so don't describe Private as
+  // "nothing leaves" anywhere a user can read it. Persisted.
   const [transcribeMode, setTranscribeMode] = useState<"fast" | "private">(
     () => (localStorage.getItem("cutlass-stt-mode") as "fast" | "private") || "fast"
   );

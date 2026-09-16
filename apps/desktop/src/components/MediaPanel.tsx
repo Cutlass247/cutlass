@@ -227,7 +227,7 @@ export function MediaPanel(p: {
           </div>
           {p.media.length > 0 && (
             <div className="cf-row" style={{ padding: "0 2px 6px" }}>
-              <span className="cf-lbl" title="Fast = cloud GPU (seconds); Private = on-device (nothing leaves)">
+              <span className="cf-lbl" title="Fast = cloud GPU (seconds); Private = on-device. Neither sends your video; finding the best moments sends the transcript either way.">
                 Transcribe
               </span>
               <Segmented
