@@ -46,8 +46,17 @@ controversy factually with a link.
 
 - **"Another subscription?"** Free beta; at launch there will always be a
   one-time-purchase option. Subscriptions only pay for optional cloud.
-- **"Is my footage uploaded for AI?"** No. Transcription is whisper.cpp
-  running locally. Airplane mode works.
+- **"Is my footage uploaded for AI?"** Your video never leaves the machine
+  — no mode uploads it, ever. **Private** transcribes on-device with
+  whisper.cpp and needs no network at all. **Fast** sends the audio track
+  to cloud GPUs; our server holds it in memory, never writes it to disk,
+  and drops it once the words come back. **Find the best moments** sends
+  the transcript — in both modes. Editing, grading and export never touch
+  a server.
+  - Don't say "airplane mode works" unqualified. It is true of Private
+    transcription and of everything in the editor, and false the moment
+    someone clicks Find the best moments, which needs the network in
+    both modes. Overclaiming here is the one that would actually cost us.
 - **"Premiere does more."** Yes — and it should, after 30 years. Cutlass
   does the 80% that talking-head creators do daily, 10× faster: transcript
   editing, smart cuts, one-click Looks and LUT grading, chroma key,
