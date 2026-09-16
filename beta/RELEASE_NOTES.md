@@ -32,6 +32,7 @@ Your **video** has never left your machine and still never does — that part wa
 
 ## Fixed
 
+- **Cancelling an export left a folder behind.** Stop an export and a `.cutlass_export_…` folder stayed in the folder you'd picked to save your video to, holding part of a half-rendered file. Nothing cleared it until some later export found it hours old. Cancelling now tidies up after itself properly.
 - The Transcribe hint in Create and the tooltip in Studio both promised that nothing leaves your machine in Private mode. They now say what actually happens.
 
 ## Known limits
