@@ -44,7 +44,12 @@ fetch_live() {
 }
 
 if [ "${1:-}" = "--verify" ]; then
-  fetch_live | strip_stamp > "$tmp/live.html"
+  if ! fetch_live > "$tmp/raw.html"; then
+    echo "UNREACHABLE  $URL did not answer" >&2
+    echo "  If the site was just recreated, Pages takes a few minutes to build." >&2
+    exit 1
+  fi
+  strip_stamp < "$tmp/raw.html" > "$tmp/live.html"
   strip_stamp < "$SRC" > "$tmp/src.html"
   if diff -q "$tmp/live.html" "$tmp/src.html" >/dev/null; then
     echo "OK  $URL matches site/index.html"
@@ -67,25 +72,42 @@ git -C "$ROOT" diff --quiet -- site/index.html || rev="${rev}-dirty"
 stamp="updated $(date -u '+%Y-%m-%d %H:%M UTC') · $rev"
 sed "s|__BUILD_STAMP__|$stamp|g" "$SRC" > "$tmp/index.html"
 
-# Skip a no-op push. Publishing an identical page would still make a commit,
-# and a history of empty commits hides the ones that changed something.
-if fetch_live | strip_stamp > "$tmp/live.html" 2>/dev/null; then
-  if diff -q "$tmp/live.html" <(strip_stamp < "$SRC") >/dev/null; then
-    echo "unchanged — $URL already serves this page"
-    exit 0
+# Look the remote file up once. It decides two things: whether this is a
+# create or an update, and whether comparing against the live page means
+# anything at all — a CDN can still be serving a page for a repo that no
+# longer contains one, and trusting it then would skip the very push that
+# matters.
+if remote_sha="$(gh api "repos/$REPO/contents/index.html" --jq .sha 2>/dev/null)"; then
+  # Skip a no-op push. Publishing an identical page would still make a
+  # commit, and a history of empty commits hides the ones that changed
+  # something.
+  if fetch_live | strip_stamp > "$tmp/live.html" 2>/dev/null; then
+    if diff -q "$tmp/live.html" <(strip_stamp < "$SRC") >/dev/null; then
+      echo "unchanged — $URL already serves this page"
+      exit 0
+    fi
   fi
+else
+  remote_sha=""
+  echo "no index.html in $REPO yet — creating it"
 fi
 
-sha="$(gh api "repos/$REPO/contents/index.html" --jq .sha)"
 base64 -w0 "$tmp/index.html" | tr -d '\n' > "$tmp/content.b64"
 
-# --input-style field-from-file, not an argument: the page is ~23 KB, which
+# Field-from-file rather than an argument: the page is ~23 KB, which
 # base64-encodes to more than Windows allows on a command line.
+args=(-F message="Publish landing page from cutlass@$rev"
+      -F content=@"$tmp/content.b64")
+
+# sha names the blob being replaced, and is left out when there is nothing
+# to replace — creating and updating share one endpoint, and a sha for a
+# file that does not exist is a 422.
+if [ -n "$remote_sha" ]; then
+  args+=(-F sha="$remote_sha")
+fi
+
 commit="$(gh api --method PUT "repos/$REPO/contents/index.html" \
-  -F message="Publish landing page from cutlass@$rev" \
-  -F content=@"$tmp/content.b64" \
-  -F sha="$sha" \
-  --jq '.commit.sha')"
+  "${args[@]}" --jq '.commit.sha')"
 
 echo "pushed ${commit:0:7} to $REPO"
 echo "$stamp"
