@@ -6,7 +6,7 @@
 
 The video editor you don't have to learn. Drop in a long video and **AI finds your best moments** — captioned, vertical, ready to post — or edit by deleting words, and the video cuts itself. Everything OpusClip does, in an editor you own outright. Your video never leaves your machine.
 
-### [⬇ Download for Windows](../../releases/latest) · v0.1.4 · Free 7-day trial, then $49 once — yours forever
+### [⬇ Download for Windows](../../releases/latest) · v0.1.5 · Free 7-day trial, then $49 once — yours forever
 
 </div>
 
@@ -36,7 +36,7 @@ The video editor you don't have to learn. Drop in a long video and **AI finds yo
 - **Grade in one click.** One-click Looks (Cinematic, Warm, Noir, and more) preview live on your footage. Drop in a `.cube` LUT, pull green screen, punch in, or dial color by hand — grade several clips at once.
 - **Make it sound finished.** One switch on export levels the volume, ducks music under your voice, and matches the loudness every platform expects. The difference between a video that sounds homemade and one that doesn't.
 - **Fix out-of-sync audio.** Slip a clip's audio earlier or later to line it up with the picture when a recording came in a touch off.
-- Transitions, titles and lower-thirds, keyframe any effect, speed/retime, and **live multiplayer** timelines in Studio mode.
+- Transitions, titles and lower-thirds, keyframe any effect, and speed/retime in Studio mode.
 - **Exports that finish.** Hour-long timelines with hundreds of cuts render without stalling, and the dialog shows elapsed time and an estimate so you can tell a slow render from a stuck one.
 - **Work you can't lose.** Auto-save writes atomically and keeps a backup beside every project, so a crash or an unplugged drive mid-save can't take your edit with it.
 
@@ -56,7 +56,7 @@ Every other editor wants a recurring piece of you — a monthly rental, a waterm
 
 ## Install
 
-1. Download **Cutlass_0.1.4_x64-setup.exe** from the [latest release](../../releases/latest).
+1. Download **Cutlass_0.1.5_x64-setup.exe** from the [latest release](../../releases/latest).
 2. Run it. Cutlass is code-signed, so Windows shows the publisher as **Isaiah Aniemeka** — you can check under Properties → Digital Signatures. SmartScreen may still warn on a new release while its reputation builds; if it does, click **More info → Run anyway**.
 3. Launch **Cutlass** from the Start menu. On first run you'll start your 7-day free trial (needs internet once to begin).
 

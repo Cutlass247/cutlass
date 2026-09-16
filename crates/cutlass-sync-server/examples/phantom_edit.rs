@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     let proj = Arc::new(Mutex::new(Project::new("Phantom")));
     let mut sync = automerge::sync::State::new();
 
-    let mut send_all = |p: &Arc<Mutex<Project>>, sync: &mut automerge::sync::State| {
+    let send_all = |p: &Arc<Mutex<Project>>, sync: &mut automerge::sync::State| {
         let mut out = Vec::new();
         let mut p = p.lock().unwrap();
         while let Some(m) = p.generate_sync_message(sync) {

@@ -1,4 +1,4 @@
-# Cutlass 0.1.4 — Windows can see who made it
+# Cutlass 0.1.5 — imports that don't make you wait
 
 **Cut sharper. Own everything.**
 
@@ -6,26 +6,38 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.1.4_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.1.5_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Already on 0.1.2 or later? You don't need this page. Cutlass will offer the update itself.
 
+Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may still warn while a new release builds reputation — **More info → Run anyway**.
+
 ## What's new
 
-**Cutlass is now code-signed.** Every previous build was unsigned, so Windows called it software from an *"unknown publisher"* — no name, no way to tell where it came from. This one carries a verified signature, and Windows now shows it as published by **Isaiah Aniemeka**.
+### Import several files at once
 
-You can check it yourself: right-click the installer → **Properties** → **Digital Signatures**.
+The Import button now takes as many files as you like, and brings in four at a time instead of one after another. Clips appear in the bin as they finish rather than all at the end, and if one file can't be read you're told which — the rest still import.
 
-**Being honest about what this doesn't fix yet:** Windows SmartScreen may still warn on first download. Signing identifies the publisher; the warning goes away once enough people have installed a build signed with the same identity, and that reputation has to accumulate. Microsoft removed the option to buy your way past it in 2024. So the warning fades over the next few releases rather than disappearing today — but from now on it says who made it instead of nobody knows.
+### Screen recordings and phone video import straight away
 
-If you do see it: **More info → Run anyway**.
+Footage recorded at a variable frame rate — OBS captures, screen recordings, most phone video — has to be evened out before it can be cut, or the audio drifts away from the picture. Cutlass used to do that conversion **before showing you the clip**, so importing a long screen recording meant staring at a frozen window with no idea what it was doing.
 
-Nothing else changed. Everything from **0.1.3** and **0.1.2** — the audio fix and its strength slider, automatic updates, the crash recovery screen — is here too.
+The clip now appears immediately and the conversion happens behind it. On a test file that's two thirds of the wait gone. If you export before it's finished, Cutlass waits and tells you why rather than giving you a video that drifts.
+
+### It cleans up after itself
+
+Every import left behind cached thumbnails — and for converted footage, a whole second copy of the video — and nothing ever deleted any of it. On the machine this was built on, ordinary use had already left 267 MB sitting in the temp folder. Cutlass now clears anything it hasn't touched in two weeks.
+
+## Fixed
+
+- Failed collaboration connections said nothing at all; they now tell you what went wrong.
+- The export progress bar could be fed a bad value while preparing footage.
+- Documentation no longer advertises collaboration, which isn't available in this build.
 
 ## Known limits
 
 - Windows only.
-- SmartScreen reputation is still building — see above.
+- SmartScreen reputation is still building.
 - 4K exports are slow by nature. Export at 1080p for long videos.
 - Collaboration isn't available in this build.
 

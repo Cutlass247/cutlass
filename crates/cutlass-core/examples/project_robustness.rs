@@ -31,7 +31,7 @@ fn main() {
     for pct in [90, 50, 10] {
         let cut = bytes.len() * pct / 100;
         match Project::load(&bytes[..cut]) {
-            Ok(mut q) => println!("  truncated to {pct:>3}%: loaded, {} clips", q.clips_state().len()),
+            Ok(q) => println!("  truncated to {pct:>3}%: loaded, {} clips", q.clips_state().len()),
             Err(e) => println!(
                 "  truncated to {pct:>3}%: LOST -- {}",
                 e.to_string().lines().next().unwrap_or("")
@@ -43,7 +43,7 @@ fn main() {
     let mid = bad.len() / 2;
     bad[mid] ^= 0xFF;
     match Project::load(&bad) {
-        Ok(mut q) => println!("  one byte flipped: loaded, {} clips", q.clips_state().len()),
+        Ok(q) => println!("  one byte flipped: loaded, {} clips", q.clips_state().len()),
         Err(e) => println!(
             "  one byte flipped: LOST -- {}",
             e.to_string().lines().next().unwrap_or("")
@@ -51,7 +51,7 @@ fn main() {
     }
     // empty file: the state a crash right at the start of the write leaves
     match Project::load(&[]) {
-        Ok(mut q) => println!("  empty file: loaded, {} clips", q.clips_state().len()),
+        Ok(q) => println!("  empty file: loaded, {} clips", q.clips_state().len()),
         Err(e) => println!("  empty file: LOST -- {}", e.to_string().lines().next().unwrap_or("")),
     }
 }

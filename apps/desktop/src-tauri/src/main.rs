@@ -1649,9 +1649,12 @@ fn mdx_model_path() -> Result<std::path::PathBuf, String> {
 fn replace_file(from: &str, to: &str) -> std::io::Result<()> {
     let mut last: Option<std::io::Error> = None;
     for attempt in 0..12 {
-        match std::fs::rename(from, to) {
-            Ok(()) => return Ok(()),
-            Err(e) => last = Some(e),
+        // The first attempt's error is not recorded: if clearing the
+        // destination below lets the retry through, it was never the real
+        // failure, and if it doesn't, the second error is the more definitive
+        // one to report.
+        if std::fs::rename(from, to).is_ok() {
+            return Ok(());
         }
         // the destination may be the thing that's locked; try clearing it
         let _ = std::fs::remove_file(to);

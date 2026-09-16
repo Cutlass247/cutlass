@@ -4,9 +4,9 @@
 
 **Cut sharper. Own everything.**
 
-A video editor where your transcript is your timeline — delete the words, and the video cuts itself. Grade it in one click. Everything runs on your machine: nothing uploaded, nothing watermarked, nothing claimed.
+A video editor where your transcript is your timeline — delete the words, and the video cuts itself. Grade it in one click. Your video never leaves your machine: nothing watermarked, nothing claimed.
 
-### [⬇ Download for Windows](../../releases/latest) · v0.1.4 (beta)
+### [⬇ Download for Windows](../../releases/latest) · v0.1.5 (beta)
 
 </div>
 
@@ -14,7 +14,7 @@ A video editor where your transcript is your timeline — delete the words, and 
 
 ## What it does
 
-- **Edit by talking.** Cutlass transcribes your footage on-device. Delete a sentence in the transcript and the video cuts with it — frame-accurate, rippled shut, undoable.
+- **Edit by talking.** Cutlass transcribes your footage — on-device, or on cloud GPUs when you want it faster. Delete a sentence in the transcript and the video cuts with it — frame-accurate, rippled shut, undoable.
 - **Kill the ums in one click.** Filler words and dead-air silences are found automatically. Two clicks and they're gone.
 - **Grade in one click.** One-click Looks (Cinematic, Warm, Noir, and more) preview live on your footage. Drop in a `.cube` LUT, pull green screen, punch in, or dial color by hand.
 - **Captions from your transcript.** One button drops burned-in captions, timed to your speech.
@@ -23,12 +23,12 @@ A video editor where your transcript is your timeline — delete the words, and 
 ## The pledge
 
 - **Your content is yours.** Cutlass claims no license, ever, to anything you make.
-- **On-device by default.** Transcription and editing never upload your footage — airplane mode works.
+- **Your video never leaves your machine.** Editing is entirely local. The optional fast transcription sends only your audio, then discards it — choose **Private** and nothing leaves at all, airplane mode included.
 - **No watermarks. No subscription required. No lock-in.** Your project file is open and documented.
 
 ## Install
 
-1. Download **Cutlass_0.1.4_x64-setup.exe** from the [latest release](../../releases/latest).
+1. Download **Cutlass_0.1.5_x64-setup.exe** from the [latest release](../../releases/latest).
 2. Run it. Cutlass is code-signed, so Windows shows the publisher as **Isaiah Aniemeka** — you can check under Properties → Digital Signatures. SmartScreen may still warn on a new release while its reputation builds; if it does, click **More info → Run anyway**.
 3. Launch **Cutlass** from the Start menu.
 
