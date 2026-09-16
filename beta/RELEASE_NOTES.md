@@ -1,4 +1,4 @@
-# Cutlass 0.1.6 — imports that don't make you wait
+# Cutlass 0.1.7 — find your best moments with no internet
 
 **Cut sharper. Own everything.**
 
@@ -6,7 +6,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.1.6_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.1.7_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Already on 0.1.2 or later? You don't need this page. Cutlass will offer the update itself.
 
@@ -14,29 +14,25 @@ Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may
 
 ## What's new
 
-### Import several files at once
+### Find the best moments, offline
 
-The Import button now takes as many files as you like. Clips appear in the bin one after another as each finishes, with the status counting them off, so you can start working on the first while the rest arrive. If a file can't be read you're told which one — the others still import.
+**Find the best moments** used to need a connection, and simply failed without one. It now falls back to a finder that runs entirely on your own machine — it reads the shape of your clip from the audio and the wording, picks the self-contained moments, and hands you the same list.
 
-### Screen recordings import straight away
+Set **Transcribe** to **Private** and the whole path is offline: import a recording, transcribe it on your machine, find the moments, cut them, burn captions, export. On a plane, on hotel wifi that went down, on a machine that never goes online at all.
 
-Footage recorded at a variable frame rate — OBS captures, screen recordings, most phone video — has to be evened out before it can be cut, or the audio drifts away from the picture. Cutlass used to do that conversion **before showing you the clip**, so importing a long screen recording meant staring at a frozen window.
+The moments say where they came from. Found offline, they carry a note — the on-device finder scores audio and wording rather than reading your clip the way the AI does, so its picks are rougher, and you should know that rather than wonder why they got worse. Run it again when you're back online for the full pass.
 
-The clip now appears immediately and the conversion runs behind it. If you export before it's finished, Cutlass waits and tells you why rather than handing you a video that drifts.
+Your licence keeps working offline too: **30 days** after its last check for a purchased copy, 3 days during the trial.
 
-### Long clips import about twice as fast
+### We tightened how we describe Private mode
 
-Cutlass was building twice as many preview thumbnails as it needed for the scrub strip. Same strip, half the work — most noticeable on clips over a minute, which were the slowest.
+Our own docs said Private mode meant "100% on-device, no cloud at all" and that "airplane mode works." That was written before **Find the best moments** existed, and it wasn't quite true any more: the transcript was sent to be analysed even in Private mode.
 
-### It cleans up after itself
-
-Every import left behind cached thumbnails — and for converted footage, a whole second copy of the video — and nothing ever deleted any of it. On the machine this was built on, ordinary use had already left 267 MB in the temp folder. Cutlass now clears anything it hasn't touched in two weeks.
+Your **video** has never left your machine and still never does — that part was always accurate. But the wording overstated the rest, so we fixed it everywhere, including the hint under the Transcribe switch. As of this release the offline claim is true again, and this time it's tested.
 
 ## Fixed
 
-- Failed collaboration connections said nothing at all; they now explain what went wrong.
-- The export progress bar could be fed a bad value while preparing footage.
-- Documentation no longer advertises collaboration, which isn't available in this build.
+- The Transcribe hint in Create and the tooltip in Studio both promised that nothing leaves your machine in Private mode. They now say what actually happens.
 
 ## Known limits
 
@@ -44,6 +40,7 @@ Every import left behind cached thumbnails — and for converted footage, a whol
 - SmartScreen reputation is still building.
 - 4K exports are slow by nature. Export at 1080p for long videos.
 - Collaboration isn't available in this build.
+- The offline finder has no comprehension — it can't tell you *why* a moment is funny the way the AI can. It's a good fallback, not a replacement.
 
 ## Something wrong?
 

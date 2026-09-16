@@ -6,7 +6,7 @@
 
 The video editor you don't have to learn. Drop in a long video and **AI finds your best moments** — captioned, vertical, ready to post — or edit by deleting words, and the video cuts itself. Everything OpusClip does, in an editor you own outright. Your video never leaves your machine.
 
-### [⬇ Download for Windows](../../releases/latest) · v0.1.6 · Free 7-day trial, then $49 once — yours forever
+### [⬇ Download for Windows](../../releases/latest) · v0.1.7 · Free 7-day trial, then $49 once — yours forever
 
 </div>
 
@@ -16,7 +16,7 @@ The video editor you don't have to learn. Drop in a long video and **AI finds yo
 
 ### 🤖 Find your best moments — automatically
 - **✨ Find the best moments.** Drop in a long recording and Cutlass reads the whole thing, then pulls out the funniest, most exciting, and most pivotal moments — and turns each one into a captioned vertical clip, ready to post. Real comprehension, not keyword-guessing.
-- **Fast, or private.** *Fast* transcribes on cloud GPUs in seconds — even for hour-long videos. *Private* transcribes entirely on your own machine, always unlimited and free. Your video stays put either way; only finding the best moments sends the transcript.
+- **Fast, or private.** *Fast* transcribes on cloud GPUs in seconds — even for hour-long videos. *Private* transcribes entirely on your own machine, always unlimited and free. Your video stays put either way; only finding the best moments sends the transcript — and with no connection, not even that: Private does the whole job on your machine.
 - **Captions, your call.** One toggle burns captions onto every clip, timed to the speech — off by default, never applied automatically.
 
 ### 📲 Make clips for social
@@ -56,7 +56,7 @@ Every other editor wants a recurring piece of you — a monthly rental, a waterm
 
 ## Install
 
-1. Download **Cutlass_0.1.6_x64-setup.exe** from the [latest release](../../releases/latest).
+1. Download **Cutlass_0.1.7_x64-setup.exe** from the [latest release](../../releases/latest).
 2. Run it. Cutlass is code-signed, so Windows shows the publisher as **Isaiah Aniemeka** — you can check under Properties → Digital Signatures. SmartScreen may still warn on a new release while its reputation builds; if it does, click **More info → Run anyway**.
 3. Launch **Cutlass** from the Start menu. On first run you'll start your 7-day free trial (needs internet once to begin).
 
@@ -72,7 +72,7 @@ Prefer to trim by transcript? Switch to **Studio**, click a word to jump there, 
 ## Good to know (beta)
 
 - **Windows 10/11, 64-bit.** macOS and Linux are on the roadmap.
-- **Fast transcription uses the cloud; Private stays on-device.** *Fast* sends only your audio (never your video) to transcribe, then discards it. Switch to *Private* and transcription runs on your own machine instead. **Find the best moments** sends the transcript in either mode — that one step needs a connection.
+- **Fast transcription uses the cloud; Private stays on-device.** *Fast* sends only your audio (never your video) to transcribe, then discards it. Switch to *Private* and transcription runs on your own machine instead. **Find the best moments** sends the transcript when it can reach the internet; with no connection it falls back to a finder that runs on your machine, so **Private works start to finish offline** — the offline picks are rougher, and the app says so. Your licence keeps working offline for 30 days after its last check (3 during the trial).
 - **Export at your source resolution.** Exporting 1080p footage at 4K just makes it softer and bigger — the app defaults to your footage's resolution and warns if you go higher.
 - **H.264 works on every machine.** ProRes (master) and WebM are also available. (H.265 is hidden for now — it depends on specific GPU support.)
 - **Moving to a new PC?** Enter your purchase code on the new machine and your licence moves with it. Renaming your PC doesn't affect it at all.
