@@ -44,19 +44,36 @@ fetch_live() {
 }
 
 if [ "${1:-}" = "--verify" ]; then
-  if ! fetch_live > "$tmp/raw.html"; then
-    echo "UNREACHABLE  $URL did not answer" >&2
-    echo "  If the site was just recreated, Pages takes a few minutes to build." >&2
+  strip_stamp < "$SRC" > "$tmp/src.html"
+
+  # Retry rather than judge on one look. A publish and the push that follows it
+  # are seconds apart, but GitHub Pages takes a minute or two to serve the new
+  # page — so a single check right after a push reports "stale" for a page that
+  # is merely still building, and the red that produces teaches you to ignore
+  # the one guard against actually forgetting to publish.
+  #
+  # Forgetting still fails, just two minutes later. That trade is worth it: a
+  # slow true signal beats a fast one nobody believes.
+  for attempt in $(seq 1 12); do
+    if fetch_live > "$tmp/raw.html"; then
+      strip_stamp < "$tmp/raw.html" > "$tmp/live.html"
+      if diff -q "$tmp/live.html" "$tmp/src.html" >/dev/null; then
+        echo "OK  $URL matches site/index.html"
+        grep -o 'updated [^<]*' "$tmp/raw.html" | head -1 | sed 's/^/    /'
+        exit 0
+      fi
+      [ "$attempt" = 1 ] && echo "waiting for Pages to serve the new page..."
+    else
+      [ "$attempt" = 1 ] && echo "waiting for $URL to answer..."
+    fi
+    [ "$attempt" = 12 ] || sleep 10
+  done
+
+  if [ ! -s "$tmp/raw.html" ]; then
+    echo "UNREACHABLE  $URL did not answer after two minutes" >&2
     exit 1
   fi
-  strip_stamp < "$tmp/raw.html" > "$tmp/live.html"
-  strip_stamp < "$SRC" > "$tmp/src.html"
-  if diff -q "$tmp/live.html" "$tmp/src.html" >/dev/null; then
-    echo "OK  $URL matches site/index.html"
-    fetch_live | grep -o 'updated [^<]*' | head -1 | sed 's/^/    /'
-    exit 0
-  fi
-  echo "STALE  $URL does not match site/index.html" >&2
+  echo "STALE  $URL still does not match site/index.html after two minutes" >&2
   echo "" >&2
   diff "$tmp/live.html" "$tmp/src.html" | head -40 >&2
   echo "" >&2

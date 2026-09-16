@@ -148,6 +148,11 @@ publish script.
 
 Publish *before* you push, and the check is green on the same commit.
 
+`--verify` retries for two minutes rather than judging on one look, because
+GitHub Pages takes a minute or two to serve a page you just published — and a
+check that goes red every single release is a check people learn to ignore.
+Forgetting to publish still fails, two minutes later.
+
 ## Only the latest release is public
 
 Every release except the newest is a **draft**. Drafts are visible to accounts
