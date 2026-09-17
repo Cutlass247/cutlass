@@ -6,7 +6,7 @@
 
 A video editor where your transcript is your timeline — delete the words, and the video cuts itself. Grade it in one click. Your video never leaves your machine: nothing watermarked, nothing claimed.
 
-### [⬇ Download for Windows](../../releases/latest) · v0.1.8 (beta)
+### [⬇ Download for Windows](../../releases/latest) · v0.1.0 (beta)
 
 </div>
 
@@ -28,7 +28,7 @@ A video editor where your transcript is your timeline — delete the words, and 
 
 ## Install
 
-1. Download **Cutlass_0.1.8_x64-setup.exe** from the [latest release](../../releases/latest).
+1. Download **Cutlass_0.1.0_x64-setup.exe** from the [latest release](../../releases/latest).
 2. Run it. Cutlass is code-signed, so Windows shows the publisher as **Isaiah Aniemeka** — you can check under Properties → Digital Signatures. SmartScreen may still warn on a new release while its reputation builds; if it does, click **More info → Run anyway**.
 3. Launch **Cutlass** from the Start menu.
 

@@ -87,5 +87,5 @@ controversy factually with a link.
   a relay problem any more, the feature is gone), mobile, background
   removal / masks.
 
-  Auto-updates came off this list at 0.1.2: every build from then on
-  updates itself, and it is safe to claim.
+  Auto-updates are no longer on this list: every build updates itself, and it
+  is safe to claim.

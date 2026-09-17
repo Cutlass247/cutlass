@@ -2,10 +2,10 @@
 
 **The problem it solves:** every downloader sees *"Windows protected your PC — unknown publisher."* Plenty of people will not click past that, and the ones who do are the ones least likely to also hand over $49. Signing attaches a verified publisher identity so Windows knows who shipped it.
 
-**Status:** Cutlass 0.1.3 is **unsigned** — confirmed, not assumed:
+**Status (historical):** an early build was **unsigned** — confirmed, not assumed:
 
 ```
-Get-AuthenticodeSignature .\Cutlass_0.1.3_x64-setup.exe
+Get-AuthenticodeSignature .\Cutlass_<version>_x64-setup.exe
   status : NotSigned
 ```
 
@@ -69,7 +69,7 @@ Source: [Quickstart: Set up Artifact Signing](https://learn.microsoft.com/en-us/
 
 ### ✅ Working as of 2026-09-15
 
-Builds are signed. `Cutlass_0.1.4_x64-setup.exe` verifies as:
+Builds are signed. The installer verifies as:
 
 ```
 status : Valid
@@ -123,7 +123,7 @@ Get-AuthenticodeSignature "$env:LOCALAPPDATA\Cutlass\cutlass-desktop.exe"
 
 ### Why the certificate expires in three days
 
-Azure issues deliberately short-lived certificates — the one that signed 0.1.4
+Azure issues deliberately short-lived certificates — the one that signed a build
 runs 2026-09-15 to 2026-09-18. **This is not a problem and needs no renewal.**
 The RFC-3161 countersignature from Microsoft's timestamp authority records
 *when* the signing happened, so the signature stays valid long after the

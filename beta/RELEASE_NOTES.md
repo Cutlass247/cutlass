@@ -1,4 +1,4 @@
-# Cutlass 0.1.8 — it tells you when an update doesn't land
+# Cutlass 0.1.0
 
 **Cut sharper. Own everything.**
 
@@ -6,42 +6,48 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.1.8_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.1.0_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
-Already on 0.1.2 or later? You don't need this page. Cutlass will offer the update itself.
+Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
-Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may still warn while a new release builds reputation — **More info → Run anyway**.
+## What Cutlass does
 
-## What's new
+### Find your best moments, automatically
 
-This is a small release with one fix in it, and it is worth explaining why.
+Drop in a long recording and Cutlass reads the whole thing, then pulls out the funniest, most exciting and most pivotal moments — each one turned into a captioned vertical clip, ready to post. Real comprehension, not keyword-guessing.
 
-### Cutlass now notices when an update didn't install
+Choose **Fast** to transcribe on cloud GPUs in seconds, or **Private** to do it entirely on your own machine. With no connection at all, Private does the whole job locally — finding moments included.
 
-Testing the 0.1.6 → 0.1.7 update end to end for the first time, it failed — twice — and reported success both times. Security software was stopping the downloaded installer. Nobody would have known: the app closed, came back, and looked completely normal, just on the old version.
+### Edit by talking
 
-That happens because of how Windows updates work. Cutlass hands the installer to Windows and closes itself in the same instant, so there is no Cutlass left running to be told if the installer is then blocked. It simply starts up again on the version it already had.
+Delete a sentence in the transcript and the video cuts with it: frame-accurate, rippled shut, undoable. Filler words and dead air are found for you; two clicks and they're gone.
 
-So it now checks on the way back in. If you asked for an update and you are still on the old version afterwards, Cutlass says so, tells you the likely reason, and gives you a button to download it yourself:
+### Made for screen recordings
 
-> **Cutlass 0.1.9 didn't install.** You're still on 0.1.8. Security software often stops an installer it hasn't seen before — downloading it yourself usually works.
+OBS and other variable-frame-rate captures are evened out on import, so cuts and audio stay in sync — no drift, no fiddling. The clip opens straight away and the conversion happens behind it.
 
-It says it once, not every time you open the app.
+Strip copyrighted music off a clip while keeping your voice, on-device. Blur a face, a screen or a name, and the blur follows the subject as they move.
 
-**This only helps from 0.1.8 onwards.** The version doing the checking has to already be installed, so if an update from 0.1.7 or earlier fails, it still fails quietly. That is the honest reason to take this one.
+### Finish it properly
 
-### If an update ever does get blocked
+One-click Looks preview live on your footage, or drop in a `.cube` LUT, pull green screen and dial colour by hand. One switch on export levels the volume, ducks music under your voice and matches the loudness every platform expects.
 
-Download the installer from the releases page and run it. It installs straight over your existing copy — your projects, settings and licence are untouched. Nothing needs uninstalling first.
+Hardware-accelerated H.264 export, plus ProRes and WebM.
 
-## Fixed
+### Two editors, one app
 
-- Nothing else. Everything in this release is either the above or work you can't see: the collaboration relay got its first tests, the test suite now runs on GitHub instead of only on one machine, and the pricing notes were corrected to describe what is actually sold.
+**Create** is the clip maker: footage in, captioned vertical clip out. **Studio** is a full multi-track editor with effects, titles and keyframes. They're independent — experiment in one without touching the other.
+
+## Buy it once
+
+**$49, one time.** No subscription, ever. Every update to the version you own is free. If a big new version ever arrives it'll be an optional paid upgrade, discounted for existing owners, and your copy keeps working exactly as it does today.
+
+Your video never leaves your machine. The AI features send only your audio or transcript, then discard it — never your footage. Your content is yours; Cutlass claims no licence to anything you make.
 
 ## Known limits
 
-- Windows only.
-- SmartScreen reputation is still building, and so is the reputation the installer needs with antivirus software. Both improve as more releases are signed with the same certificate.
+- Windows only. macOS and Linux are on the roadmap.
+- SmartScreen reputation is still building, and so is the reputation the installer needs with antivirus software.
 - 4K exports are slow by nature. Export at 1080p for long videos.
 - Collaboration isn't available in this build.
 - The offline moment finder has no comprehension — it can't tell you *why* a moment works the way the AI can. A good fallback, not a replacement.

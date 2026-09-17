@@ -1,8 +1,8 @@
 # Releasing a new version
 
-Cutlass updates itself from **0.1.2 onward**. Anyone still on 0.1.1 or earlier
-has to download once by hand — those builds shipped before the updater existed
-and have no way to learn a new version is out.
+Cutlass updates itself. A build that shipped before the updater existed has no
+way to learn a new version is out, so anyone on one has to download once by
+hand — worth remembering if you ever hand someone an old installer.
 
 ## The one thing that silently breaks updates
 
@@ -98,10 +98,10 @@ manager alongside the licensing key.
    ```
 
    The updater only ever reads `latest.json`, so an installer attached without
-   it is invisible — but the reverse is worse, and it has happened. 0.1.8 went
-   up with both in one command; GitHub answered **HTTP 500** partway, and the
-   manifest landed while the 241 MB installer did not. Every installed copy was
-   then told 0.1.8 existed and got a **404** trying to fetch it.
+   it is invisible — but the reverse is worse, and it has happened. A release
+   went up with both in one command; GitHub answered **HTTP 500** partway, and
+   the manifest landed while the 241 MB installer did not. Every installed copy
+   was then told a new version existed and got a **404** trying to fetch it.
 
    `latest.json` is the switch that turns a release on. Throw it last, once
    there is something behind it. Uploaded in that order, a failed installer
@@ -120,10 +120,12 @@ manager alongside the licensing key.
    looks exactly like "no update available", so nobody finds out until the
    release after this one also fails to land.
 
-   **Do not rename the installer on the way to the release.** 0.1.1 was
-   published as `Cutlass-0.1.1-trial-x64-setup.exe`, a hand-rename of the built
-   file; that convention is dropped. The manifest points at the name the build
-   produced, and a rename breaks every update silently.
+   **A renamed installer needs a matching manifest.** An early release was
+   published under a hand-renamed filename while the manifest still pointed at
+   the name the build produced, which broke updating silently. If you rename
+   the asset, rewrite the manifest's `url` to match it and verify the published
+   URL resolves — the signature is over the file's contents, not its name, so
+   renaming is safe as long as the manifest agrees.
 
 8. **Hide the release it replaces**, so the page shows one download:
 
@@ -191,8 +193,8 @@ installer, that link dies when you draft it.
 
 ## Rolling back a bad release
 
-This is not hypothetical — 0.1.5 shipped an import regression and was pulled
-the same day. Do it the moment you know, not after deciding whose fault it is.
+This is not hypothetical — a release once shipped an import regression and was
+pulled the same day. Do it the moment you know, not after deciding whose fault it is.
 
 Because older releases are drafts, un-hiding comes first. **One command, two
 flags:**
