@@ -129,6 +129,10 @@ fn main() -> anyhow::Result<()> {
             probe.as_ref().map(|(d, wh)| (*d as u32, *wh)).unwrap_or_default()
         );
         let dur = probe.map(|(d, _)| d).unwrap_or(0.0);
+        // What the person now actually waits for: the coarse pass.
+        let (_c, t_coarse) =
+            thumbs_for(f, cutlass_core::media::COARSE_SCRUB_FRAMES).unwrap_or((0, 0.0));
+        println!("  [coarse pass ({} frames): {:.2}s]", cutlass_core::media::COARSE_SCRUB_FRAMES, t_coarse);
         let (_n, t_thumbs) = thumbs_for(f, 240.0).unwrap_or((0, 0.0));
         let (_p, t_wave) = waveform_for(f);
         let total = t_thumbs + t_wave;

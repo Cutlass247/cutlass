@@ -803,6 +803,24 @@ export async function onMediaConformed(
   );
 }
 
+/// Fires when the full scrub strip has finished building behind an import.
+///
+/// Import returns a couple of dozen thumbnails so the clip appears at once,
+/// then fills in the rest. `scrub_fps` MUST be applied together with `thumbs`:
+/// the two passes sample at different intervals, and the strip finds a
+/// thumbnail by `floor(t * scrub_fps)`, so updating one without the other
+/// points every frame at the wrong moment.
+export async function onMediaThumbnails(
+  cb: (id: string, scrubFps: number, thumbs: string[]) => void
+): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<{ id: string; scrub_fps: number; thumbs: string[] }>(
+    "media-thumbnails",
+    (e) => cb(e.payload.id, e.payload.scrub_fps, e.payload.thumbs)
+  );
+}
+
 /// Fires while export waits for variable-frame-rate footage to finish
 /// converting. `name` is null once that's done and real progress resumes.
 ///

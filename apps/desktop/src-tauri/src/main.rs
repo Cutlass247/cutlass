@@ -190,6 +190,32 @@ fn media_json(info: &MediaInfo) -> Result<serde_json::Value, String> {
 /// Engine-native import: probe, sample proxy frames in one sequential
 /// decode pass, extract waveform peaks — all in-process, no ffmpeg CLI.
 fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
+    import_with_engine_pass(path, Pass::CoarseThenBackground)
+}
+
+/// Which set of scrub thumbnails to build before returning.
+///
+/// Measured on a 5-minute 1080p clip: probing the file takes **13 ms**, the
+/// waveform 0.35 s, and the 240 thumbnails 8.8 s. On a half-hour screen
+/// recording that last number is about a minute — and none of it is needed to
+/// put the clip in the bin, because everything shown there is metadata.
+///
+/// So the wait is split. `Coarse` builds a couple of dozen frames (about a
+/// second) and returns; `Full` runs behind it and replaces them.
+#[derive(Clone, Copy, PartialEq)]
+enum Pass {
+    /// What an import runs: the quick set on anything long enough to be worth
+    /// splitting, the full set inline on clips short enough that it is already
+    /// fast. Waveform included either way.
+    CoarseThenBackground,
+    /// Full thumbnails only. What the background task runs — the waveform was
+    /// already decoded during the import that returned the coarse strip, and
+    /// decoding the whole audio track a second time to throw it away would be
+    /// the largest thing this function did.
+    RefreshThumbs,
+}
+
+fn import_with_engine_pass(path: &Path, pass: Pass) -> anyhow::Result<MediaInfo> {
     let path_str = path.to_string_lossy().to_string();
     let mut eng = cutlass_engine::MediaEngine::open(&path_str)?;
     let duration_s = eng.duration_s();
@@ -204,11 +230,29 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
     // decoding for the same scrub strip. Under ~24s both hit the 10 fps cap
     // and are identical; past 48s it was a straight doubling, which is exactly
     // the long files that felt slowest.
-    let scrub_fps = (cutlass_core::media::MAX_SCRUB_FRAMES / duration_s.max(0.1)).min(10.0);
+    use cutlass_core::media as m;
+    let dir = m::cache_dir(path)?;
+
+    // A full set already on disk always wins: it is what a previous import
+    // finished building, and it is strictly better than the coarse one.
+    let full_done = m::read_frames(&dir)?;
+    let coarse_only = pass == Pass::CoarseThenBackground
+        && full_done.is_empty()
+        && duration_s > m::COARSE_PASS_ABOVE_S;
+
+    let (target, prefix) = if coarse_only {
+        (m::COARSE_SCRUB_FRAMES, m::COARSE_FRAME_PREFIX)
+    } else {
+        (m::MAX_SCRUB_FRAMES, m::FULL_FRAME_PREFIX)
+    };
+    let scrub_fps = (target / duration_s.max(0.1)).min(10.0);
     let interval = 1.0 / scrub_fps;
-    let width = cutlass_core::media::SCRUB_WIDTH;
-    let dir = cutlass_core::media::cache_dir(path)?;
-    let mut thumb_paths = cutlass_core::media::read_frames(&dir)?;
+    let width = m::SCRUB_WIDTH;
+    let mut thumb_paths = if coarse_only {
+        m::read_coarse_frames(&dir)?
+    } else {
+        full_done
+    };
 
     let encode = |f: &cutlass_engine::RgbaFrame, i: u32| -> anyhow::Result<()> {
         let rgb: Vec<u8> = f
@@ -216,7 +260,7 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
             .chunks_exact(4)
             .flat_map(|p| [p[0], p[1], p[2]])
             .collect();
-        let mut out = std::fs::File::create(dir.join(format!("f{i:05}.jpg")))?;
+        let mut out = std::fs::File::create(dir.join(format!("{prefix}{i:05}.jpg")))?;
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80).encode(
             &rgb,
             f.width,
@@ -250,13 +294,20 @@ fn import_with_engine(path: &Path) -> anyhow::Result<MediaInfo> {
                 encode(&f, i)
             })?;
         }
-        thumb_paths = cutlass_core::media::read_frames(&dir)?;
+        thumb_paths = if coarse_only {
+            m::read_coarse_frames(&dir)?
+        } else {
+            m::read_frames(&dir)?
+        };
         anyhow::ensure!(!thumb_paths.is_empty(), "no frames sampled");
     }
 
     // Waveform is a full audio decode; skip it for very long clips to
-    // keep import responsive (they can still be edited without it).
-    let waveform = if duration_s <= 1800.0 {
+    // keep import responsive (they can still be edited without it), and
+    // whenever we are only here to rebuild thumbnails.
+    let waveform = if pass == Pass::RefreshThumbs {
+        Vec::new()
+    } else if duration_s <= 1800.0 {
         cutlass_engine::audio::waveform_peaks(&path_str, 1200)
     } else {
         Vec::new()
@@ -396,6 +447,11 @@ async fn import_media(
     })?;
     let id = info.id.clone();
     state.media.lock_ok().insert(info.id.clone(), info);
+    // The scrub strip came back coarse so the clip could appear at once; fill
+    // in the rest behind it. Same path import read, since a cached conform
+    // keeps its thumbnails in a different folder.
+    let working = cached_conform(&src).unwrap_or_else(|| src.clone());
+    spawn_thumbnails(app.clone(), id.clone(), working);
     // A variable-frame-rate source still needs a CFR copy, but not before the
     // clip appears. This finishes in the background and repoints the project
     // at it; an export that arrives first waits on the same lock.
@@ -1031,6 +1087,55 @@ fn spawn_conform(app: tauri::AppHandle, media_id: String, src: std::path::PathBu
     });
 }
 
+/// Build the full scrub strip behind an import that returned a coarse one.
+///
+/// Import hands back a couple of dozen thumbnails so the clip appears at once;
+/// this fills in the remaining two hundred and tells the frontend to swap. The
+/// interval changes between the two passes, so the new `scrub_fps` has to
+/// travel with the new frames — a strip updated with one and not the other
+/// points every thumbnail at the wrong moment.
+///
+/// Uses the path import actually read, not the original: a cached conform may
+/// have been used, and its thumbnails live in a different cache folder.
+fn spawn_thumbnails(app: tauri::AppHandle, media_id: String, working: std::path::PathBuf) {
+    tauri::async_runtime::spawn(async move {
+        use tauri::{Emitter, Manager};
+        let built = tauri::async_runtime::spawn_blocking(move || {
+            import_with_engine_pass(&working, Pass::RefreshThumbs)
+        })
+        .await;
+        let Ok(Ok(full)) = built else {
+            // The coarse strip stays. Worse to look at, still usable — and a
+            // failure here must not disturb a clip the person is already using.
+            return;
+        };
+        let state = app.state::<AppState>();
+        {
+            let mut pool = state.media.lock_ok();
+            match pool.get_mut(&media_id) {
+                Some(m) => {
+                    m.scrub_fps = full.scrub_fps;
+                    m.thumb_paths = full.thumb_paths.clone();
+                }
+                None => return, // media removed while we worked
+            }
+        }
+        let thumbs: Vec<String> = full
+            .thumb_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        let _ = app.emit(
+            "media-thumbnails",
+            serde_json::json!({
+                "id": media_id,
+                "scrub_fps": full.scrub_fps,
+                "thumbs": thumbs,
+            }),
+        );
+    });
+}
+
 /// How many files to import at once. One, deliberately.
 ///
 /// This was 4, on the reasoning that import is "mostly waiting on ffmpeg" and
@@ -1095,9 +1200,13 @@ async fn import_media_many(
                         let id = info.id.clone();
                         state.media.lock_ok().insert(info.id.clone(), info);
                         media_out.push(v);
+                        let src = std::path::PathBuf::from(&path);
+                        // Fill in the rest of the scrub strip behind the clip.
+                        let working = cached_conform(&src).unwrap_or_else(|| src.clone());
+                        spawn_thumbnails(app.clone(), id.clone(), working);
                         // Conform after the clip is usable, not before it
                         // appears. See `spawn_conform`.
-                        spawn_conform(app.clone(), id, std::path::PathBuf::from(&path));
+                        spawn_conform(app.clone(), id, src);
                     }
                 }
                 // One unreadable file must not lose the other nineteen.
@@ -2840,18 +2949,27 @@ mod tests {
             "in-process decode is CPU-bound: concurrency costs first-clip latency and buys ~1%"
         );
 
-        // Both paths derive scrub_fps from the same constant. If someone
-        // reintroduces a literal here, this catches the divergence.
+        // There are deliberately two budgets now — a coarse pass so the clip
+        // appears at once, and the full one built behind it — but both are
+        // named constants shared with cutlass_core::media. A bare number here
+        // is how the 480-against-240 divergence happened, so the shape being
+        // guarded is "no literal frame budget", not "exactly one budget".
         let src = include_str!("main.rs");
         let code = src.split("#[cfg(test)]").next().unwrap();
         assert!(
-            code.contains("cutlass_core::media::MAX_SCRUB_FRAMES / duration_s"),
-            "the engine import path must use MAX_SCRUB_FRAMES, not its own number"
+            code.contains("MAX_SCRUB_FRAMES"),
+            "the full pass must use the shared constant, not its own number"
         );
         assert!(
-            !code.contains("480.0 / duration_s"),
-            "a second frame budget is back — that doubled the decoding once already"
+            code.contains("COARSE_SCRUB_FRAMES"),
+            "the coarse pass must use the shared constant, not its own number"
         );
+        for literal in ["480.0 / duration_s", "240.0 / duration_s", "24.0 / duration_s"] {
+            assert!(
+                !code.contains(literal),
+                "a hard-coded frame budget is back ({literal}) — that doubled the decoding once already"
+            );
+        }
     }
 
     /// The VFR conform now runs in the background, so an export has to be able

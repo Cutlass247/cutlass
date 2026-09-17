@@ -19,6 +19,25 @@ use ffmpeg_sidecar::command::FfmpegCommand;
 pub const MAX_SCRUB_FRAMES: f64 = 240.0;
 pub const SCRUB_WIDTH: u32 = 480;
 
+/// Frames in the quick first pass.
+///
+/// Each one costs a seek and a keyframe decode — about 35 ms at 1080p — so the
+/// whole 240 take roughly a minute on a half-hour recording, and the clip used
+/// to wait on all of them. Twenty-four is about a second: enough that the strip
+/// reads as a filmstrip rather than an empty bar, while the full set is built
+/// behind it.
+pub const COARSE_SCRUB_FRAMES: f64 = 24.0;
+
+/// Under this, the full pass is quick enough that splitting it in two would
+/// cost more than it saves — a clip this short is done before anyone looks.
+pub const COARSE_PASS_ABOVE_S: f64 = 20.0;
+
+/// Pub because the app's engine-based import writes these files directly, and
+/// a prefix that disagrees with the reader here means a strip that silently
+/// stays empty.
+pub const FULL_FRAME_PREFIX: char = 'f';
+pub const COARSE_FRAME_PREFIX: char = 'c';
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MediaInfo {
     pub id: String,
@@ -418,13 +437,98 @@ pub fn cache_dir(path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 pub fn read_frames(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    read_frames_named(dir, FULL_FRAME_PREFIX)
+}
+
+/// The quick first pass: far fewer frames, so the scrub strip has something in
+/// it within about a second instead of a minute. Kept under its own prefix
+/// because the two passes sample at different intervals — mixed together and
+/// sorted they would interleave, and the strip maps position to thumbnail by
+/// index, so every frame after the first would point at the wrong moment.
+pub fn read_coarse_frames(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    read_frames_named(dir, COARSE_FRAME_PREFIX)
+}
+
+fn read_frames_named(dir: &Path, prefix: char) -> anyhow::Result<Vec<PathBuf>> {
     let mut frames: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "jpg"))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(prefix))
+        })
         .collect();
     frames.sort();
     Ok(frames)
+}
+
+#[cfg(test)]
+mod frame_pass_tests {
+    use super::*;
+
+    fn touch(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), b"not really a jpeg").unwrap();
+    }
+
+    /// The two passes sample at different intervals, and the scrub strip finds
+    /// a thumbnail by `floor(t * scrub_fps)`. If a reader ever returned both
+    /// sets, the indices would run through the coarse frames first and every
+    /// position in the clip would show the wrong moment — with no error, and
+    /// nothing on screen to suggest the strip is lying.
+    #[test]
+    fn a_coarse_pass_and_a_full_pass_never_mix() {
+        let dir = std::env::temp_dir().join(format!("cutlass-frames-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for i in 1..=3 {
+            touch(&dir, &format!("c{i:05}.jpg"));
+        }
+        for i in 1..=5 {
+            touch(&dir, &format!("f{i:05}.jpg"));
+        }
+        touch(&dir, "cfr30.mp4"); // a conform result shares the folder
+        touch(&dir, "notes.txt");
+
+        let coarse = read_coarse_frames(&dir).unwrap();
+        let full = read_frames(&dir).unwrap();
+        assert_eq!(coarse.len(), 3, "coarse reader picked up something else");
+        assert_eq!(full.len(), 5, "full reader picked up something else");
+        assert!(
+            coarse.iter().all(|p| !full.contains(p)),
+            "the two sets overlap"
+        );
+
+        // Order is what maps a position in the clip to a frame.
+        let names: Vec<String> = full
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "frames came back out of time order");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A clip short enough that the full pass is already quick should not pay
+    /// for two passes, and one long enough to hurt should.
+    #[test]
+    fn only_long_clips_are_worth_splitting_in_two() {
+        assert!(COARSE_PASS_ABOVE_S > 0.0);
+        assert!(
+            COARSE_SCRUB_FRAMES < MAX_SCRUB_FRAMES,
+            "the quick pass must be smaller than the one it stands in for"
+        );
+        // 30 minutes of screen recording is the case this exists for.
+        let long = 1800.0;
+        let coarse_fps = COARSE_SCRUB_FRAMES / long;
+        let full_fps = MAX_SCRUB_FRAMES / long;
+        assert!(coarse_fps < full_fps);
+        assert!(long > COARSE_PASS_ABOVE_S);
+    }
 }
 
 #[cfg(test)]

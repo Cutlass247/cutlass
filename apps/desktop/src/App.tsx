@@ -46,6 +46,7 @@ import {
   onExportProgress,
   onExportPreparing,
   onMediaConformed,
+  onMediaThumbnails,
   onCollabError,
   onTrackProgress,
   onTranscribeProgress,
@@ -601,6 +602,14 @@ export default function App() {
     const unConf = onMediaConformed((id, path) =>
       setMedia((m) => (m[id] ? { ...m, [id]: { ...m[id], path } } : m))
     );
+    // The full scrub strip finished building behind the import. Both fields
+    // move together — the strip indexes by floor(t * scrub_fps), so a new set
+    // of thumbnails under the old interval would mislabel every frame.
+    const unThumbs = onMediaThumbnails((id, scrubFps, thumbs) =>
+      setMedia((m) =>
+        m[id] ? { ...m, [id]: { ...m[id], scrub_fps: scrubFps, thumbs } } : m
+      )
+    );
     // Collab failures were emitted and never heard, so a session that failed
     // to connect looked identical to one that worked.
     const unCollab = onCollabError((why) => {
@@ -632,6 +641,7 @@ export default function App() {
       unExport.then((f) => f());
       unPrep.then((f) => f());
       unConf.then((f) => f());
+      unThumbs.then((f) => f());
       unCollab.then((f) => f());
       unTrack.then((f) => f());
       unTx.then((f) => f());
