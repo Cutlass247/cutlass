@@ -2880,6 +2880,18 @@ button {
   font-weight: 600;
 }
 
+/* An update that was started and never arrived. Amber, not red: nothing is
+   broken and nothing was lost — the app is simply older than the person
+   thinks, which is worth saying plainly rather than alarmingly. */
+.notice.update.failed {
+  background: #3a3020;
+  color: var(--warn, #f0b429);
+}
+
+.notice.update.failed .update-notes {
+  color: #cbb27a;
+}
+
 .update-notes {
   color: var(--muted);
   min-width: 0;

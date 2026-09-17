@@ -13,7 +13,10 @@ import {
   addTitle,
   aiFailureText,
   aiHighlights,
+  appVersion,
   isOffline,
+  PendingUpdate,
+  readPendingUpdate,
   aiUsage,
   AiUsage,
   audioClock,
@@ -200,6 +203,8 @@ export default function App() {
   // waiting for a restart; `pct` is download progress, or null when the
   // response gave no length to measure against.
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  // An update we started that did not arrive — see the pendingUpdate effect.
+  const [updateFailed, setUpdateFailed] = useState<PendingUpdate | null>(null);
   const [updateState, setUpdateState] = useState<"offered" | "getting" | "staged">("offered");
   const [updatePct, setUpdatePct] = useState<number | null>(null);
   // Set when the restart is for an update, so the save prompt relaunches
@@ -355,14 +360,55 @@ export default function App() {
     return () => clearTimeout(t);
   }, []);
 
+  // Did the last update actually land?
+  //
+  // On Windows the updater hands the installer to the OS and exits the app in
+  // the same breath, so nothing in-process is left to notice if the installer
+  // is then killed — by antivirus, most likely, since a freshly downloaded
+  // executable run straight out of a temp folder is exactly what heuristics
+  // look for. The app simply comes back on the old version, and the person who
+  // clicked Download has every reason to think they updated. That happened
+  // here twice before anyone checked the version on disk.
+  //
+  // So: a marker written before the attempt, read once on the way back. The
+  // marker is cleared either way, because the ordinary update banner will offer
+  // the new version again anyway — this is worth saying once, not forever.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const pending = readPendingUpdate(await loadPrefs());
+        if (!pending) return;
+        await savePref("pendingUpdate", null);
+        const now = await appVersion();
+        if (now !== pending.to) setUpdateFailed({ ...pending, from: now });
+      } catch {
+        // Never block startup over this. Missing prefs just means no marker.
+      }
+    })();
+  }, []);
+
   const installUpdate = useCallback(async () => {
     if (!update) return;
     setUpdateState("getting");
     setUpdatePct(null);
     try {
+      // Written *before* handing over, and awaited so it is on disk: on Windows
+      // install() ends in process exit, and anything not yet flushed is gone.
+      await savePref("pendingUpdate", {
+        to: update.version,
+        from: await appVersion(),
+        at: Date.now(),
+      });
+    } catch {
+      // A marker we could not write only costs us the diagnosis, not the update.
+    }
+    try {
       await update.install((f) => setUpdatePct(f));
       setUpdateState("staged");
     } catch (e) {
+      // Failed while we were still alive to say so, which makes the marker
+      // redundant — clearing it stops the next launch reporting this twice.
+      void savePref("pendingUpdate", null);
       setError(`The update couldn't be installed: ${String(e)}`);
       setUpdate(null);
     }
@@ -2601,6 +2647,24 @@ export default function App() {
         </div>
       )}
 
+      {updateFailed && (
+        <div className="notice update failed">
+          <strong>Cutlass {updateFailed.to} didn't install.</strong>
+          <span className="update-notes">
+            You're still on {updateFailed.from}. Security software often stops an
+            installer it hasn't seen before — downloading it yourself usually works.
+          </span>
+          <button
+            className="update-btn"
+            onClick={() => void openUrl("https://github.com/Cutlass247/cutlass/releases/latest")}
+          >
+            Download it
+          </button>
+          <button className="update-btn quiet" onClick={() => setUpdateFailed(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
       {update && (
         <div className="notice update">
           {updateState === "offered" && (

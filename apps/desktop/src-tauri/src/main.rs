@@ -1305,6 +1305,19 @@ fn settings_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(dir.join("settings.json"))
 }
 
+/// The version this build reports.
+///
+/// Exists so the frontend can tell whether an update it started actually
+/// landed. On Windows the updater exits the app the moment it hands the
+/// installer over, so nothing in-process ever learns that security software
+/// killed the installer a second later — the app simply comes back on the old
+/// version with nothing said. Comparing this against a marker written before
+/// the attempt is the only way to notice.
+#[tauri::command]
+fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 #[tauri::command]
 fn load_prefs(app: tauri::AppHandle) -> serde_json::Value {
     settings_file(&app)
@@ -2698,6 +2711,7 @@ fn main() {
             default_project_dir,
             default_export_dir,
             force_close,
+            app_version,
             load_prefs,
             save_pref,
             open_project,

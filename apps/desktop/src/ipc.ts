@@ -1087,6 +1087,28 @@ export async function takeStartupFile(): Promise<string | null> {
 
 // App preferences persist to a disk settings file (WebView localStorage is
 // not reliable across restarts); the browser mock falls back to localStorage.
+/// The version this build reports. Used to tell whether an update that was
+/// started actually landed — see `pendingUpdate` in App.tsx.
+export async function appVersion(): Promise<string> {
+  if (!inTauri) return "0.0.0-dev";
+  return invoke<string>("app_version");
+}
+
+/// What was recorded before an update attempt, so the next launch can tell
+/// whether it worked. Written before the installer is handed over, because on
+/// Windows the app is killed at that moment and never gets to find out.
+export interface PendingUpdate {
+  to: string;
+  from: string;
+  at: number;
+}
+
+export function readPendingUpdate(prefs: Record<string, unknown>): PendingUpdate | null {
+  const p = prefs.pendingUpdate as Partial<PendingUpdate> | null | undefined;
+  if (!p || typeof p.to !== "string" || typeof p.from !== "string") return null;
+  return { to: p.to, from: p.from, at: typeof p.at === "number" ? p.at : 0 };
+}
+
 export async function loadPrefs(): Promise<Record<string, unknown>> {
   if (!inTauri) {
     try {
