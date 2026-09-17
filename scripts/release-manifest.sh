@@ -112,12 +112,24 @@ REL_OUT="target/release/bundle/nsis/latest.json"
 
 cat <<EOF
 
-Next, attach BOTH to the v${VERSION} release — the installer alone is not
-enough, since the updater only ever reads latest.json. Run from the repo root:
+Attach BOTH to the v${VERSION} release, and in THIS ORDER. The installer first,
+on its own:
 
-  gh release upload v${VERSION} \\
-    "$REL_SETUP" \\
-    "$REL_OUT" --clobber
+  gh release upload v${VERSION} "$REL_SETUP" --clobber
+
+Confirm it is actually there before going on:
+
+  gh release view v${VERSION} --json assets --jq '.assets[].name'
+
+Only then the manifest:
+
+  gh release upload v${VERSION} "$REL_OUT" --clobber
+
+Order matters, and this is not hypothetical — 0.1.8 was published with both in
+one command, GitHub returned a 500 partway, and the manifest landed while the
+installer did not. Every installed copy was then told 0.1.8 existed and got a
+404 fetching it. latest.json is the switch that turns a release on: throw it
+last, once there is something behind it.
 
 Then verify it from outside, which is the only check that counts:
 

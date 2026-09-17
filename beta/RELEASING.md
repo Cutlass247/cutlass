@@ -89,8 +89,24 @@ manager alongside the licensing key.
    a user, not a changelog.
 
 6. **Tag and publish the release**, then upload the installer *and*
-   `latest.json`. The updater only ever reads `latest.json`; an installer
-   attached without it is invisible.
+   `latest.json` — **in that order, as two separate commands.**
+
+   ```bash
+   gh release upload v<version> "…/Cutlass_<version>_x64-setup.exe" --clobber
+   gh release view v<version> --json assets --jq '.assets[].name'   # confirm
+   gh release upload v<version> "…/latest.json" --clobber
+   ```
+
+   The updater only ever reads `latest.json`, so an installer attached without
+   it is invisible — but the reverse is worse, and it has happened. 0.1.8 went
+   up with both in one command; GitHub answered **HTTP 500** partway, and the
+   manifest landed while the 241 MB installer did not. Every installed copy was
+   then told 0.1.8 existed and got a **404** trying to fetch it.
+
+   `latest.json` is the switch that turns a release on. Throw it last, once
+   there is something behind it. Uploaded in that order, a failed installer
+   upload leaves the previous release serving happily and nobody ever sees a
+   broken update.
 
 7. **Verify it from outside** — the only test that counts:
 
