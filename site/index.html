@@ -64,6 +64,9 @@
   .btn.buy:hover { background: rgba(63,185,80,0.08); }
   .pledge-line { margin-top: 18px; font-size: 13px; color: var(--muted); }
   .pledge-line b { color: var(--ok); }
+  /* Quiet: the version is reassurance that the download is current, not a
+     headline. Tabular figures so it doesn't jitter when the number changes. */
+  .ver { font-variant-numeric: tabular-nums; opacity: .8; }
 
   .demo {
     margin: 34px auto 0; max-width: 720px; background: var(--panel);
@@ -185,7 +188,11 @@
       <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
       <a class="btn buy" href="https://cutlass-production.up.railway.app/buy/license" target="_blank" rel="noopener noreferrer">Buy now — $49</a>
     </div>
-    <p class="pledge-line"><b>Free 7-day trial, then $49 once — yours forever.</b> No subscription. No watermark. Your video never leaves your machine.</p>
+    <!-- The download button points at releases/latest, which always resolves to
+         whatever is newest. This label does not — it has to be changed by hand
+         on every release, which is why it is listed in beta/RELEASING.md step 2
+         alongside the README badge. -->
+    <p class="pledge-line"><b>Free 7-day trial, then $49 once — yours forever.</b> <span class="ver">v0.1.0</span> · Windows 10/11 · No subscription. No watermark. Your video never leaves your machine.</p>
 
     <div class="demo">
       <div class="cap">Your transcript is your timeline</div>
