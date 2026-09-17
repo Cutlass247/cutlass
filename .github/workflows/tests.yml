@@ -1,13 +1,12 @@
 name: Tests
 
-# Runs the same checks as scripts/hooks/pre-push, on GitHub rather than on one
-# machine.
+# Runs the parts of scripts/hooks/pre-push that can run on a clean machine.
 #
 # The hook is wired up through `core.hooksPath`, which is local git config: it
 # does not travel with a clone. So until this existed, every test in the repo
-# was skipped by a push with --no-verify, a push from any other machine, an edit
-# made in the GitHub web UI, and every pull request. 108 tests that only ever
-# ran where they happened to be set up are not a safety net, they are a habit.
+# was skipped by a push with --no-verify, a push from another machine, an edit
+# made in the GitHub web UI, and every pull request. Tests that only run where
+# they happen to be set up are a habit, not a safety net.
 on:
   push:
     branches: [main]
@@ -17,8 +16,6 @@ on:
 permissions:
   contents: read
 
-# A newer push supersedes one still running; nobody needs the result for a
-# commit that has already been replaced.
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
@@ -28,10 +25,10 @@ env:
 
 jobs:
   test:
-    # Windows because it is the only platform Cutlass supports, and because the
-    # bugs that have actually cost time here were Windows-specific: a delete
-    # failing on an open handle, a path with spaces, CRLF. Testing on Linux
-    # would be cheaper and would not have caught any of them.
+    # Windows because it is the platform Cutlass ships on, and because the bugs
+    # that have actually cost time here were Windows-specific: a delete failing
+    # on an open handle, a path with spaces, CRLF. Linux would be cheaper and
+    # would have caught none of them.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,9 +39,6 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
-      # whisper-rs and tract build native code, so this is the slow part by far.
-      # Keyed on the lockfile: dependencies change rarely, our own code changes
-      # constantly, and only the former invalidates it.
       - name: Cache cargo and target
         uses: actions/cache@v4
         with:
@@ -59,36 +53,38 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
-      # Before the Rust steps: it takes seconds, and a type error should not
-      # wait behind a native build to be reported.
       - name: Typecheck
         working-directory: apps/desktop
         run: npx tsc --noEmit
-
-      # tauri-build reads frontendDist (../dist) at compile time, and dist/ is
-      # gitignored. Without this, `cargo check` on cutlass-desktop fails in CI
-      # for a reason that has nothing to do with the code.
-      - name: Build frontend
-        working-directory: apps/desktop
-        run: npm run build
 
       # --all-targets compiles tests, examples and benches, not just what ships.
       # That is the point: a harness that stops compiling takes its coverage
       # with it silently, and the export deadlock lived in exactly that gap for
       # months.
       - name: cargo check (incl. tests and examples)
-        run: cargo check --workspace --all-targets
+        run: cargo check -p cutlass-core -p cutlass-license -p cutlass-license-server -p cutlass-sync-server --all-targets
 
       # --all-features, because a test behind an off-by-default feature does not
       # run otherwise and nothing says so. The licensing crate's only
       # signature-verification test was invisible for that reason.
       - name: cargo test
-        run: cargo test --workspace --all-features
+        run: cargo test -p cutlass-core -p cutlass-license -p cutlass-license-server -p cutlass-sync-server --all-features
 
-      # Not run here, and deliberately: scripts/run-harnesses.sh needs real
-      # footage and a real encoder, so it cannot live in CI. It is step 4 of
-      # beta/RELEASING.md and it stays a human step — it caught a stranded
-      # export folder on 2026-09-16 that nothing else would have.
-      - name: Note what this does not cover
+      - name: What this run does not cover
         if: always()
-        run: echo "Export harnesses are not run here - see beta/RELEASING.md step 4."
+        shell: bash
+        run: |
+          cat <<'NOTE'
+          Not run here, and not by accident:
+
+          cutlass-engine and cutlass-desktop (23 tests) link ffmpeg-sys-the-third
+          against vendor/ffmpeg, which is gitignored — a specific LGPL build with
+          the exact filters and encoders export depends on. A clean checkout has
+          no ffmpeg to link against, and fetching some other build in CI would
+          test something we do not ship. Those 23 run in the pre-push hook.
+
+          The export harnesses (scripts/run-harnesses.sh) need real footage and a
+          real encoder. They stay step 4 of beta/RELEASING.md, by hand. One of
+          them caught a stranded export folder on 2026-09-16 that nothing else
+          would have.
+          NOTE
