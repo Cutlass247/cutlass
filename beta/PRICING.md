@@ -57,7 +57,10 @@ and nothing is charged automatically when an allowance runs out.
 
 ## How delivery works
 
-1. The customer clicks Buy inside the app or on the website.
+1. The customer clicks Buy inside the application. The website's Buy button
+   leads to the free trial download rather than to a checkout: a purchase is
+   granted to one specific computer, and somebody who has not installed yet
+   has no computer to grant it to.
 2. They are sent to a Lemon Squeezy checkout. The app attaches an anonymous
    identifier for their computer to the checkout as custom data. It is a
    one-way hash of a Windows machine ID — not a name, email, or location.
