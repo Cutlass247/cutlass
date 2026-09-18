@@ -90,7 +90,14 @@ the form with tax consequences.
 | `CUTLASS_LS_LICENSE_VARIANTS` | licence **numeric** variant id | `2050448`-style; comma-separated if ever more than one |
 | `CUTLASS_LS_CREDIT_VARIANTS` | credits variant id **and minutes** | `<id>:300` — the `:300` is required, a bare id is ignored |
 
-Leave `CUTLASS_LS_ALLOW_TEST_MODE` **unset**. A test order is signed and says
+Leave `CUTLASS_LS_ALLOW_TEST_MODE` **unset**.
+
+**Either spelling of "licence" works.** `CUTLASS_LS_CHECKOUT_LICENCE` and
+`CUTLASS_LS_LICENCE_VARIANTS` are accepted alongside the `LICENSE` forms,
+because everything written about this project spells it the British way and
+the variables spell it the American way. Setting the wrong one used to be
+silent — green deploy, working health check, buying quietly dead. If both are
+set, the `LICENSE` form wins; a blank one is ignored in favour of the other. A test order is signed and says
 "paid", and once a product has been copied to live mode the two can share a
 variant id — so nothing else would tell them apart.
 

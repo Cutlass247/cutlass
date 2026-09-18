@@ -437,6 +437,32 @@ async fn checkout(State(state): State<AppState>) -> Json<serde_json::Value> {
 /// landing page links here with no hwid because a visitor has not installed
 /// yet and has no machine id to give, so that visitor is sent to the
 /// download and buys from inside the app, where there is one.
+/// Read a `…LICENSE…` variable, accepting `…LICENCE…` as well.
+///
+/// Everything written about this project — the docs, the comments, the release
+/// notes — spells it the British way, and the environment variables spell it
+/// the American way. Setting the wrong one is not an error anywhere: the
+/// server starts, the deploy is green, and the only symptom is that buying
+/// quietly stops working. That cost an hour on 2026-09-18 and would have cost
+/// a real sale, because a misspelled `CUTLASS_LS_LICENSE_VARIANTS` makes every
+/// paid order fall through to "unknown product — grant nothing".
+///
+/// Neither spelling is worth defending, so both are accepted.
+/// Each name is checked for a *usable* value before falling through to the
+/// other. Filtering after the fallback instead would let an empty variable
+/// left over from a previous attempt mask the good one beside it — which is
+/// exactly the state a couple of rounds of renaming leaves behind.
+fn licence_env(name: &str) -> Option<String> {
+    let alt = name.replace("LICENSE", "LICENCE");
+    let pick = |k: &str| {
+        env::var(k)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    pick(name).or_else(|| pick(&alt))
+}
+
 async fn buy(
     State(state): State<AppState>,
     Path(what): Path<String>,
@@ -1131,16 +1157,14 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(0.0)
             * 60.0,
         ls_signing_secret: env::var("CUTLASS_LS_SIGNING_SECRET").ok().filter(|s| !s.is_empty()),
-        ls_license_variants: env::var("CUTLASS_LS_LICENSE_VARIANTS")
+        ls_license_variants: licence_env("CUTLASS_LS_LICENSE_VARIANTS")
             .unwrap_or_default()
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect(),
         // "variantId:minutes,variantId:minutes"
-        ls_checkout_license: env::var("CUTLASS_LS_CHECKOUT_LICENSE")
-            .ok()
-            .filter(|s| !s.trim().is_empty()),
+        ls_checkout_license: licence_env("CUTLASS_LS_CHECKOUT_LICENSE"),
         ls_checkout_credits: env::var("CUTLASS_LS_CHECKOUT_CREDITS")
             .ok()
             .filter(|s| !s.trim().is_empty()),
@@ -1365,6 +1389,43 @@ mod tests {
             go(st.clone(), "/buy/credits?hwid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").await,
             (StatusCode::FOUND, format!("https://example.test/buy/credits?checkout[custom][hwid]={hw}"))
         );
+    }
+
+    /// Both spellings of "licence" must work.
+    ///
+    /// Not pedantry: the docs spell it one way and the env vars the other, so
+    /// the wrong one gets set, and nothing anywhere reports it — the deploy is
+    /// green and buying is simply broken.
+    #[test]
+    fn either_spelling_of_licence_is_accepted() {
+        let uniq = format!("CUTLASS_TEST_{}_LICENSE_X", std::process::id());
+        let brit = uniq.replace("LICENSE", "LICENCE");
+
+        assert_eq!(licence_env(&uniq), None, "nothing set means nothing");
+
+        env::set_var(&brit, "https://example.test/british");
+        assert_eq!(
+            licence_env(&uniq).as_deref(),
+            Some("https://example.test/british"),
+            "the British spelling was ignored, which is the bug this prevents"
+        );
+
+        env::set_var(&uniq, "https://example.test/american");
+        assert_eq!(
+            licence_env(&uniq).as_deref(),
+            Some("https://example.test/american"),
+            "the documented name must win when both are set"
+        );
+
+        env::set_var(&uniq, "   ");
+        assert_eq!(
+            licence_env(&uniq).as_deref(),
+            Some("https://example.test/british"),
+            "a blank value is not a value; fall through to the other spelling"
+        );
+
+        env::remove_var(&uniq);
+        env::remove_var(&brit);
     }
 
     /// The one that costs money if it regresses.
