@@ -49,14 +49,13 @@ export function ExportDialog(p: {
   const [dir, setDir] = useState(p.initialDir);
   const [preset, setPreset] = useState("YouTube 1080p");
   const [format, setFormat] = useState("mp4_h264");
-  // default to the resolution that matches the footage, so the common path
-  // never silently upscales
-  const [resLabel, setResLabel] = useState(() => {
-    const sh = p.sourceHeight ?? 0;
-    if (!sh) return "1080p";
-    const fit = [...RESOLUTIONS].reverse().find((r) => r.h <= sh);
-    return (fit ?? RESOLUTIONS[0]).label;
-  });
+  // 1080p, matching the preset this dialog opens on. It used to default to
+  // whatever the footage was, which meant 4K footage opened showing the
+  // "YouTube 1080p" preset next to a 4K resolution — and anyone who trusted
+  // the preset label got a 4K render: far slower, far bigger, and no visible
+  // gain on the platforms they're posting to. Footage below 1080p still gets
+  // the upscale warning below.
+  const [resLabel, setResLabel] = useState("1080p");
   const [fps, setFps] = useState(30);
   const [quality, setQuality] = useState("high");
   // On by default: almost every recording benefits, and the people most likely
