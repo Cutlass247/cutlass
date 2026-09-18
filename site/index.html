@@ -186,7 +186,12 @@
     </p>
     <div class="cta-row">
       <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
-      <a class="btn buy" href="https://cutlass-production.up.railway.app/buy/license" target="_blank" rel="noopener noreferrer">Buy now — $49</a>
+      <!-- Not "Buy now": this lands on the download, because a licence is
+           granted to one specific computer and a visitor who has not installed
+           yet has none to grant it to. The link still goes through the
+           server's /buy, so the day there is something to sell on the web it
+           starts selling with no change here. -->
+      <a class="btn buy" href="https://cutlass-production.up.railway.app/buy/license" target="_blank" rel="noopener noreferrer">Get Cutlass — $49 once</a>
     </div>
     <!-- The download button points at releases/latest, which always resolves to
          whatever is newest. This label does not — it has to be changed by hand
@@ -380,9 +385,11 @@
   <section class="waitlist" id="download">
     <h2>Get the beta</h2>
     <p class="lead" style="margin: 0 auto;">Windows 10/11 today. macOS and Linux follow. If you're leaving another editor — we built this for you.</p>
+    <!-- Only the download here. The buy link redirects to this very section,
+         so a second button beside it was a link to the place you already
+         are. The price is on the line below. -->
     <div class="cta-row" style="justify-content: center;">
       <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
-      <a class="btn buy" href="https://cutlass-production.up.railway.app/buy/license" target="_blank" rel="noopener noreferrer">Buy now — $49</a>
     </div>
     <p class="pledge-line">Free 7-day trial, then $49 once — yours forever. Not on Windows? <a href="mailto:beta@cutlass.app?subject=Cutlass%20for%20Mac%2FLinux&body=Tell%20me%20when%20it%27s%20ready.%20I%20use%3A%20" style="color: var(--blue);">Tell us to ping you</a> when your platform's ready.</p>
   </section>
