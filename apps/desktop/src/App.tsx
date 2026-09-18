@@ -2833,6 +2833,7 @@ export default function App() {
           }
           titleOverlay={titleOverlay}
           caption={caption}
+          noMedia={Object.keys(media).length === 0}
           playhead={playhead}
           playing={playing}
           canPlay={clips.length > 0}

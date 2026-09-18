@@ -642,6 +642,29 @@ button {
   font-size: 12px;
 }
 
+/* First launch only. Deliberately quiet rather than a big empty-state
+   illustration: the person is one action away from a working editor, and the
+   fastest thing is to name that action and get out of the way. */
+.monitor-empty.first-run {
+  text-align: center;
+  padding: 0 24px;
+}
+.monitor-empty .fr-head {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.monitor-empty .fr-sub {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.monitor-empty .fr-sub b {
+  color: var(--text);
+  font-weight: 600;
+}
+
 /* Create mode: preview the footage reframed to the chosen output shape.
    The foreground is the actual frame (cover or contain); a blurred copy
    fills the letterbox gaps when "Blur bg" is chosen. */

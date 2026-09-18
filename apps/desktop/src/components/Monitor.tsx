@@ -291,6 +291,11 @@ export function Monitor(p: {
   onTogglePlay: () => void;
   onSeek: (t: number) => void;
   contentEnd: number;
+  /// No media imported at all, as opposed to a playhead sitting in a gap.
+  /// The two look identical here and need entirely different things said about
+  /// them: one is a state to explain, the other is someone who has just opened
+  /// Cutlass for the first time and needs to know what to do.
+  noMedia?: boolean;
 }) {
   const [safe, setSafe] = useState(false);
   const frameRef = useRef<HTMLDivElement>(null);
@@ -364,6 +369,15 @@ export function Monitor(p: {
               )}
             </div>
           )
+        ) : p.noMedia ? (
+          // First launch. "No clip under the playhead" is true but useless
+          // here — it describes a timeline this person does not have yet.
+          <div className="monitor-empty first-run">
+            <div className="fr-head">Drop a video here to start</div>
+            <div className="fr-sub">
+              or use <b>+ Import</b> — your clip lands in the bin, then drag it onto a track
+            </div>
+          </div>
         ) : (
           <div className="monitor-empty">No clip under the playhead</div>
         )}
