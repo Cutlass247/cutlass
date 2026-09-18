@@ -428,17 +428,49 @@ async fn checkout(State(state): State<AppState>) -> Json<serde_json::Value> {
 /// store. Until the store is activated there is nothing there to buy, and a
 /// button that leads somewhere you cannot pay is worse than one that offers
 /// the trial — which is what someone should be doing in the meantime anyway.
-async fn buy(State(state): State<AppState>, Path(what): Path<String>) -> Response {
+///
+/// It takes a checkout to reach only when it also knows WHO to grant to.
+/// Payment is tied to a machine: the webhook reads `custom_data.hwid` and
+/// drops any order that arrives without one, so a checkout with no hwid
+/// behind it charges the card and grants nothing — silently, since the
+/// webhook still answers 200 and Lemon Squeezy sees a clean delivery. The
+/// landing page links here with no hwid because a visitor has not installed
+/// yet and has no machine id to give, so that visitor is sent to the
+/// download and buys from inside the app, where there is one.
+async fn buy(
+    State(state): State<AppState>,
+    Path(what): Path<String>,
+    Query(q): Query<BuyQuery>,
+) -> Response {
     let link = match what.as_str() {
         "credits" => state.cfg.ls_checkout_credits.clone(),
         _ => state.cfg.ls_checkout_license.clone(),
     };
-    let to = link.unwrap_or_else(|| {
-        "https://cutlass247.github.io/#download".to_string()
-    });
+    let to = match (link, q.hwid.as_deref().and_then(safe_hwid)) {
+        (Some(l), Some(h)) => {
+            let sep = if l.contains('?') { '&' } else { '?' };
+            format!("{l}{sep}checkout[custom][hwid]={h}")
+        }
+        _ => "https://cutlass247.github.io/#download".to_string(),
+    };
     // 302, not 301: browsers cache a permanent redirect, and this target
     // changes the day the store goes live.
     (StatusCode::FOUND, [(axum::http::header::LOCATION, to)]).into_response()
+}
+
+#[derive(Deserialize)]
+struct BuyQuery {
+    hwid: Option<String>,
+}
+
+/// A machine id that is safe to paste into a redirect URL.
+///
+/// The id is a SHA-256 hex digest, so anything outside `[0-9a-f]` is not one
+/// of ours. Checking that rather than escaping it keeps a crafted `hwid` from
+/// smuggling extra parameters into the checkout link it is appended to.
+fn safe_hwid(h: &str) -> Option<&str> {
+    let h = h.trim();
+    (h.len() >= 8 && h.len() <= 128 && h.chars().all(|c| c.is_ascii_hexdigit())).then_some(h)
 }
 
 async fn activate(
@@ -1318,14 +1350,80 @@ mod tests {
             "before the store is activated there is nothing to buy there: {loc}"
         );
 
-        // configured: the configured link, and 302 so browsers don't cache a
-        // target that changes the day the store goes live
+        // configured, and the caller says which machine to grant to: the
+        // configured link, carrying the hwid the webhook will read back.
         let mut st = test_state(0.0, 0.0, &[]);
         let cfg = Arc::get_mut(&mut st.cfg).unwrap();
         cfg.ls_checkout_license = Some("https://example.test/buy/live".into());
         cfg.ls_checkout_credits = Some("https://example.test/buy/credits".into());
-        assert_eq!(go(st.clone(), "/buy/license").await, (StatusCode::FOUND, "https://example.test/buy/live".into()));
-        assert_eq!(go(st, "/buy/credits").await, (StatusCode::FOUND, "https://example.test/buy/credits".into()));
+        let hw = "a".repeat(64);
+        assert_eq!(
+            go(st.clone(), "/buy/license?hwid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").await,
+            (StatusCode::FOUND, format!("https://example.test/buy/live?checkout[custom][hwid]={hw}"))
+        );
+        assert_eq!(
+            go(st.clone(), "/buy/credits?hwid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").await,
+            (StatusCode::FOUND, format!("https://example.test/buy/credits?checkout[custom][hwid]={hw}"))
+        );
+    }
+
+    /// The one that costs money if it regresses.
+    ///
+    /// The webhook drops an order whose `custom_data.hwid` is empty and still
+    /// answers 200, so a checkout reached without one charges the card and
+    /// grants nothing, with nothing anywhere reporting that it happened. A
+    /// live store must therefore never be reachable through this route
+    /// unattributed — the landing page links here with no hwid, because a
+    /// visitor has not installed yet, and belongs on the download instead.
+    #[tokio::test]
+    async fn a_live_checkout_is_never_reached_without_a_machine_to_grant_to() {
+        use tower::ServiceExt;
+
+        let go = |st: AppState, path: String| async move {
+            let res = router(st)
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(&path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            res.headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string()
+        };
+
+        let mut st = test_state(0.0, 0.0, &[]);
+        let cfg = Arc::get_mut(&mut st.cfg).unwrap();
+        cfg.ls_checkout_license = Some("https://example.test/buy/live".into());
+
+        // The store is live. Every one of these lacks a usable machine id, so
+        // none of them may arrive at a page that can take money.
+        for q in [
+            "",                       // the landing page's own Buy button
+            "?hwid=",                 // present but empty
+            "?hwid=%20%20",           // whitespace only
+            "?hwid=short",            // too short to be a digest
+            "?hwid=not-a-hex-digest", // not a digest at all
+        ] {
+            let loc = go(st.clone(), format!("/buy/license{q}")).await;
+            assert!(
+                !loc.starts_with("https://example.test"),
+                "reached a live checkout with no machine to grant to ({q:?} → {loc})"
+            );
+        }
+
+        // An hwid must not be able to smuggle extra checkout parameters into
+        // the link it is appended to.
+        let sneaky = go(
+            st,
+            "/buy/license?hwid=aaaaaaaaaaaaaaaa%26checkout%5Bdiscount%5D%3DFREE".to_string(),
+        )
+        .await;
+        assert!(!sneaky.contains("discount"), "hwid smuggled a parameter in: {sneaky}");
     }
 
     /// Every lock in this file must go through `lock_ok`, checked by reading
