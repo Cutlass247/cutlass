@@ -1428,6 +1428,28 @@ export default function App() {
     await importPaths(paths);
   }, [importPaths]);
 
+  // Stop the webview handling OS drops itself.
+  //
+  // Tauri's file-drop handler is window-wide, but WebView2 claims drops that
+  // land on content it considers droppable — the <img> elements in the player,
+  // notably. Where it does, Tauri never sees the drop. That produced a genuinely
+  // confusing bug: dropping a video worked over the media bin and the timeline
+  // and did nothing over the preview, which is precisely where the empty state
+  // invites you to drop it.
+  //
+  // Cancelling dragover/drop leaves the webview with nothing to claim, so every
+  // region reaches the same handler. The bin-to-timeline drag is unaffected —
+  // that runs on pointer events, not drag events.
+  useEffect(() => {
+    const swallow = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", swallow);
+    window.addEventListener("drop", swallow);
+    return () => {
+      window.removeEventListener("dragover", swallow);
+      window.removeEventListener("drop", swallow);
+    };
+  }, []);
+
   // Dropping a video on the window is the first thing most people try, and it
   // used to do nothing at all — not even a cursor change. Files that aren't
   // media are named rather than silently ignored, so a mistaken drop explains
