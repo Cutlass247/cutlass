@@ -19,6 +19,7 @@ set -euo pipefail
 # Usage:
 #   scripts/publish-site.sh            publish site/index.html to the root site
 #   scripts/publish-site.sh --verify   check the live page matches, change nothing
+#   scripts/publish-site.sh --force    publish even if the page already matches
 
 REPO="Cutlass247/Cutlass247.github.io"
 URL="https://cutlass247.github.io/"
@@ -26,6 +27,13 @@ ROOT="$(git rev-parse --show-toplevel)"
 SRC="$ROOT/site/index.html"
 
 [ -f "$SRC" ] || { echo "missing $SRC" >&2; exit 1; }
+
+FORCE="no"
+case "${1:-}" in
+  --force) FORCE="yes" ;;
+  --verify|"") ;;
+  *) echo "unknown option: $1" >&2; echo "usage: publish-site.sh [--verify|--force]" >&2; exit 2 ;;
+esac
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -98,9 +106,15 @@ if remote_sha="$(gh api "repos/$REPO/contents/index.html" --jq .sha 2>/dev/null)
   # Skip a no-op push. Publishing an identical page would still make a
   # commit, and a history of empty commits hides the ones that changed
   # something.
-  if fetch_live | strip_stamp > "$tmp/live.html" 2>/dev/null; then
+  #
+  # --force overrides that, because the comparison ignores the build stamp and
+  # therefore cannot refresh one. That matters after a history rewrite: the
+  # stamp names a commit, and the commit it named may no longer exist, leaving
+  # the page correct but its own fingerprint pointing at nothing.
+  if [ "$FORCE" = "no" ] && fetch_live | strip_stamp > "$tmp/live.html" 2>/dev/null; then
     if diff -q "$tmp/live.html" <(strip_stamp < "$SRC") >/dev/null; then
       echo "unchanged — $URL already serves this page"
+      echo "  (--force publishes anyway, e.g. to refresh a stale build stamp)"
       exit 0
     fi
   fi
