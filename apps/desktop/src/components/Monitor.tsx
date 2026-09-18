@@ -378,6 +378,19 @@ export function Monitor(p: {
               or use <b>+ Import</b> — your clip lands in the bin, then drag it onto a track
             </div>
           </div>
+        ) : !p.canPlay ? (
+          // Imported, but nothing on the timeline: the point where a new user
+          // is actually stuck. Import deliberately never auto-adds a clip, so
+          // this is a step everyone takes, and until now the app answered it
+          // with "No clip under the playhead" — a description of the symptom.
+          // Everything downstream waits on it, including Find the best moments,
+          // which reads the first clip on the timeline rather than the bin.
+          <div className="monitor-empty first-run">
+            <div className="fr-head">Drag a clip onto a track to start</div>
+            <div className="fr-sub">
+              your media is in the bin on the left — drag it down to the timeline
+            </div>
+          </div>
         ) : (
           <div className="monitor-empty">No clip under the playhead</div>
         )}
