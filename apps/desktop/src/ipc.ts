@@ -803,6 +803,34 @@ export async function onMediaConformed(
   );
 }
 
+/// File extensions an import will accept. Dropping a .pdf on the window should
+/// say so rather than handing it to the media engine to fail on.
+const IMPORTABLE = [
+  "mp4", "mov", "mkv", "webm", "avi", "m4v", "mpg", "mpeg", "wmv", "flv",
+  "wav", "mp3", "aac", "flac", "m4a", "ogg", "opus",
+];
+
+export function isImportable(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return IMPORTABLE.includes(ext);
+}
+
+/// Fires when files are dropped onto the window from the desktop.
+///
+/// Needs `dragDropEnabled` in tauri.conf.json. That was previously false: the
+/// in-app bin-to-timeline drag was built on HTML5 drag events, which the
+/// Windows webview suppresses when the native handler is active. That drag has
+/// since been rewritten to use pointer events, which the native handler does
+/// not touch — so the reason for disabling it no longer applies, and dropping
+/// a video on the window is the first thing most people try.
+export async function onFileDrop(cb: (paths: string[]) => void): Promise<() => void> {
+  if (!inTauri) return () => {};
+  const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+  return getCurrentWebview().onDragDropEvent((e) => {
+    if (e.payload.type === "drop") cb(e.payload.paths);
+  });
+}
+
 /// Fires when the full scrub strip has finished building behind an import.
 ///
 /// Import returns a couple of dozen thumbnails so the clip appears at once,

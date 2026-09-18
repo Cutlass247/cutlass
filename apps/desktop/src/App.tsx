@@ -14,7 +14,9 @@ import {
   aiFailureText,
   aiHighlights,
   appVersion,
+  isImportable,
   isOffline,
+  onFileDrop,
   PendingUpdate,
   readPendingUpdate,
   aiUsage,
@@ -1376,9 +1378,11 @@ export default function App() {
     [refreshUsage]
   );
 
-  const doImport = useCallback(async () => {
+  /// Import a known list of files. Shared by the Import button and by dropping
+  /// files on the window, so both behave identically — same progress, same
+  /// partial-failure reporting, same "never auto-add to the timeline" rule.
+  const importPaths = useCallback(async (paths: string[]) => {
     setError(null);
-    const paths = await pickVideos();
     if (!paths.length) return;
     const nameOf = (p: string) => p.split(/[\\/]/).pop() ?? p;
     setBusy(
@@ -1418,6 +1422,32 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, doTranscribe]);
+
+  const doImport = useCallback(async () => {
+    const paths = await pickVideos();
+    await importPaths(paths);
+  }, [importPaths]);
+
+  // Dropping a video on the window is the first thing most people try, and it
+  // used to do nothing at all — not even a cursor change. Files that aren't
+  // media are named rather than silently ignored, so a mistaken drop explains
+  // itself instead of looking like the app froze.
+  useEffect(() => {
+    const un = onFileDrop((paths) => {
+      const media = paths.filter(isImportable);
+      const rejected = paths.filter((p) => !isImportable(p));
+      if (media.length) void importPaths(media);
+      if (!media.length && rejected.length) {
+        const names = rejected.map((p) => p.split(/[\\/]/).pop()).slice(0, 3).join(", ");
+        setError(
+          `Cutlass can't import ${names}${rejected.length > 3 ? ` and ${rejected.length - 3} more` : ""}. Drop a video or audio file.`
+        );
+      }
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [importPaths]);
 
   // place a clip from a bin item at a given track + start
   const onDropMedia = useCallback(
