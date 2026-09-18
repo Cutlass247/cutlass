@@ -246,7 +246,11 @@ export default function App() {
         preparing?: string | null;
       }
     | { phase: "done"; path: string; encoder: string }
-    | { phase: "error"; message: string }
+    /** `opts` is kept so the failure can offer to run the same render again —
+     *  a good share of late failures are passing driver faults that clear on
+     *  a second attempt, and re-picking every setting by hand is a poor way
+     *  to find that out after a twenty-minute wait. */
+    | { phase: "error"; message: string; opts: ExportOptions }
     | null
   >(null);
   const [peers, setPeers] = useState<Record<string, Presence & { ts: number }>>({});
@@ -1789,10 +1793,13 @@ export default function App() {
       const encoder = await exportProject(opts);
       setExportModal({ phase: "done", path: opts.path, encoder });
     } catch (e) {
-      const msg = String(e);
+      // `Error: ` is how JavaScript stringifies a throw — it means nothing to
+      // someone reading this dialog, so it doesn't belong in front of the
+      // sentence they're trying to make sense of.
+      const msg = String(e).replace(/^Error:\s*/, "");
       // a user cancel just closes the modal — it isn't an error
       if (/cancel/i.test(msg)) setExportModal(null);
-      else setExportModal({ phase: "error", message: msg });
+      else setExportModal({ phase: "error", message: msg, opts });
     }
   }, []);
 
@@ -3093,9 +3100,33 @@ export default function App() {
               <>
                 <div className="modal-title">Export failed</div>
                 <div className="modal-sub error">{exportModal.message}</div>
+                <div className="modal-sub">
+                  Your timeline is untouched. Running it again often works — several
+                  of the things that stop a render are passing graphics-driver faults.
+                </div>
                 <div className="modal-actions">
-                  <button className="primary-action" onClick={() => setExportModal(null)}>
+                  <button className="ghost-btn" onClick={() => setExportModal(null)}>
                     Close
+                  </button>
+                  <button
+                    className="ghost-btn"
+                    onClick={() => {
+                      // Hand the failure straight to the report rather than
+                      // making someone retype an ffmpeg error out of a dialog.
+                      setFeedbackText(
+                        `Export failed.\n\n${exportModal.message}\n\nSettings: ${exportModal.opts.width}×${exportModal.opts.height} @ ${exportModal.opts.fps}fps, ${exportModal.opts.format}, ${exportModal.opts.quality}`
+                      );
+                      setExportModal(null);
+                      setFeedbackOpen(true);
+                    }}
+                  >
+                    Send report
+                  </button>
+                  <button
+                    className="primary-action"
+                    onClick={() => runExport(exportModal.opts)}
+                  >
+                    Try again
                   </button>
                 </div>
               </>
