@@ -1,12 +1,19 @@
-# Cutlass 0.1.0
+# Cutlass 0.1.1
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
 
+## New in 0.1.1
+
+- **Drag a video onto the window to import it.** This simply did nothing before — now a file dropped anywhere on Cutlass lands in the bin, including on the player, where the first-run message asks you to drop one.
+- **A first run tells you what to do next** instead of telling you what is missing: drop a video, then drag the clip onto a track.
+- **Export defaults to 1080p** — matching the preset the dialog opens on — and never above your footage, because exporting 720p at 1080p cannot add detail and only makes the file bigger.
+- **A failed export can be tried again or reported**, rather than leaving you with an encoder error and a Close button. Your timeline is untouched either way, and several of the things that stop a render clear on a second attempt.
+
 ## Download
 
-**Cutlass_0.1.0_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.1.1_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
