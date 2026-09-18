@@ -136,19 +136,27 @@ fn agent() -> ureq::Agent {
     builder.build()
 }
 
-/// Where to send someone who wants to buy, asked of the server rather than
-/// compiled in.
+/// Where to send someone who wants to buy.
 ///
-/// Going live on Lemon Squeezy creates new products with new ids and new
-/// checkout links. Baked into the app, that would mean a new build to change
-/// them — and every copy already installed would keep opening a checkout that
-/// cannot take money. Returns None when the server can't be reached or hasn't
-/// been told, and the caller keeps whatever it already had.
-pub fn checkout_links() -> Option<(Option<String>, Option<String>)> {
-    let url = format!("{}/checkout", server_url().trim_end_matches('/'));
-    let v: serde_json::Value = agent().get(&url).call().ok()?.into_json().ok()?;
-    let pick = |k: &str| v[k].as_str().filter(|s| !s.is_empty()).map(str::to_string);
-    Some((pick("license"), pick("credits")))
+/// Nothing about the store is compiled in here, deliberately. Going live on
+/// Lemon Squeezy creates new products with new ids and new checkout links, so
+/// anything baked into the app is pointing at the old ones the moment it
+/// matters — and the copies already installed would keep opening a checkout
+/// that cannot take money. The server owns the current link and redirects to
+/// it, which is why this is a URL to open rather than a request to make: no
+/// network call here, nothing to fail, and going live needs no new build.
+///
+/// The machine id travels with it because payment is tied to a machine — the
+/// webhook drops an order that arrives without one — and the server will only
+/// forward to a real checkout when it has one.
+pub fn checkout_url(kind: &str) -> String {
+    let kind = if kind == "credits" { "credits" } else { "license" };
+    format!(
+        "{}/buy/{}?hwid={}",
+        server_url().trim_end_matches('/'),
+        kind,
+        machine_id()
+    )
 }
 
 fn post_lease(path: &str, body: serde_json::Value) -> Option<SignedLease> {
@@ -428,6 +436,37 @@ mod tests {
     use cutlass_license::{Lease, Status, NEVER};
 
     const DAY: i64 = 86_400;
+
+    /// The Buy button must never lead to a store URL this app chose, and must
+    /// always name the machine to grant to.
+    ///
+    /// Both halves cost money if they regress. A compiled-in store link is
+    /// wrong the day the store moves, which is the day it starts mattering;
+    /// and a checkout reached without an hwid takes the card and grants
+    /// nothing, because the webhook drops an order that cannot be attributed
+    /// and still answers 200, so nobody finds out.
+    #[test]
+    fn buying_goes_through_our_own_server_and_names_the_machine() {
+        for kind in ["license", "credits"] {
+            let url = checkout_url(kind);
+            assert!(
+                url.starts_with(&server_url()),
+                "the buy link left our server, so the store got compiled in: {url}"
+            );
+            assert!(
+                !url.contains("lemonsqueezy"),
+                "a store URL is baked into the app again: {url}"
+            );
+            assert!(url.contains(&format!("/buy/{kind}")), "wrong product: {url}");
+            assert!(
+                url.contains(&format!("hwid={}", machine_id())),
+                "no machine to grant the purchase to: {url}"
+            );
+        }
+        // An unrecognised kind must not invent a third product or drop the
+        // path segment and point at the server root.
+        assert!(checkout_url("nonsense").contains("/buy/license"));
+    }
 
     /// The frontend decides whether to run the on-device finder by switching on
     /// `kind`. Rename a variant and one of two things happens silently: the app

@@ -1011,15 +1011,12 @@ fn save_project(path: String, state: State<AppState>) -> Result<serde_json::Valu
     Ok(snap)
 }
 
-/// Buy-links from the server, so the store can move without a new build.
-/// Empty strings mean "server didn't say" — the app keeps its own defaults.
+/// Where the Buy button goes: a link on the licence server, which owns the
+/// current checkout and redirects to it, so the store can move without a new
+/// build and no store URL is ever compiled into the app.
 #[tauri::command]
-async fn checkout_links() -> Result<serde_json::Value, String> {
-    let got = tauri::async_runtime::spawn_blocking(license::checkout_links)
-        .await
-        .map_err(err_str)?;
-    let (lic, cred) = got.unwrap_or((None, None));
-    Ok(serde_json::json!({ "license": lic, "credits": cred }))
+fn checkout_url(kind: String) -> String {
+    license::checkout_url(&kind)
 }
 
 /// Make sure `src` has a CFR copy, doing the work if nobody has yet.
@@ -2815,7 +2812,7 @@ fn main() {
             save_recovery_copy,
             updates_enabled,
             collab_enabled,
-            checkout_links,
+            checkout_url,
             take_startup_file,
             default_project_dir,
             default_export_dir,

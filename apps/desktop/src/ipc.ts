@@ -740,35 +740,33 @@ export async function openUrl(url: string): Promise<void> {
   }
 }
 
-/// Lemon Squeezy checkout links (store: cutlass.lemonsqueezy.com).
-export const LS_CHECKOUT = {
-  license: "https://cutlass.lemonsqueezy.com/buy/2305c6fb-2eb1-486d-b2ac-9990156365aa",
-  credits: "https://cutlass.lemonsqueezy.com/buy/045915cf-c5e1-4191-8c69-7a1a260c5c7f",
-} as const;
+/// The app's own licence server — which is also where the Buy button points.
+/// Not the store: no checkout URL is compiled into this app.
+const LICENSE_SERVER = "https://cutlass-production.up.railway.app";
 
-/// Open a Lemon Squeezy checkout in the browser, carrying THIS machine's id as
-/// custom data so the payment webhook grants the licence/credits to it.
+/// Open the checkout in the browser.
 ///
-/// The link is asked of the licence server first, and the constants above are
-/// only the fallback. Going live on Lemon Squeezy creates new products with
-/// new ids and new checkout links — so if these were simply compiled in, the
-/// day the store went live every copy of Cutlass already installed would open
-/// a checkout that could not take money, and only a new release would fix it.
+/// The destination is a link on the licence server, which redirects to
+/// whatever the current checkout is. Deliberately not a store URL: going live
+/// on Lemon Squeezy creates new products with new ids and new checkout links,
+/// so a URL compiled in here points at the wrong thing exactly when it
+/// matters, and every copy already installed would open a checkout that
+/// cannot take money. This way the store can move and nothing needs a new
+/// build.
+///
+/// The machine id travels with it, because the payment webhook grants to the
+/// machine named in the order's custom data and silently drops an order that
+/// arrives without one. The server appends it to the real checkout and
+/// refuses to forward at all when it is missing — so there is no route
+/// through here to a page that takes money it cannot give anyone.
 export async function openCheckout(kind: "license" | "credits"): Promise<void> {
-  const hwid = await licenseMachineId();
-  let base: string = LS_CHECKOUT[kind];
-  if (inTauri) {
-    try {
-      const links = await invoke<{ license: string | null; credits: string | null }>(
-        "checkout_links"
-      );
-      base = links[kind] || base;
-    } catch {
-      // unreachable server → the compiled-in link, which is better than nothing
-    }
+  if (!inTauri) {
+    // The dev preview has no machine to license, so it gets the public page
+    // rather than a route that could reach a live checkout.
+    await openUrl(`${LICENSE_SERVER}/buy/${kind}`);
+    return;
   }
-  const url = `${base}?checkout[custom][hwid]=${encodeURIComponent(hwid)}`;
-  await openUrl(url);
+  await openUrl(await invoke<string>("checkout_url", { kind }));
 }
 
 /// Reveal the exported file in the OS file browser.
