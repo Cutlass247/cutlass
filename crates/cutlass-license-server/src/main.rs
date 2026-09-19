@@ -377,6 +377,35 @@ struct RedeemReq {
     code: String,
 }
 
+/// Gate an admin endpoint, saying which way it failed.
+///
+/// "bad admin token" covered both a wrong token and one that was never
+/// configured, which are different problems with different fixes — and the
+/// second is the likelier one on a fresh deploy. Both the stored value and the
+/// header are trimmed, because a token pasted into a dashboard field arrives
+/// with a trailing newline more often than anyone expects.
+fn check_admin(state: &AppState, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+    let Some(tok) = state.cfg.admin_token.as_deref() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CUTLASS_ADMIN_TOKEN is not set on this server, so no token can be right.              Set it and redeploy."
+                .into(),
+        ));
+    };
+    let want = headers
+        .get("x-admin-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim();
+    if want.is_empty() {
+        return Err((StatusCode::UNAUTHORIZED, "no X-Admin-Token header on this request".into()));
+    }
+    if want != tok {
+        return Err((StatusCode::UNAUTHORIZED, "the X-Admin-Token sent does not match the one this server was started with".into()));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct MintReq {
     count: Option<u32>,
@@ -592,11 +621,7 @@ async fn mint(
     headers: HeaderMap,
     Json(req): Json<MintReq>,
 ) -> Result<Json<MintResp>, (StatusCode, String)> {
-    let want = headers.get("x-admin-token").and_then(|v| v.to_str().ok()).unwrap_or("");
-    match &state.cfg.admin_token {
-        Some(tok) if !tok.is_empty() && want == tok => {}
-        _ => return Err((StatusCode::UNAUTHORIZED, "bad admin token".into())),
-    }
+    check_admin(&state, &headers)?;
     let n = req.count.unwrap_or(1).clamp(1, 100);
     let t = now();
     let mut codes = Vec::new();
@@ -982,11 +1007,7 @@ async fn grant(
     headers: HeaderMap,
     Json(req): Json<GrantReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let want = headers.get("x-admin-token").and_then(|v| v.to_str().ok()).unwrap_or("");
-    match &state.cfg.admin_token {
-        Some(tok) if !tok.is_empty() && want == tok => {}
-        _ => return Err((StatusCode::UNAUTHORIZED, "bad admin token".into())),
-    }
+    check_admin(&state, &headers)?;
     let hwid = req.hwid.trim();
     let secs = (req.minutes * 60.0).max(0.0);
     let db = state.db.lock_ok();
@@ -1007,11 +1028,7 @@ async fn admin_reset(
     headers: HeaderMap,
     Json(req): Json<UsageQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let want = headers.get("x-admin-token").and_then(|v| v.to_str().ok()).unwrap_or("");
-    match &state.cfg.admin_token {
-        Some(tok) if !tok.is_empty() && want == tok => {}
-        _ => return Err((StatusCode::UNAUTHORIZED, "bad admin token".into())),
-    }
+    check_admin(&state, &headers)?;
     let hwid = req.hwid.trim();
     let db = state.db.lock_ok();
     let licenses = db.execute("DELETE FROM licenses WHERE hwid=?1", [hwid]).unwrap_or(0);
@@ -1229,7 +1246,10 @@ async fn main() -> anyhow::Result<()> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect(),
-        admin_token: env::var("CUTLASS_ADMIN_TOKEN").ok(),
+        admin_token: env::var("CUTLASS_ADMIN_TOKEN")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         anthropic_key: env::var("CUTLASS_ANTHROPIC_KEY").ok(),
         groq_key: env::var("CUTLASS_GROQ_KEY").ok(),
         ai_monthly_secs: env::var("CUTLASS_AI_MONTHLY_MINUTES")
