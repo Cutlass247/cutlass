@@ -6,7 +6,7 @@
 
 The video editor you don't have to learn. Drop in a long video and **AI finds your best moments** — captioned, vertical, ready to post — or edit by deleting words, and the video cuts itself. Everything OpusClip does, in an editor you own outright. Your video never leaves your machine.
 
-### [⬇ Download for Windows](../../releases/latest) · v0.1.1 · Free 7-day trial, then $49 once — yours forever
+### [⬇ Download for Windows](../../releases/latest) · v0.1.2 · Free 7-day trial, then $49 once — yours forever
 
 </div>
 
@@ -56,7 +56,7 @@ Every other editor wants a recurring piece of you — a monthly rental, a waterm
 
 ## Install
 
-1. Download **Cutlass_0.1.1_x64-setup.exe** from the [latest release](../../releases/latest).
+1. Download **Cutlass_0.1.2_x64-setup.exe** from the [latest release](../../releases/latest).
 2. Run it. Cutlass is code-signed, so Windows shows the publisher as **Isaiah Aniemeka** — you can check under Properties → Digital Signatures. SmartScreen may still warn on a new release while its reputation builds; if it does, click **More info → Run anyway**.
 3. Launch **Cutlass** from the Start menu. On first run you'll start your 7-day free trial (needs internet once to begin).
 

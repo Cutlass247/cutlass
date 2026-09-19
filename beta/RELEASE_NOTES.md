@@ -1,8 +1,12 @@
-# Cutlass 0.1.1
+# Cutlass 0.1.2
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
+
+## New in 0.1.2
+
+- **Exported audio no longer picks up a faint background hiss.** Audio was being encoded at a bitrate where the encoder ran short of bits and spilled its noise unevenly into the left and right channels — barely visible in a meter, clearly audible on headphones, and worst on the near-mono voice recordings this app is mostly used for. Screen recordings had it twice over, because the conversion they get on import was doing the same thing again. Exports now measure identical to the source.
 
 ## New in 0.1.1
 
@@ -13,7 +17,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.1.1_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.1.2_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
