@@ -3005,6 +3005,50 @@ mod tests {
     /// meant to stop. A grep that can be defeated by a line break is not a
     /// guarantee; this is, and it costs nothing to run.
     #[test]
+    /// Export settings must reach the exporter, and a key spelled wrong is
+    /// silent.
+    ///
+    /// Tauri matches a command's arguments by their camelCase spelling and
+    /// converts to the snake_case the Rust signature uses. A key sent as
+    /// snake_case matches nothing: the argument arrives as `None`, the
+    /// `unwrap_or` below hands over the default, and the export succeeds
+    /// having quietly ignored what the user asked for.
+    ///
+    /// That is not hypothetical. `master_audio`, `reframe_x` and `reframe_y`
+    /// were all sent snake_case, so "Enhance audio" was a switch that did
+    /// nothing at all, and every reframed clip exported dead-centre no matter
+    /// where it had been panned. Both shipped, and neither showed up as an
+    /// error anywhere -- the only evidence was the filter graph in the export
+    /// log lacking the mastering stage.
+    #[test]
+    fn export_settings_are_spelled_the_way_tauri_will_read_them() {
+        let ipc = include_str!("../../src/ipc.ts");
+        let at = ipc
+            .find("\"export_project\"")
+            .expect("ipc.ts no longer invokes export_project — has it moved?");
+        // the argument object, up to the end of this call
+        let args = &ipc[at..at + ipc[at..].find("});").expect("unterminated invoke") ];
+
+        for (wrong, right) in [
+            ("master_audio:", "masterAudio"),
+            ("reframe_x:", "reframeX"),
+            ("reframe_y:", "reframeY"),
+        ] {
+            assert!(
+                !args.contains(wrong),
+                "ipc.ts sends `{wrong}` to export_project. Tauri will not match it, \
+                 so it arrives as None and the default is used instead — silently. \
+                 Use `{right}`."
+            );
+            assert!(
+                args.contains(right),
+                "ipc.ts no longer sends `{right}` to export_project, so that setting \
+                 cannot reach the exporter."
+            );
+        }
+    }
+
+    #[test]
     fn every_mutex_in_this_file_goes_through_lock_ok() {
         // Production code only — the poisoning test below locks deliberately.
         let src = include_str!("main.rs");

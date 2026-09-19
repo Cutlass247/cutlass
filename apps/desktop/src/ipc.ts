@@ -658,12 +658,20 @@ export async function exportProject(opts: ExportOptions): Promise<string> {
     return "mock (h264)";
   }
   const { path, width, height, fps, format, quality, reframe, reframe_x, reframe_y } = opts;
+  // camelCase keys, like every other invoke here. Tauri matches a command's
+  // arguments by their camelCase spelling and converts to the snake_case the
+  // Rust signature uses; a key sent as snake_case matches nothing, arrives as
+  // None, and `unwrap_or` quietly supplies the default.
+  //
+  // Nothing fails when that happens, which is why it survived: Enhance audio
+  // was ticked and did nothing, and the Create tab's pan was dropped so every
+  // reframed clip exported dead-centre regardless of where it was framed.
   return invoke<string>("export_project", {
     path, width, height, fps, format, quality,
     reframe: reframe ?? "letterbox",
-    reframe_x: reframe_x ?? 0.5,
-    reframe_y: reframe_y ?? 0.5,
-    master_audio: opts.master_audio ?? false,
+    reframeX: reframe_x ?? 0.5,
+    reframeY: reframe_y ?? 0.5,
+    masterAudio: opts.master_audio ?? false,
   });
 }
 
