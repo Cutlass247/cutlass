@@ -186,12 +186,13 @@
     </p>
     <div class="cta-row">
       <a class="btn gold" href="https://github.com/Cutlass247/cutlass/releases/latest">Download for Windows</a>
-      <!-- Not "Buy now": this lands on the download, because a licence is
-           granted to one specific computer and a visitor who has not installed
-           yet has none to grant it to. The link still goes through the
-           server's /buy, so the day there is something to sell on the web it
-           starts selling with no change here. -->
-      <a class="btn buy" href="https://cutlass-production.up.railway.app/buy/license" target="_blank" rel="noopener noreferrer">Get Cutlass — $49 once</a>
+      <!-- Goes through the server's /buy rather than straight to the store:
+           the checkout URL changes whenever the store does, and the server is
+           the one place that knows the current one. A visitor arrives with no
+           machine id, so the purchase is fulfilled by the licence code the
+           payment webhook mints. NOTE that code is sent BY HAND — see
+           beta/GO-LIVE.md. -->
+      <a class="btn buy" href="https://cutlass-production.up.railway.app/buy/license" target="_blank" rel="noopener noreferrer">Buy Cutlass — $49 once</a>
     </div>
     <!-- The download button points at releases/latest, which always resolves to
          whatever is newest. This label does not — it has to be changed by hand
