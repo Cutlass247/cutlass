@@ -6,7 +6,9 @@ browser mock — this pass is about the **native app on real footage**, which
 those can't reach.
 
 **Setup**
-- Installer: `target/release/bundle/nsis/Cutlass_0.1.0_x64-setup.exe`
+- Installer: `target/release/bundle/nsis/Cutlass_<version>_x64-setup.exe` (the version in
+  `apps/desktop/src-tauri/tauri.conf.json`, which is not the public label — see
+  `beta/RELEASING.md`)
 - Install it, then launch **Cutlass** from the Start menu (not `npm run tauri dev`).
 - Have ready: one **talking-head clip** (you on camera, 30s+ with speech), and if
   possible a **long clip** (20 min+) and a **green-screen clip**. A `.cube` LUT
