@@ -141,7 +141,8 @@ fn init_db(conn: &Connection) {
             created_at   INTEGER NOT NULL,
             used_at      INTEGER,
             used_by      TEXT,
-            transfers    INTEGER NOT NULL DEFAULT 0
+            transfers    INTEGER NOT NULL DEFAULT 0,
+            order_id     TEXT                -- the purchase that minted it
          );
          -- AI usage metering: seconds of media processed per HWID per calendar
          -- month (resets when the YYYY-MM period rolls over).
@@ -173,6 +174,7 @@ fn init_db(conn: &Connection) {
         "ALTER TABLE codes ADD COLUMN transfers INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    let _ = conn.execute("ALTER TABLE codes ADD COLUMN order_id TEXT", []);
 }
 
 /// UTC calendar year-month ("YYYY-MM") for a unix time — the usage period
@@ -636,6 +638,93 @@ async fn mint(
         codes.push(code);
     }
     Ok(Json(MintResp { codes }))
+}
+
+#[derive(Deserialize)]
+struct CodeLookup {
+    order: Option<String>,
+    hwid: Option<String>,
+}
+
+/// GET /admin/code?order=… or ?hwid=… — find the code issued for a purchase.
+///
+/// The support answer to "I bought this and I'm on a new computer now". The
+/// code is in the webhook's response body at purchase time, but that is a log
+/// entry nobody keeps; this looks it up from either end.
+async fn admin_code(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CodeLookup>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_admin(&state, &headers)?;
+    let db = state.db.lock_ok();
+    let found = match (q.order.as_deref(), q.hwid.as_deref()) {
+        (Some(order), _) => db.query_row(
+            "SELECT code, used_by FROM codes WHERE order_id=?1",
+            [order.trim()],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        ),
+        (None, Some(hwid)) => db.query_row(
+            "SELECT code, used_by FROM codes WHERE used_by=?1 ORDER BY created_at DESC LIMIT 1",
+            [hwid.trim()],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+        ),
+        (None, None) => {
+            return Err((StatusCode::BAD_REQUEST, "pass ?order=… or ?hwid=…".into()))
+        }
+    };
+    match found {
+        Ok((code, used_by)) => Ok(Json(serde_json::json!({ "code": code, "used_by": used_by }))),
+        Err(_) => Err((
+            StatusCode::NOT_FOUND,
+            "no code on record for that. Purchases before recovery codes existed have \
+             none — mint one with /admin/mint."
+                .into(),
+        )),
+    }
+}
+
+/// The licence code for a paid order, minting one the first time it is asked.
+///
+/// Every licence purchase gets a code, even when the buyer's machine is known
+/// and has already been marked paid. It is their way back in.
+///
+/// A webhook grant binds the licence to one machine id, and that id is a hash
+/// of the Windows MachineGuid — so it changes when somebody reinstalls
+/// Windows, swaps a drive, or replaces the computer. Without a code such a
+/// buyer is simply locked out of something they own outright, with no
+/// self-service way back: only an email to support and a hand-minted code.
+/// A code can be redeemed on a new machine, which transfers the licence and
+/// releases the old one, so handing one out at purchase time turns that
+/// support conversation into something the customer can do themselves.
+///
+/// It is also what makes a purchase without a machine id deliverable at all —
+/// a web sale, where the buyer has not installed yet and has no id to give.
+///
+/// Keyed by order so a redelivered webhook returns the code it minted the
+/// first time instead of issuing a second one for the same purchase.
+fn code_for_order(db: &Connection, order_id: &str, t: i64) -> rusqlite::Result<String> {
+    if let Ok(existing) = db.query_row(
+        "SELECT code FROM codes WHERE order_id=?1",
+        [order_id],
+        |r| r.get::<_, String>(0),
+    ) {
+        return Ok(existing);
+    }
+    // A collision would fail the insert rather than overwrite somebody else's
+    // code; retrying a few times costs nothing against a 32^12 space.
+    let mut last = None;
+    for _ in 0..5 {
+        let code = new_code();
+        match db.execute(
+            "INSERT INTO codes (code, created_at, order_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params![code, t, order_id],
+        ) {
+            Ok(_) => return Ok(code),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.expect("loop runs at least once"))
 }
 
 /// A human-typable purchase code like CUTLASS-4KF9-2QX7-M3PD (no 0/O/1/I).
@@ -1140,15 +1229,14 @@ async fn lemonsqueezy_webhook(
             .or_else(|| vid.as_i64().map(|n| n.to_string()))
             .unwrap_or_default()
     };
-    if order_id.is_empty() || hwid.is_empty() || variant.is_empty() {
+    // A missing hwid is no longer fatal: a licence purchase without one still
+    // mints a code, which is how a web sale — where the buyer has not
+    // installed yet and has no machine id to give — becomes deliverable.
+    // Without an order id or a variant there is genuinely nothing to act on.
+    if order_id.is_empty() || variant.is_empty() {
         let mut missing = Vec::new();
         if order_id.is_empty() {
             missing.push("the order id");
-        }
-        if hwid.is_empty() {
-            // Deliberately does not echo the id — only whether one arrived.
-            missing.push("meta.custom_data.hwid (the machine to grant to — the \
-                          checkout was reached without one)");
         }
         if variant.is_empty() {
             missing.push("first_order_item.variant_id");
@@ -1174,8 +1262,45 @@ async fn lemonsqueezy_webhook(
     // recorded as processed: the card is already charged, so the only correct
     // answer is to fail loudly and let Lemon Squeezy retry the delivery.
     let wrote = if state.cfg.ls_license_variants.contains(&variant) {
-        mark_paid(&db, &hwid, t).map(|()| format!("granted: licence, from variant {variant}"))
+        // The code comes first: it is the buyer's proof of purchase and their
+        // way onto a different machine later, so it is worth having even if
+        // marking this machine paid fails.
+        code_for_order(&db, &order_id, t).and_then(|code| {
+            if hwid.is_empty() {
+                // Nobody to grant to yet. The code IS the delivery.
+                return Ok(format!(
+                    "granted: licence code {code} (no machine id on this order, so \
+                     nothing was activated — give the buyer this code and they \
+                     redeem it in the app)"
+                ));
+            }
+            mark_paid(&db, &hwid, t)?;
+            // Bind the code to the machine that just bought it, which is the
+            // same state redeeming it would leave behind. Redeeming it on a
+            // different machine later transfers the licence and releases this
+            // one, so the buyer can move without asking anyone.
+            db.execute(
+                "UPDATE codes SET used_at=?2, used_by=?3 WHERE code=?1 AND used_by IS NULL",
+                rusqlite::params![code, t, hwid],
+            )?;
+            Ok(format!(
+                "granted: licence, from variant {variant}. Recovery code {code} — give \
+                 it to the buyer so they can move to another machine themselves."
+            ))
+        })
     } else if let Some(mins) = state.cfg.ls_credit_variants.get(&variant) {
+        if hwid.is_empty() {
+            // Credits attach to a machine and there is no code form of them,
+            // so there is nothing to deliver to a buyer we cannot identify.
+            return Ok((
+                StatusCode::OK,
+                "GRANTED NOTHING: a credit top-up needs a machine id and this order \
+                 has none, so there is nobody to add minutes to. Credits can only be \
+                 bought from inside the app. Refund this order, or add the minutes by \
+                 hand with /admin/grant once you know the buyer's machine id."
+                    .into(),
+            ));
+        }
         db.execute(
             "INSERT INTO ai_credits (hwid, seconds) VALUES (?1, ?2)
              ON CONFLICT(hwid) DO UPDATE SET seconds = seconds + ?2",
@@ -1331,6 +1456,7 @@ fn router_with(state: AppState, extra: Router<AppState>) -> Router {
         .route("/activate", post(activate))
         .route("/redeem", post(redeem))
         .route("/admin/mint", post(mint))
+        .route("/admin/code", get(admin_code))
         .route("/admin/grant", post(grant))
         .route("/admin/reset", post(admin_reset))
         .route("/webhook/lemonsqueezy", post(lemonsqueezy_webhook))
@@ -1843,6 +1969,70 @@ mod tests {
             rusqlite::params![code, now()],
         )
         .unwrap();
+    }
+
+    /// One purchase yields one code, however many times it is delivered.
+    ///
+    /// Lemon Squeezy retries a delivery it is unsure about, and the webhook is
+    /// resent by hand whenever something needed fixing. Minting per delivery
+    /// would hand the same buyer several codes and leave spares loose that
+    /// each license a machine.
+    #[test]
+    fn a_purchase_gets_exactly_one_code_no_matter_how_often_it_is_delivered() {
+        let s = test_state(0.0, 0.0, &[]);
+        let db = s.db.lock_ok();
+
+        let first = code_for_order(&db, "order-1", 1_000).unwrap();
+        let again = code_for_order(&db, "order-1", 2_000).unwrap();
+        assert_eq!(first, again, "a redelivery minted a second code for one purchase");
+
+        let other = code_for_order(&db, "order-2", 1_000).unwrap();
+        assert_ne!(other, first, "two purchases shared a code");
+
+        let total: i64 = db
+            .query_row("SELECT COUNT(*) FROM codes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 2, "expected one code per order, found {total}");
+    }
+
+    /// The reason recovery codes exist.
+    ///
+    /// A webhook grant binds the licence to a machine id derived from the
+    /// Windows MachineGuid, which changes on a reinstall or a new computer.
+    /// The code the purchase issued has to carry the licence across, or
+    /// somebody who bought outright is locked out of it.
+    #[tokio::test]
+    async fn the_code_a_purchase_issues_moves_the_licence_to_a_new_machine() {
+        let s = test_state(0.0, 0.0, &[]);
+        let t = now();
+
+        // what the webhook does for a licence order from a known machine
+        let code = {
+            let db = s.db.lock_ok();
+            let code = code_for_order(&db, "order-42", t).unwrap();
+            mark_paid(&db, "first-pc", t).unwrap();
+            db.execute(
+                "UPDATE codes SET used_at=?2, used_by=?3 WHERE code=?1 AND used_by IS NULL",
+                rusqlite::params![code, t, "first-pc"],
+            )
+            .unwrap();
+            code
+        };
+        assert_eq!(status_of(&s, "first-pc").as_deref(), Some("paid"));
+
+        // they reinstall Windows: same person, new machine id, same code
+        let moved = redeem(
+            State(s.clone()),
+            Json(RedeemReq { hwid: "second-pc".into(), code: code.clone() }),
+        )
+        .await;
+        assert!(moved.is_ok(), "the code a purchase issued would not move to a new machine");
+        assert_eq!(status_of(&s, "second-pc").as_deref(), Some("paid"));
+        assert_ne!(
+            status_of(&s, "first-pc").as_deref(),
+            Some("paid"),
+            "the old machine kept the licence too — one purchase now licenses two"
+        );
     }
 
     fn status_of(s: &AppState, hwid: &str) -> Option<String> {

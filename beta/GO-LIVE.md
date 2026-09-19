@@ -172,6 +172,32 @@ opening a dead test checkout the day the store went live.
 
 **No landing-page change.** Its button already goes through `/buy/license`.
 
+## Recovery codes
+
+Every licence purchase mints a `CUTLASS-XXXX-XXXX-XXXX` code, returned in the
+webhook's response body and stored against the order.
+
+This matters because a webhook grant binds the licence to a machine id derived
+from the Windows MachineGuid, and that changes when somebody reinstalls
+Windows, swaps a drive or replaces the computer. Without a code, a customer who
+bought outright is locked out of it with no way back except emailing you. With
+one, they redeem it on the new machine and the licence transfers, releasing the
+old one.
+
+Look one up when a customer asks:
+
+```bash
+curl -s "https://cutlass-production.up.railway.app/admin/code?order=<order id>" -H "X-Admin-Token: <token>"
+```
+
+`?hwid=<machine id>` works too. Purchases made before this existed have no code
+on record — mint one with `/admin/mint`.
+
+A licence order that arrives **without** a machine id (a web sale) still mints
+a code and grants nothing; the code is the delivery. A **credit** order without
+one grants nothing and says so, because credits attach to a machine and have no
+code form — refund it, or add the minutes by hand once you know the buyer's id.
+
 ## If the website should sell directly
 
 It does not today, by design — see the top of this file. The alternative is to
