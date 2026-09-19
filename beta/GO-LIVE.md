@@ -198,10 +198,25 @@ a code and grants nothing; the code is the delivery. A **credit** order without
 one grants nothing and says so, because credits attach to a machine and have no
 code form — refund it, or add the minutes by hand once you know the buyer's id.
 
-## If the website should sell directly
+## The website sells licences directly — and fulfilment is MANUAL
 
-It does not today, by design — see the top of this file. The alternative is to
-mint a `CUTLASS-XXXX-XXXX-XXXX` code for an order that arrives with no hwid
-and have Lemon Squeezy deliver it in the confirmation email; the buyer then
-redeems it in the app's "Enter license key" box, which already works. That is
-a change to the webhook plus delivery configured in LS. It has not been built.
+`/buy/license` forwards to the checkout with or without a machine id, because
+a licence is deliverable either way: with one it is granted to that machine,
+without one the webhook mints a recovery code.
+
+**But nothing emails that code to the buyer.** The server has no mail. The code
+appears in the webhook's response body in Lemon Squeezy's delivery log, and in
+`/admin/code?order=…` — both of which only you can see.
+
+So every web sale needs you to send the code by hand. Lemon Squeezy emails you
+on each order, so you will know; at launch volumes it is a couple of minutes
+per sale. **If you stop watching for those emails, people who paid are left
+with nothing**, which is worse than the site not selling at all. Automating it
+needs either Lemon Squeezy's own licence-key feature or a post-purchase
+redirect to a page that displays the minted code.
+
+`/buy/credits` still requires a machine id and sends everyone else to the
+download: credits attach to a machine and have no code form, so there is
+nothing to hand a buyer you cannot identify.
+
+Guarded by `only_a_purchase_that_can_be_delivered_may_reach_a_checkout`.

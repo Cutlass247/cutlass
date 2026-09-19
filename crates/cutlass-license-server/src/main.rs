@@ -449,25 +449,6 @@ async fn checkout(State(state): State<AppState>) -> Json<serde_json::Value> {
     }))
 }
 
-/// Send a buyer to the current checkout.
-///
-/// A plain redirect so the landing page can link to it with an ordinary
-/// anchor — no JavaScript, no CORS, and nothing about the store baked into a
-/// static page that would need redeploying the day it changes.
-///
-/// With nothing configured it sends people to the download instead of to the
-/// store. Until the store is activated there is nothing there to buy, and a
-/// button that leads somewhere you cannot pay is worse than one that offers
-/// the trial — which is what someone should be doing in the meantime anyway.
-///
-/// It takes a checkout to reach only when it also knows WHO to grant to.
-/// Payment is tied to a machine: the webhook reads `custom_data.hwid` and
-/// drops any order that arrives without one, so a checkout with no hwid
-/// behind it charges the card and grants nothing — silently, since the
-/// webhook still answers 200 and Lemon Squeezy sees a clean delivery. The
-/// landing page links here with no hwid because a visitor has not installed
-/// yet and has no machine id to give, so that visitor is sent to the
-/// download and buys from inside the app, where there is one.
 /// Read a `…LICENSE…` variable, accepting `…LICENCE…` as well.
 ///
 /// Everything written about this project — the docs, the comments, the release
@@ -494,20 +475,47 @@ fn licence_env(name: &str) -> Option<String> {
     pick(name).or_else(|| pick(&alt))
 }
 
+/// Send a buyer to the current checkout.
+///
+/// A plain redirect so the landing page can link to it with an ordinary
+/// anchor — no JavaScript, no CORS, and nothing about the store baked into a
+/// static page that would need redeploying the day it changes.
+///
+/// With nothing configured it sends people to the download instead of to the
+/// store. Until the store is activated there is nothing there to buy, and a
+/// button that leads somewhere you cannot pay is worse than one that offers
+/// the trial — which is what someone should be doing in the meantime anyway.
+///
+/// A checkout is only worth reaching if the purchase can be delivered, and
+/// that differs by product.
+///
+/// A **licence** is deliverable either way. With a machine id it is granted to
+/// that machine; without one — a visitor who has not installed yet, which is
+/// every link from the landing page — the webhook mints a recovery code, and
+/// the code is the delivery.
+///
+/// **Credits** attach to a machine and have no code form, so an order without
+/// an id has nobody to add minutes to and nothing to hand over instead. Those
+/// still go to the download, because taking money for one would be taking
+/// money for something that cannot be delivered at all.
 async fn buy(
     State(state): State<AppState>,
     Path(what): Path<String>,
     Query(q): Query<BuyQuery>,
 ) -> Response {
-    let link = match what.as_str() {
-        "credits" => state.cfg.ls_checkout_credits.clone(),
-        _ => state.cfg.ls_checkout_license.clone(),
+    let wants_credits = what == "credits";
+    let link = if wants_credits {
+        state.cfg.ls_checkout_credits.clone()
+    } else {
+        state.cfg.ls_checkout_license.clone()
     };
     let to = match (link, q.hwid.as_deref().and_then(safe_hwid)) {
         (Some(l), Some(h)) => {
             let sep = if l.contains('?') { '&' } else { '?' };
             format!("{l}{sep}checkout[custom][hwid]={h}")
         }
+        // No machine id: fine for a licence, not for credits.
+        (Some(l), None) if !wants_credits => l,
         _ => "https://cutlass247.github.io/#download".to_string(),
     };
     // 302, not 301: browsers cache a permanent redirect, and this target
@@ -1662,14 +1670,14 @@ mod tests {
 
     /// The one that costs money if it regresses.
     ///
-    /// The webhook drops an order whose `custom_data.hwid` is empty and still
-    /// answers 200, so a checkout reached without one charges the card and
-    /// grants nothing, with nothing anywhere reporting that it happened. A
-    /// live store must therefore never be reachable through this route
-    /// unattributed — the landing page links here with no hwid, because a
-    /// visitor has not installed yet, and belongs on the download instead.
+    /// Nothing may reach a checkout unless the resulting purchase can actually
+    /// be delivered. A licence can: without a machine id the webhook mints a
+    /// recovery code, and the code is the delivery. Credits cannot — they
+    /// attach to a machine and have no code form, so an order without an id
+    /// leaves nobody to add minutes to and nothing to hand over, which is
+    /// taking money for something undeliverable.
     #[tokio::test]
-    async fn a_live_checkout_is_never_reached_without_a_machine_to_grant_to() {
+    async fn only_a_purchase_that_can_be_delivered_may_reach_a_checkout() {
         use tower::ServiceExt;
 
         let go = |st: AppState, path: String| async move {
@@ -1692,20 +1700,38 @@ mod tests {
         let mut st = test_state(0.0, 0.0, &[]);
         let cfg = Arc::get_mut(&mut st.cfg).unwrap();
         cfg.ls_checkout_license = Some("https://example.test/buy/live".into());
+        cfg.ls_checkout_credits = Some("https://example.test/buy/credits".into());
 
-        // The store is live. Every one of these lacks a usable machine id, so
-        // none of them may arrive at a page that can take money.
-        for q in [
-            "",                       // the landing page's own Buy button
-            "?hwid=",                 // present but empty
-            "?hwid=%20%20",           // whitespace only
-            "?hwid=short",            // too short to be a digest
-            "?hwid=not-a-hex-digest", // not a digest at all
-        ] {
+        // No usable machine id in any of these — the landing page's own Buy
+        // button is the first one.
+        let no_id = [
+            "",
+            "?hwid=",
+            "?hwid=%20%20",
+            "?hwid=short",
+            "?hwid=not-a-hex-digest",
+        ];
+
+        // A licence still reaches the checkout: the webhook mints a code.
+        for q in no_id {
             let loc = go(st.clone(), format!("/buy/license{q}")).await;
             assert!(
+                loc.starts_with("https://example.test/buy/live"),
+                "a licence is deliverable without a machine id and must still sell \
+                 ({q:?} → {loc})"
+            );
+            assert!(
+                !loc.contains("hwid="),
+                "invented a machine id that was never supplied ({q:?} → {loc})"
+            );
+        }
+
+        // Credits must not: there would be nobody to give the minutes to.
+        for q in no_id {
+            let loc = go(st.clone(), format!("/buy/credits{q}")).await;
+            assert!(
                 !loc.starts_with("https://example.test"),
-                "reached a live checkout with no machine to grant to ({q:?} → {loc})"
+                "sold a credit pack that cannot be delivered to anyone ({q:?} → {loc})"
             );
         }
 
