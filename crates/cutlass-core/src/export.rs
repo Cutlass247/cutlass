@@ -1397,8 +1397,27 @@ fn audio_args(format: ExportFormat, intermediate: bool) -> Vec<String> {
         return vec![s("-c:a"), s("pcm_s16le")];
     }
     match format {
+        // 256k, not the 192k this shipped with, because of an audible hiss.
+        //
+        // ffmpeg's native AAC encoder codes stereo as mid/side, and at 192k it
+        // runs short of bits and lets the quantisation noise land differently
+        // in each channel. On material that is effectively mono -- one voice,
+        // both channels near-identical, which is most of what people bring
+        // here -- that noise has nothing to mask it and reads as a diffuse
+        // background hiss, obvious on headphones.
+        //
+        // Measured as how far the two channels drift apart, against a source
+        // whose own channels sit at -85.5 dB:
+        //   192k  -69.0 dB   the hiss
+        //   256k  -85.5 dB   indistinguishable from the source
+        //   320k  -85.5 dB   no further gain
+        // Nothing else in the export touches it: the whole filter chain nulls
+        // against the raw decode at -91 dB.
+        //
+        // The cost is about 29 MB an hour, against a video track measured in
+        // gigabytes.
         ExportFormat::Mp4H264 | ExportFormat::Mp4H265 => {
-            vec![s("-c:a"), s("aac"), s("-b:a"), s("192k")]
+            vec![s("-c:a"), s("aac"), s("-b:a"), s("256k")]
         }
         ExportFormat::MovProres => vec![s("-c:a"), s("pcm_s16le")],
         ExportFormat::WebmVp9 => vec![s("-c:a"), s("libopus"), s("-b:a"), s("160k")],

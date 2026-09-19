@@ -214,7 +214,22 @@ pub fn conform_to_cfr(src: &Path, fps: u32, bitrate: u64) -> anyhow::Result<Path
             cmd.args(["-rc", "cbr", "-minrate", b.as_str(), "-quality", "2"]);
         }
         cmd.args([
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-y",
+            // 256k for the same reason the export uses it: ffmpeg's AAC coder
+            // decorrelates the channels at 192k and that reads as a background
+            // hiss on the near-mono voice recordings this mostly handles.
+            //
+            // It matters more here than there, because a conformed file is
+            // encoded again on the way out -- so a VFR screen recording, which
+            // is exactly what this path exists for, would otherwise carry two
+            // generations of it.
+            //
+            // Copying the stream instead would be better still and is the
+            // right end state: this rewrites the video cadence and has no
+            // reason to touch the audio at all. Not done here because the
+            // fallback loop below retries on *encoder* failure, and an audio
+            // codec the container will not take would fail all four attempts
+            // identically -- that needs its own fallback, not a one-word edit.
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", "-y",
             tmp_s.as_str(),
         ]);
         let mut child = match cmd.spawn() {
