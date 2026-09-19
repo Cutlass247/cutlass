@@ -1056,11 +1056,25 @@ fn mark_paid(db: &Connection, hwid: &str, t: i64) {
     }
 }
 
+/// Every outcome says what it did, in the response body.
+///
+/// This handler has to answer 200 to almost everything — an error makes Lemon
+/// Squeezy retry, and there is nothing to retry when an order simply is not
+/// ours to act on. But a bare 200 with an empty body meant that "granted the
+/// licence" and "threw the order away" were indistinguishable from the outside,
+/// including in Lemon Squeezy's own delivery log, which is the one place
+/// somebody debugging this actually looks.
+///
+/// Setting up payments on 2026-09-18 took hours largely because of that: a
+/// misspelled variable, a test-mode secret and an unrecognised variant id all
+/// produced exactly the same silent 200. So each path now names itself. The
+/// body is only ever seen by whoever can read the delivery log, and it never
+/// echoes the machine id.
 async fn lemonsqueezy_webhook(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<(StatusCode, String), (StatusCode, String)> {
     let secret = state
         .cfg
         .ls_signing_secret
@@ -1074,10 +1088,14 @@ async fn lemonsqueezy_webhook(
         serde_json::from_slice(&body).map_err(|_| (StatusCode::BAD_REQUEST, "bad json".into()))?;
 
     // only a genuinely paid one-time order does anything; ack everything else
-    if v["meta"]["event_name"].as_str() != Some("order_created")
-        || v["data"]["attributes"]["status"].as_str() != Some("paid")
-    {
-        return Ok(StatusCode::OK);
+    let event = v["meta"]["event_name"].as_str().unwrap_or("(none)");
+    let status = v["data"]["attributes"]["status"].as_str().unwrap_or("(none)");
+    if event != "order_created" || status != "paid" {
+        return Ok((
+            StatusCode::OK,
+            format!("ignored: nothing to do for event '{event}' with status '{status}' \
+                     (only a paid order_created grants anything)"),
+        ));
     }
     // A test-mode order is signed and says "paid", and once live and test
     // products share a variant id -- which happens the moment one is copied
@@ -1086,7 +1104,12 @@ async fn lemonsqueezy_webhook(
         || v["data"]["attributes"]["test_mode"].as_bool().unwrap_or(false);
     if test_order && !state.cfg.ls_allow_test_mode {
         eprintln!("ignored a test-mode order (set CUTLASS_LS_ALLOW_TEST_MODE=1 to honour them)");
-        return Ok(StatusCode::OK);
+        return Ok((
+            StatusCode::OK,
+            "ignored: this is a TEST-MODE order. Live mode is a separate environment — \
+             check you are not looking at the test store."
+                .into(),
+        ));
     }
     let order_id = v["data"]["id"].as_str().unwrap_or("").to_string();
     let hwid = v["meta"]["custom_data"]["hwid"].as_str().unwrap_or("").trim().to_string();
@@ -1098,7 +1121,22 @@ async fn lemonsqueezy_webhook(
             .unwrap_or_default()
     };
     if order_id.is_empty() || hwid.is_empty() || variant.is_empty() {
-        return Ok(StatusCode::OK);
+        let mut missing = Vec::new();
+        if order_id.is_empty() {
+            missing.push("the order id");
+        }
+        if hwid.is_empty() {
+            // Deliberately does not echo the id — only whether one arrived.
+            missing.push("meta.custom_data.hwid (the machine to grant to — the \
+                          checkout was reached without one)");
+        }
+        if variant.is_empty() {
+            missing.push("first_order_item.variant_id");
+        }
+        return Ok((
+            StatusCode::OK,
+            format!("ignored: this order has no {}", missing.join(", and no ")),
+        ));
     }
 
     let t = now();
@@ -1106,24 +1144,56 @@ async fn lemonsqueezy_webhook(
     // idempotency: a retried webhook must not double-grant (the mutex serialises
     // the check + grant + record, so concurrent retries can't race either)
     if db.query_row("SELECT 1 FROM webhook_events WHERE id=?1", [&order_id], |_| Ok(())).is_ok() {
-        return Ok(StatusCode::OK);
+        return Ok((
+            StatusCode::OK,
+            format!("already granted: order {order_id} was processed earlier, so this \
+                     delivery changed nothing (resending it is safe)"),
+        ));
     }
-    if state.cfg.ls_license_variants.contains(&variant) {
+    let granted = if state.cfg.ls_license_variants.contains(&variant) {
         mark_paid(&db, &hwid, t);
+        format!("granted: licence, from variant {variant}")
     } else if let Some(mins) = state.cfg.ls_credit_variants.get(&variant) {
         let _ = db.execute(
             "INSERT INTO ai_credits (hwid, seconds) VALUES (?1, ?2)
              ON CONFLICT(hwid) DO UPDATE SET seconds = seconds + ?2",
             rusqlite::params![hwid, mins * 60.0],
         );
+        format!("granted: {mins} AI minutes, from variant {variant}")
     } else {
-        return Ok(StatusCode::OK); // unknown product — ack, grant nothing
-    }
+        // The expensive one. The card has been charged by now, so say exactly
+        // what did not match and what the fix is.
+        let mut known: Vec<&str> = state
+            .cfg
+            .ls_license_variants
+            .iter()
+            .map(String::as_str)
+            .chain(state.cfg.ls_credit_variants.keys().map(String::as_str))
+            .collect();
+        known.sort_unstable();
+        let known = if known.is_empty() {
+            "nothing at all — neither CUTLASS_LS_LICENSE_VARIANTS nor \
+             CUTLASS_LS_CREDIT_VARIANTS is set on the server"
+                .to_string()
+        } else {
+            known.join(", ")
+        };
+        return Ok((
+            StatusCode::OK,
+            format!(
+                "GRANTED NOTHING: this order's variant is {variant}, and the server is \
+                 configured for {known}. Put {variant} in CUTLASS_LS_LICENSE_VARIANTS \
+                 (or CUTLASS_LS_CREDIT_VARIANTS as {variant}:<minutes>), redeploy, then \
+                 resend this delivery — the order is not recorded as processed, so it \
+                 can still be claimed."
+            ),
+        ));
+    };
     let _ = db.execute(
         "INSERT OR IGNORE INTO webhook_events (id, processed_at) VALUES (?1, ?2)",
         rusqlite::params![order_id, t],
     );
-    Ok(StatusCode::OK)
+    Ok((StatusCode::OK, granted))
 }
 
 #[tokio::main]
