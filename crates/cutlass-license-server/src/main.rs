@@ -1040,20 +1040,23 @@ fn ls_verify(secret: &[u8], body: &[u8], sig_hex: &str) -> bool {
 }
 
 /// Mark an HWID as paid (create the row if it's the first we've seen it).
-fn mark_paid(db: &Connection, hwid: &str, t: i64) {
-    let updated = db
-        .execute(
-            "UPDATE licenses SET status='paid', paid_at=?2, last_seen=?2 WHERE hwid=?1",
-            rusqlite::params![hwid, t],
-        )
-        .unwrap_or(0);
+///
+/// Returns the error rather than swallowing it: this runs after the customer's
+/// card has been charged, so a write that fails and is ignored means somebody
+/// paid and the only record of it is in Lemon Squeezy.
+fn mark_paid(db: &Connection, hwid: &str, t: i64) -> rusqlite::Result<()> {
+    let updated = db.execute(
+        "UPDATE licenses SET status='paid', paid_at=?2, last_seen=?2 WHERE hwid=?1",
+        rusqlite::params![hwid, t],
+    )?;
     if updated == 0 {
-        let _ = db.execute(
+        db.execute(
             "INSERT INTO licenses (hwid, status, trial_start, paid_at, created_at, last_seen)
              VALUES (?1, 'paid', ?2, ?2, ?2, ?2)",
             rusqlite::params![hwid, t],
-        );
+        )?;
     }
+    Ok(())
 }
 
 /// Every outcome says what it did, in the response body.
@@ -1150,16 +1153,18 @@ async fn lemonsqueezy_webhook(
                      delivery changed nothing (resending it is safe)"),
         ));
     }
-    let granted = if state.cfg.ls_license_variants.contains(&variant) {
-        mark_paid(&db, &hwid, t);
-        format!("granted: licence, from variant {variant}")
+    // A failed write here must not be reported as a grant, and must not be
+    // recorded as processed: the card is already charged, so the only correct
+    // answer is to fail loudly and let Lemon Squeezy retry the delivery.
+    let wrote = if state.cfg.ls_license_variants.contains(&variant) {
+        mark_paid(&db, &hwid, t).map(|()| format!("granted: licence, from variant {variant}"))
     } else if let Some(mins) = state.cfg.ls_credit_variants.get(&variant) {
-        let _ = db.execute(
+        db.execute(
             "INSERT INTO ai_credits (hwid, seconds) VALUES (?1, ?2)
              ON CONFLICT(hwid) DO UPDATE SET seconds = seconds + ?2",
             rusqlite::params![hwid, mins * 60.0],
-        );
-        format!("granted: {mins} AI minutes, from variant {variant}")
+        )
+        .map(|_| format!("granted: {mins} AI minutes, from variant {variant}"))
     } else {
         // The expensive one. The card has been charged by now, so say exactly
         // what did not match and what the fix is.
@@ -1189,6 +1194,17 @@ async fn lemonsqueezy_webhook(
             ),
         ));
     };
+    let granted = wrote.map_err(|e| {
+        eprintln!("PAID ORDER {order_id} COULD NOT BE GRANTED: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "NOT GRANTED: the payment is valid and the product matched, but writing \
+                 the grant failed ({e}). The order is deliberately not marked processed \
+                 — retry or resend this delivery once the cause is fixed."
+            ),
+        )
+    })?;
     let _ = db.execute(
         "INSERT OR IGNORE INTO webhook_events (id, processed_at) VALUES (?1, ?2)",
         rusqlite::params![order_id, t],
@@ -1767,7 +1783,7 @@ mod tests {
         let hwid = "resetme000001";
         {
             let db = s.db.lock_ok();
-            mark_paid(&db, hwid, t);
+            mark_paid(&db, hwid, t).unwrap();
             db.execute("INSERT INTO ai_credits (hwid, seconds) VALUES (?1, 6000)", [hwid]).unwrap();
         }
         // reset (mirrors admin_reset's deletes)
@@ -1791,7 +1807,7 @@ mod tests {
         let hwid = "paidbyhook0001";
         {
             let db = s.db.lock_ok();
-            mark_paid(&db, hwid, t); // as the webhook would on a licence purchase
+            mark_paid(&db, hwid, t).unwrap(); // as the webhook would on a licence purchase
             assert_eq!(get_or_create(&db, &s.cfg, hwid, None, t).unwrap().status, "paid");
         }
         // a paid machine gets the 600-min cap, not the 30-min trial cap
