@@ -1,8 +1,13 @@
-# Cutlass 0.1.2
+# Cutlass 0.1.3
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
+
+## New in 0.1.3
+
+- **"Enhance audio" now does something.** The switch was reaching the exporter as "off" no matter how it was set, so the levelling, the music ducking and the loudness match were all quietly skipped. Ticking it now levels your voice and matches the loudness platforms expect — expect exports to sound noticeably more even than before.
+- **Reframing keeps the framing you chose.** Panning a clip to keep your subject in a vertical crop was being dropped on the way to the export, so it came out centred regardless of where you put it.
 
 ## New in 0.1.2
 
@@ -17,7 +22,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.1.2_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.1.3_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
