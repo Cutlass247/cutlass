@@ -280,7 +280,9 @@ export function Monitor(p: {
   censors?: CensorItem[];
   onCensor?: (slot: number, partial: Partial<{ x: number; y: number; w: number; h: number }>, commit: boolean) => void;
   /// When set (Create mode), preview the footage reframed to this output shape.
-  format?: { w: number; h: number; reframe: "fill" | "blur"; rx: number } | null;
+  /// `panX` says which axis `rx` slides. Fill only ever overflows on one
+  /// axis, and panning the one that fits exactly moves nothing.
+  format?: { w: number; h: number; reframe: "fill" | "blur"; rx: number; panX?: boolean } | null;
   titleOverlay?: ReactNode;
   caption: string | null;
   playhead: number;
@@ -352,7 +354,10 @@ export function Monitor(p: {
                   // otherwise colour grades never show in the Create tab.
                   ...(p.layers[p.layers.length - 1].style ?? {}),
                   objectFit: p.format.reframe === "fill" ? "cover" : "contain",
-                  objectPosition: `${(p.format.rx ?? 0.5) * 100}% 50%`,
+                  objectPosition:
+                    (p.format.panX ?? true)
+                      ? `${(p.format.rx ?? 0.5) * 100}% 50%`
+                      : `50% ${(p.format.rx ?? 0.5) * 100}%`,
                 }}
               />
             </div>

@@ -3005,6 +3005,35 @@ mod tests {
     /// meant to stop. A grep that can be defeated by a line break is not a
     /// guarantee; this is, and it costs nothing to run.
     #[test]
+    /// Pan has to drive whichever axis the footage overflows.
+    ///
+    /// `Reframe::Fill` crops on both — `crop=w:h:(iw-w)*rx:(ih-h)*ry` — and
+    /// only one of those brackets is ever non-zero, because scaling to cover
+    /// leaves slack on a single axis. A 16:9 clip in a 9:16 Short spills over
+    /// the sides; a phone video in a Wide frame spills over the top and
+    /// bottom.
+    ///
+    /// The Create tab used to send `reframe_y: 0.5` unconditionally, so for
+    /// vertical footage the one slider moved the axis that fit exactly and
+    /// the axis being cropped was pinned to centre. The slider did nothing,
+    /// in the case where the crop throws away the most picture.
+    #[test]
+    fn pan_is_not_pinned_to_one_axis() {
+        let app = include_str!("../../src/App.tsx");
+        assert!(
+            !app.contains("reframe_y: 0.5,"),
+            "App.tsx hardcodes reframe_y: 0.5 again. Vertical footage in a Wide or \
+             Square frame is cropped top-and-bottom, so pinning the vertical axis \
+             to centre makes the Pan slider inert exactly when it matters most. \
+             Route it through panIsHorizontal()."
+        );
+        assert!(
+            app.contains("fn panIsHorizontal") || app.contains("function panIsHorizontal"),
+            "panIsHorizontal() is gone — the rule deciding which axis Pan drives has \
+             to live somewhere both the preview and the export read."
+        );
+    }
+
     /// Export settings must reach the exporter, and a key spelled wrong is
     /// silent.
     ///

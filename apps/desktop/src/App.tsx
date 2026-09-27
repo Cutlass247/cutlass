@@ -142,6 +142,27 @@ type DragState =
       orig: { start: number; len: number; srcIn: number };
     };
 
+/// Which way Pan slides: true for horizontal, false for vertical.
+///
+/// Fill scales the source until it covers the output and discards the
+/// overflow, and only one axis ever has any to discard — a 16:9 clip in a 9:16
+/// Short spills over the sides, a phone video in a Wide frame spills over the
+/// top and bottom. Panning the axis that already fits moves nothing, so a
+/// slider pinned to horizontal is inert for vertical footage, which is exactly
+/// where the crop is most brutal and choosing what survives matters most.
+///
+/// Unknown dimensions fall back to horizontal: it is the common case, and the
+/// exporter multiplies the other axis by zero regardless.
+function panIsHorizontal(
+  srcW: number | undefined,
+  srcH: number | undefined,
+  outW: number,
+  outH: number
+): boolean {
+  if (!srcW || !srcH) return true;
+  return srcW / srcH > outW / outH;
+}
+
 export default function App() {
   // ── project + media state ───────────────────────────────────────────
   const [project, setProject] = useState<ProjectSnapshot>({ name: "Untitled", clips: [] });
@@ -1812,6 +1833,8 @@ export default function App() {
   // the Fill/Blur reframe) — no settings dialog, just pick a folder and go.
   const exportClip = useCallback(async () => {
     setError(null);
+    const srcM = media[project.clips.find((c) => c.media && !c.text)?.media ?? ""];
+    const panH = panIsHorizontal(srcM?.width, srcM?.height, clipFormat.w, clipFormat.h);
     const dir = (await pickExportDir()) ?? exportDir;
     if (!dir) return;
     const sep = dir.includes("\\") ? "\\" : "/";
@@ -1825,10 +1848,14 @@ export default function App() {
       format: "mp4_h264",
       quality: "high",
       reframe: clipReframe,
-      reframe_x: clipReframeX,
-      reframe_y: 0.5,
+      // Pan drives whichever axis the footage actually overflows; the other is
+      // centred because it has no slack to spend. The exporter crops on both —
+      // `crop=…:(iw-w)*rx:(ih-h)*ry` — so the axis that fits exactly
+      // multiplies by zero either way.
+      reframe_x: panH ? clipReframeX : 0.5,
+      reframe_y: panH ? 0.5 : clipReframeX,
     });
-  }, [clipFormat, clipReframe, clipReframeX, exportDir, runExport]);
+  }, [clipFormat, clipReframe, clipReframeX, project.clips, media, exportDir, runExport]);
 
   // The room name is the only thing protecting a session: the relay has no
   // accounts and no access control, so anyone who knows the name is in the
@@ -2437,6 +2464,12 @@ export default function App() {
   // how long the create clip's source media is (0 = unknown)
   const createDur = createClip ? media[createClip.media]?.duration_s ?? 0 : 0;
 
+  // Which way Pan slides for the preview — see `panIsHorizontal`.
+  const panHorizontal = useMemo(() => {
+    const m = createClip ? media[createClip.media] : null;
+    return panIsHorizontal(m?.width, m?.height, clipFormat.w, clipFormat.h);
+  }, [createClip, media, clipFormat]);
+
   // Auto-split: break the long clip into short-ready segments. If it's been
   // transcribed we cut on sentence boundaries near a target length; otherwise
   // we fall back to even time chunks. Each segment is a source-time range.
@@ -2857,7 +2890,13 @@ export default function App() {
           onCensor={onCensor}
           format={
             mode === "create"
-              ? { w: clipFormat.w, h: clipFormat.h, reframe: clipReframe, rx: clipReframeX }
+              ? {
+                  w: clipFormat.w,
+                  h: clipFormat.h,
+                  reframe: clipReframe,
+                  rx: clipReframeX,
+                  panX: panHorizontal,
+                }
               : null
           }
           titleOverlay={titleOverlay}
