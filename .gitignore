@@ -20,3 +20,8 @@ testspeech.mp4
 !**/gen/**
 cutlass-license.keys
 installers/
+
+# Claude Code per-user settings. Not shared: it accumulates a literal
+# transcript of every command run in this repo — version numbers, file
+# paths, and whatever was typed inline — and it was public here for weeks.
+.claude/settings.local.json
