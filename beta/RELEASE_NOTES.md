@@ -1,8 +1,12 @@
-# Cutlass 0.1.3
+# Cutlass 0.1.4
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
+
+## New in 0.1.4
+
+- **Pan now moves the part of the picture that's actually being cropped.** Reframing keeps whichever side of your footage overflows the shape you picked — the sides when a landscape clip goes into a Short, the top and bottom when a phone video goes into a wide frame. The slider only ever moved sideways before, so for vertical footage it did nothing at all, which is the case where the crop discards the most picture.
 
 ## New in 0.1.3
 
@@ -22,7 +26,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.1.3_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.1.4_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
