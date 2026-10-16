@@ -63,6 +63,51 @@ step "cargo check (incl. tests+examples)" "." cargo check --workspace --all-targ
 step "cargo test (all features)" "." cargo test --workspace --all-features
 step "tsc" "apps/desktop" npx tsc --noEmit
 
+# The landing page lives in a different repository, so committing a change to
+# site/index.html does not publish it -- scripts/publish-site.sh does. Push
+# first and the Pages workflow correctly goes red, which is a true signal that
+# teaches you nothing because it arrives after the fact.
+#
+# This has been documented in beta/RELEASING.md and acted on wrongly anyway,
+# twice. Knowing the rule turned out not to be the same as following it, so
+# the rule is enforced here instead.
+#
+# Only runs when the push actually carries a page change: reading $1/$2 off
+# stdin is how git tells a pre-push hook what is being sent.
+site_changed() {
+  local local_sha remote_sha
+  while read -r _ local_sha _ remote_sha; do
+    [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+      git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -q '^site/index.html$' && return 0
+    else
+      git diff --name-only "$remote_sha" "$local_sha" 2>/dev/null | grep -q '^site/index.html$' && return 0
+    fi
+  done
+  return 1
+}
+
+if site_changed <&0; then
+  printf '  %-38s' "landing page published"
+  # A short wait, not --verify's two minutes: Pages needs a moment to serve a
+  # page published seconds ago, but a pre-push hook that stalls for two
+  # minutes is one you will reach for --no-verify to escape.
+  published=0
+  for _ in 1 2 3 4; do
+    if scripts/publish-site.sh --verify >/dev/null 2>&1; then published=1; break; fi
+    sleep 10
+  done
+  if [ "$published" = 1 ]; then
+    echo "ok"
+  else
+    echo "FAILED"
+    echo "      https://cutlass247.github.io/ is not serving this site/index.html."
+    echo "      Run: scripts/publish-site.sh"
+    echo "      (then push again -- publishing before pushing keeps the Pages check green)"
+    fail=1
+  fi
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo
   echo "Push stopped: fix the above, or use --no-verify to push anyway."
