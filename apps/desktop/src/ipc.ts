@@ -344,6 +344,27 @@ export async function setEffect(
   return invoke<ProjectSnapshot>("set_effect", { id, key, value });
 }
 
+/// Retime a clip.
+///
+/// Not `setEffect(id, "speed", v)`: a clip reads `len * speed` from its
+/// source, so writing speed alone holds the timeline slot and changes which
+/// footage fills it. The backend moves `len` with the speed so the clip keeps
+/// the footage it had, the way every other editor does it.
+export async function setClipSpeed(id: string, speed: number): Promise<ProjectSnapshot> {
+  if (!inTauri) {
+    mockCheckpoint();
+    const clip = mockState.project.clips.find((c) => c.id === id);
+    if (clip) {
+      const was = clip.fx?.speed ?? 1;
+      const s = Math.min(8, Math.max(0.1, speed));
+      clip.len = (clip.len * was) / s;
+      clip.fx = { ...(clip.fx ?? {}), speed: s };
+    }
+    return structuredClone(mockState.project);
+  }
+  return invoke<ProjectSnapshot>("set_clip_speed", { id, speed });
+}
+
 /// Apply several fx params in one undoable step (Effects-tab Look/effect).
 export async function setEffects(
   id: string,

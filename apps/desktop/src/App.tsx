@@ -84,6 +84,7 @@ import {
   splitClip,
   sendPresence,
   setEffect,
+  setClipSpeed,
   setEffects,
   setKeyframe,
   setTitleText,
@@ -1000,7 +1001,13 @@ export default function App() {
 
   const onFxCommit = useCallback(
     (key: string, v: number) => {
-      commitToSelection((id) => setEffect(id, key, v)).catch((e) => setError(String(e)));
+      // Speed is not an ordinary fx param. A clip reads `len * speed` from
+      // its source, so setting speed alone keeps the timeline slot and
+      // changes which footage fills it — the picture jumps to material that
+      // was never in the clip. setClipSpeed moves `len` with it.
+      const apply = key === "speed" ? (id: string) => setClipSpeed(id, v)
+                                    : (id: string) => setEffect(id, key, v);
+      commitToSelection(apply).catch((e) => setError(String(e)));
     },
     [commitToSelection]
   );

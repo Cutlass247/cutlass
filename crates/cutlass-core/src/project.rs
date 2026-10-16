@@ -525,6 +525,51 @@ impl Project {
     /// transcript edit primitive ("delete these words"). The clip splits
     /// into up to two, and later clips on the track ripple left by the
     /// removed duration. `new_id` names the right-hand part if one exists.
+    /// Retime a clip, keeping the footage it contains.
+    ///
+    /// A clip occupies `len` on the timeline and reads `len * speed` from its
+    /// source, so writing `fx.speed` on its own holds the slot and changes
+    /// what fills it: doubling the speed of a ten-second clip keeps it ten
+    /// seconds long and drags in twenty seconds of source, half of which was
+    /// never in the clip. The footage you were looking at gets pushed out and
+    /// replaced by whatever followed the out-point.
+    ///
+    /// Every other editor does the opposite — Premiere, Resolve and Final Cut
+    /// all keep the source range and change the length, so 2x plays the same
+    /// footage in half the time. That is what people expect, and it is the
+    /// only version where retiming is reversible: scrub the speed up and back
+    /// down and you have the clip you started with.
+    ///
+    /// So `len` moves inversely with `speed`, and both are written in one
+    /// transaction — a reader that caught the pair half-applied would see a
+    /// clip claiming footage it does not have.
+    pub fn set_speed(&mut self, id: &str, speed: f64) -> anyhow::Result<()> {
+        let speed = speed.clamp(0.1, 8.0);
+        let snap = self.snapshot();
+        let clip = snap["clips"]
+            .as_array()
+            .and_then(|cs| cs.iter().find(|c| c["id"] == id))
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?
+            .clone();
+        let len = clip["len"].as_f64().unwrap_or(0.0);
+        let was = clip["fx"]["speed"].as_f64().unwrap_or(1.0).clamp(0.1, 8.0);
+        // the source span this clip covers, which is what has to survive
+        let src_dur = len * was;
+
+        let clips = self.clips_obj();
+        let (_, obj) = self
+            .doc
+            .get(&clips, id)?
+            .ok_or_else(|| anyhow::anyhow!("no clip {id}"))?;
+        let fxobj = match self.doc.get(&obj, "fx")? {
+            Some((Value::Object(ObjType::Map), fxid)) => fxid,
+            _ => self.doc.put_object(&obj, "fx", ObjType::Map)?,
+        };
+        self.doc.put(&fxobj, "speed", speed)?;
+        self.doc.put(&obj, "len", src_dur / speed)?;
+        Ok(())
+    }
+
     pub fn razor_out(
         &mut self,
         id: &str,
@@ -1328,6 +1373,56 @@ mod tests {
         assert!(t[0].1.contains("hello"));
         assert_eq!(t[1].0, "m2");
         assert!(t[1].1.contains("world"));
+    }
+
+    /// Retiming must keep the footage the clip contains.
+    ///
+    /// A clip reads `len * speed` from its source, so writing `fx.speed`
+    /// alone holds the timeline slot and changes what fills it — 2x on a
+    /// four-second clip would keep it four seconds and drag in eight seconds
+    /// of source, replacing what you were watching with whatever came after
+    /// the out-point. Isaiah hit exactly that: the picture jumped elsewhere
+    /// and retimed a part he had not selected.
+    #[test]
+    fn retiming_keeps_the_footage_and_changes_the_length() {
+        let mut p = Project::new("T");
+        p.set_media("m-c1", "a.mp4", "/a.mp4", 60.0).unwrap();
+        let mut c = demo_clip("c1", "V1", 0.0); // len 4.0, src_in 0.0
+        c.src_in = 10.0;
+        p.add_clip(&c).unwrap();
+
+        let span = |p: &Project| {
+            let s = p.snapshot();
+            let c = s["clips"].as_array().unwrap()[0].clone();
+            let len = c["len"].as_f64().unwrap();
+            let speed = c["fx"]["speed"].as_f64().unwrap_or(1.0);
+            (c["src_in"].as_f64().unwrap(), len, speed, len * speed)
+        };
+
+        let (_, len0, _, src0) = span(&p);
+        assert_eq!((len0, src0), (4.0, 4.0), "baseline");
+
+        p.set_speed("c1", 2.0).unwrap();
+        let (src_in, len, speed, src_dur) = span(&p);
+        assert_eq!(speed, 2.0);
+        assert!((len - 2.0).abs() < 1e-9, "2x should halve the length, got {len}");
+        assert!(
+            (src_dur - src0).abs() < 1e-9,
+            "the clip swallowed different footage: covers {src_dur}s of source, was {src0}s"
+        );
+        assert_eq!(src_in, 10.0, "retiming must not move the in-point");
+
+        // and back again: scrubbing the speed up and down returns the clip
+        p.set_speed("c1", 1.0).unwrap();
+        let (_, len_back, _, src_back) = span(&p);
+        assert!((len_back - 4.0).abs() < 1e-9, "not reversible: len {len_back}");
+        assert!((src_back - src0).abs() < 1e-9, "not reversible: span {src_back}");
+
+        // slow motion stretches the slot, still over the same footage
+        p.set_speed("c1", 0.5).unwrap();
+        let (_, len_slow, _, src_slow) = span(&p);
+        assert!((len_slow - 8.0).abs() < 1e-9, "0.5x should double the length, got {len_slow}");
+        assert!((src_slow - src0).abs() < 1e-9, "slow-mo changed the footage covered");
     }
 
     #[test]

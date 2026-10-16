@@ -718,6 +718,18 @@ fn set_effect(
     with_undo(&state, |p| p.set_effect(&id, &key, value).map_err(err_str))
 }
 
+/// Retime a clip. Separate from `set_effect` because speed cannot be written
+/// on its own: the clip's length has to move with it or the footage it covers
+/// changes. See `Project::set_speed`.
+#[tauri::command]
+fn set_clip_speed(
+    id: String,
+    speed: f64,
+    state: State<AppState>,
+) -> Result<serde_json::Value, String> {
+    with_undo(&state, |p| p.set_speed(&id, speed).map_err(err_str))
+}
+
 /// Apply several fx params at once (one undo step) — used by the Effects
 /// tab to drop a whole "Look" or effect preset onto a clip.
 #[tauri::command]
@@ -2832,6 +2844,7 @@ fn main() {
             cut_ranges,
             split_clip,
             set_effect,
+            set_clip_speed,
             set_transition,
             set_keyframe,
             clear_keyframes,
