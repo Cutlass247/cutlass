@@ -1,11 +1,12 @@
-# Cutlass 0.1.4
+# Cutlass 0.2.0
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
 
-## New in 0.1.4
+## New in 0.2.0
 
+- **Retiming keeps the footage you were looking at.** Changing a clip's speed used to hold its slot on the timeline and pull in whatever footage filled it at the new rate — so speeding a clip up jumped the picture somewhere else and retimed that instead. A retimed clip now gets shorter or longer, the way it does everywhere else, and keeps the footage it had.
 - **Pan now moves the part of the picture that's actually being cropped.** Reframing keeps whichever side of your footage overflows the shape you picked — the sides when a landscape clip goes into a Short, the top and bottom when a phone video goes into a wide frame. The slider only ever moved sideways before, so for vertical footage it did nothing at all, which is the case where the crop discards the most picture.
 
 ## New in 0.1.3
@@ -26,7 +27,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.1.4_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.2.0_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
