@@ -32,6 +32,16 @@ body,
   height: 100%;
 }
 
+/* The trial banner is rendered above .app by the licence gate, outside it.
+   With .app at height:100vh the page was always the window PLUS the banner,
+   and body's overflow:hidden cut the bottom 43px off the timeline for every
+   trial user at every window size. A column here lets the banner take its
+   natural height and .app have exactly what is left. */
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -50,7 +60,8 @@ button {
 .app {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
 }
 
 .spacer {
@@ -387,10 +398,19 @@ button {
 }
 
 /* ── workspace ───────────────────────────────────────────────────── */
+/* The panels around the monitor are user-sized, but the window has the last
+   word. Their widths and the timeline's height are preferences: these
+   minimums are the guarantee. Flexbox shares out the space under them, so
+   when the window shrinks the side panels and timeline give way on their own
+   rather than crushing the monitor -- which used to reach 30px wide, or 0px
+   tall, and spill its transport controls over the Inspector.
+
+   The resize handles in App.tsx read these values back from the layout, so
+   change them here only. */
 .workspace {
   display: flex;
   flex: 1;
-  min-height: 0;
+  min-height: 200px;
 }
 
 .panel {
@@ -411,6 +431,9 @@ button {
 
 .right-panel {
   border-left: 1px solid var(--border);
+  /* The Inspector is dragged wider and narrower independently of the window,
+     so its rows answer to its own width, not the viewport's. */
+  container: inspector / inline-size;
 }
 
 /* Create tab: the clip maker + Media/Effects panel together can be taller than
@@ -600,7 +623,8 @@ button {
 /* ── monitor ─────────────────────────────────────────────────────── */
 .monitor {
   flex: 1;
-  min-width: 0;
+  /* the transport bar needs ~365px for its eight controls on one line */
+  min-width: 380px;
   display: flex;
   flex-direction: column;
   background: #101010;
@@ -1042,8 +1066,11 @@ button {
 
 .transport {
   display: flex;
+  /* the monitor's min-width keeps this on one line; wrapping is the backstop
+     so a control can never be pushed sideways into the next panel */
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px 6px;
   padding: 6px 12px;
   background: var(--panel);
   border-top: 1px solid var(--border);
@@ -1170,11 +1197,65 @@ button {
   color: var(--muted);
 }
 
+/* A slider row: label | slider | value | keyframe | clear.
+
+   Every part is placed by name, and each can only paint inside its own cell.
+   The columns used to be fixed pixel widths sized to the labels that existed
+   when they were written: "Cleanup strength" needs 91px and got 68, so it ran
+   underneath its own slider; "Temperature" fit with 1px to spare; "+500 ms"
+   only fit its 38px by wrapping onto two lines.
+
+   Now the label column grows with the panel and wraps rather than overflowing
+   when it has to, and the value column is at least wide enough for the
+   longest readout but grows rather than clipping. Neither can collide with
+   the slider whatever the label, value, font, or display scaling. */
 .fx-row {
   display: grid;
-  grid-template-columns: 68px 1fr 38px auto auto;
+  grid-template-columns: clamp(84px, 30%, 120px) minmax(0, 1fr) minmax(46px, max-content) auto;
+  grid-template-areas: "label slider val kf";
   align-items: center;
-  gap: 6px;
+  column-gap: 6px;
+}
+.fx-row.kf {
+  grid-template-columns: clamp(84px, 30%, 120px) minmax(0, 1fr) minmax(46px, max-content) auto auto;
+  grid-template-areas: "label slider val kf clr";
+}
+.fx-row > .fx-label {
+  grid-area: label;
+  min-width: 0;
+}
+.fx-row > input[type="range"] {
+  grid-area: slider;
+  min-width: 0;
+}
+.fx-row > .fx-val,
+.fx-row > .fx-val-edit {
+  grid-area: val;
+}
+.fx-row > .kf-btn {
+  grid-area: kf;
+}
+.fx-row > .kf-btn.clear {
+  grid-area: clr;
+}
+
+/* Narrow Inspector: below this a one-line slider drops under ~100px, and at
+   the panel's 240px minimum it was 64px. Put the label and value on top and
+   give the slider the whole row. */
+@container inspector (max-width: 274px) {
+  .fx-row {
+    grid-template-columns: minmax(0, 1fr) minmax(46px, max-content) auto;
+    grid-template-areas:
+      "label val kf"
+      "slider slider slider";
+    row-gap: 2px;
+  }
+  .fx-row.kf {
+    grid-template-columns: minmax(0, 1fr) minmax(46px, max-content) auto auto;
+    grid-template-areas:
+      "label val kf clr"
+      "slider slider slider slider";
+  }
 }
 
 /* on/off param: a full-width switch row instead of the slider grid */
@@ -1231,9 +1312,11 @@ button {
 
 .fx-label {
   font-size: 12px;
+  line-height: 1.25;
   color: var(--muted);
   cursor: pointer;
-  white-space: nowrap;
+  /* wrap inside the cell rather than run under the slider */
+  overflow-wrap: anywhere;
 }
 
 .fx-row.active .fx-label {
@@ -1250,6 +1333,8 @@ button {
   font-size: 11px;
   color: var(--text);
   text-align: right;
+  /* "+500 ms" used to break onto two lines to squeeze into its column */
+  white-space: nowrap;
 }
 
 .fx-row.active .fx-val {
@@ -1354,7 +1439,9 @@ button {
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  flex: none;
+  /* its height is a preference; it gives way so the stage keeps its minimum */
+  flex: 0 1 auto;
+  min-height: 180px;
 }
 
 .tl-toolbar {
@@ -1964,6 +2051,12 @@ button {
   padding: 20px;
   width: 460px;
   max-width: 92vw;
+  /* Width was capped and height was not, and the overlay centres the dialog,
+     so anything taller than the window was pushed off both edges with no way
+     to scroll. The export dialog at the 600px minimum window was 624px tall
+     once the upscale warning appeared, its title 12px above the screen. */
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
 }
 
 .export-progress {
@@ -1991,6 +2084,16 @@ button {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 20px;
+}
+/* when a dialog has to scroll, its buttons stay put rather than scrolling
+   away -- the primary action is the one thing that must always be reachable */
+.modal > .modal-actions {
+  position: sticky;
+  bottom: -20px;
+  /* 8 + 12 keeps the same 20px above the buttons as .modal-actions alone */
+  margin: 8px 0 -20px;
+  padding: 12px 0 20px;
+  background: var(--panel);
 }
 
 .ghost-btn {
@@ -2710,6 +2813,7 @@ button {
 
 /* Thin trial countdown banner across the top of the editor. */
 .lic-banner {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 12px;

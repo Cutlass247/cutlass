@@ -143,6 +143,30 @@ type DragState =
       orig: { start: number; len: number; srcIn: number };
     };
 
+/// How much a panel may grow right now: whatever the element it would eat
+/// into has above its own minimum.
+///
+/// Read from the live layout rather than repeating the CSS numbers, so the two
+/// cannot drift apart. It also means a drag after the window has shrunk
+/// starts from where the panel really is, rather than from a preference the
+/// window is no longer honouring -- which would otherwise leave a stretch of
+/// dragging that moves nothing.
+function roomIn(selector: string, axis: "w" | "h"): number {
+  const el = document.querySelector(selector);
+  if (!el) return 0;
+  const r = el.getBoundingClientRect();
+  const s = getComputedStyle(el);
+  const spare = axis === "w" ? r.width - (parseFloat(s.minWidth) || 0) : r.height - (parseFloat(s.minHeight) || 0);
+  return Math.max(0, spare);
+}
+
+/// Rendered size of an element, which may be less than its preferred size
+/// when the window is too small to give it everything.
+function sizeOf(selector: string, axis: "w" | "h"): number {
+  const r = document.querySelector(selector)?.getBoundingClientRect();
+  return r ? (axis === "w" ? r.width : r.height) : 0;
+}
+
 /// Which way Pan slides: true for horizontal, false for vertical.
 ///
 /// Fill scales the source until it covers the output and discards the
@@ -2828,7 +2852,7 @@ export default function App() {
             there's always something to drag onto the timeline */}
         <div
           className={mode === "create" ? "left-col create-left" : "left-col"}
-          style={{ width: leftW, display: "flex", flexDirection: "column", minWidth: 0 }}
+          style={{ width: leftW, display: "flex", flexDirection: "column", minWidth: 200 }}
         >
           {mode === "create" && (
             <ClipFormat
@@ -2887,7 +2911,14 @@ export default function App() {
             busy={busy !== null}
           />
         </div>
-        <Resizer direction="h" onDelta={(d) => setLeftW((w) => clamp(w + d, 200, 440))} />
+        <Resizer
+          direction="h"
+          onDelta={(d) => {
+            // grow only into what the monitor has above its minimum
+            const max = Math.max(200, Math.min(440, sizeOf(".left-col", "w") + roomIn(".monitor", "w")));
+            setLeftW((w) => clamp(Math.min(w, max) + d, 200, max));
+          }}
+        />
 
         <Monitor
           layers={monitorLayers}
@@ -2919,8 +2950,14 @@ export default function App() {
           contentEnd={contentEndS}
         />
 
-        <Resizer direction="h" onDelta={(d) => setRightW((w) => clamp(w - d, 240, 480))} />
-        <div style={{ width: rightW, display: "flex", minWidth: 0 }}>
+        <Resizer
+          direction="h"
+          onDelta={(d) => {
+            const max = Math.max(240, Math.min(480, sizeOf(".right-col", "w") + roomIn(".monitor", "w")));
+            setRightW((w) => clamp(Math.min(w, max) - d, 240, max));
+          }}
+        />
+        <div className="right-col" style={{ width: rightW, display: "flex", minWidth: 240 }}>
           <Inspector
             mode={mode}
             clip={primaryClip}
@@ -2965,7 +3002,14 @@ export default function App() {
         </div>
       </main>
 
-      <Resizer direction="v" onDelta={(d) => setTlH((h) => clamp(h - d, 180, 760))} />
+      <Resizer
+        direction="v"
+        onDelta={(d) => {
+          // grow only into what the stage has above its minimum
+          const max = Math.max(180, Math.min(760, sizeOf(".timeline", "h") + roomIn(".workspace", "h")));
+          setTlH((h) => clamp(Math.min(h, max) - d, 180, max));
+        }}
+      />
       <Timeline
         tracks={tracks}
         clips={clips}
