@@ -8,6 +8,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 - **Retiming keeps the footage you were looking at.** Changing a clip's speed used to hold its slot on the timeline and pull in whatever footage filled it at the new rate — so speeding a clip up jumped the picture somewhere else and retimed that instead. A retimed clip now gets shorter or longer, the way it does everywhere else, and keeps the footage it had.
 - **Pan now moves the part of the picture that's actually being cropped.** Reframing keeps whichever side of your footage overflows the shape you picked — the sides when a landscape clip goes into a Short, the top and bottom when a phone video goes into a wide frame. The slider only ever moved sideways before, so for vertical footage it did nothing at all, which is the case where the crop discards the most picture.
+- **Nothing in the editor overlaps itself, whatever the size of the window.** Slider names in the Inspector — "Cleanup strength" among them — could vanish under their own sliders when the panel was narrow; they now wrap, and in a very narrow Inspector each slider drops onto its own line beneath its name. Widening a side panel or the timeline can no longer squeeze the player until its controls spill over the panels beside it, and during the trial the banner along the top no longer pushes the bottom of the timeline off the screen.
 
 ## New in 0.1.3
 
