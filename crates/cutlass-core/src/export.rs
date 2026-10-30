@@ -434,6 +434,21 @@ fn censor_chain(
     Some((f, out))
 }
 
+/// Fit one side of a dissolve (input `vi`) to the frame, labelled `[{tag}{k}]`
+/// for xfade.
+///
+/// `fps` must come AFTER `setpts`. xfade refuses inputs whose frame rate is
+/// unknown, and since ffmpeg 7.1 `setpts` marks its output's rate unknown — so
+/// the old order (`fps,setpts`) failed every export containing a dissolve or a
+/// dip to black, on every encoder, with "current rate of 1/0 is invalid".
+fn transition_window_chain(vi: u32, tag: &str, k: usize, w: u32, h: u32, fps: u32) -> String {
+    format!(
+        "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
+         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setpts=PTS-STARTPTS,fps={fps},\
+         format=yuv420p[{tag}{k}];"
+    )
+}
+
 fn clip_video_chain(
     vi: u32,
     k: usize,
@@ -1983,13 +1998,7 @@ fn run_export(
                 dur,
                 dip,
             } => {
-                let fit = |vi: u32, tag: &str| {
-                    format!(
-                        "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
-                         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},setpts=PTS-STARTPTS,\
-                         format=yuv420p[{tag}{k}];"
-                    )
-                };
+                let fit = |vi: u32, tag: &str| transition_window_chain(vi, tag, k, w, h, fps);
                 // A tail window (input `ai`) and B head window (input `bi`);
                 // each input carries both :v and :a.
                 cmd.args(["-ss", &format!("{a_src:.3}"), "-t", &format!("{dur:.3}")]);
@@ -2806,6 +2815,18 @@ mod tests {
             (total - 8.0).abs() < 1e-9,
             "total preserved at 8s, got {total}"
         );
+    }
+
+    #[test]
+    fn a_dissolve_window_reaches_xfade_with_a_frame_rate() {
+        // xfade rejects an unknown frame rate, and setpts makes it unknown
+        // (ffmpeg 7.1), so the window's rate has to be set after its last
+        // timestamp rewrite. The reverse order broke every dissolve.
+        let chain = transition_window_chain(3, "xa", 1, 1920, 1080, 30);
+        let fps = chain.rfind("fps=30").expect("window sets its frame rate");
+        let setpts = chain.rfind("setpts=").expect("window rebases its timestamps");
+        assert!(fps > setpts, "fps must follow setpts: {chain}");
+        assert!(chain.starts_with("[3:v]") && chain.ends_with("[xa1];"), "{chain}");
     }
 
     #[test]

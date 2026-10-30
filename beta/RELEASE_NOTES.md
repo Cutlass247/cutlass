@@ -1,8 +1,13 @@
-# Cutlass 0.2.0
+# Cutlass 0.2.1
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
+
+## New in 0.2.1
+
+- **Transitions export again.** Any timeline with a cross-dissolve or a dip to black failed to export, on every encoder, after the video library Cutlass renders with changed how it reports frame rates. If an export of yours stopped with *"current rate of 1/0 is invalid"*, this was the cause — try it again on 0.2.1.
+- If you installed 0.2.0 before 27 October, this update also brings you the layout fixes listed under 0.2.0 below.
 
 ## New in 0.2.0
 
@@ -28,7 +33,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.2.0_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.2.1_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 

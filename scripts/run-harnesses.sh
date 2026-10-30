@@ -53,6 +53,11 @@ run limits_check    "$CLIP" "$OUT/limits"
 run failure_modes   "$CLIP" "$OUT/failures"
 run cancel_staged   "$CLIP" "$OUT/cancel"
 run denoise_check   "$CLIP" "$OUT/denoise"
+# Dissolve, dip, overlay, titles, retime and fades in one render. Left out of
+# this list, it was the only thing that ran a dissolve through real ffmpeg —
+# so when ffmpeg 7.1 broke every dissolve, nothing here noticed, and 0.2.0
+# shipped unable to export one. Reads up to 6s into the clip.
+run export_check    "$CLIP" "$CLIP"
 
 printf '\n%s\n' "----------------------------------------"
 echo "$pass ok, $fail with failures"
