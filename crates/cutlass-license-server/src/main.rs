@@ -814,6 +814,60 @@ Transcript:\n{}",
     )
 }
 
+/// The Messages API request for finding moments.
+///
+/// Sonnet 5 thinks before answering whenever `thinking` is left out, at high
+/// effort by default, and the thinking counts against `max_tokens`. At the
+/// old 3000 a long transcript (a 20-minute recording) was spent entirely on
+/// thinking: HTTP 200, `stop_reason: "max_tokens"`, no text block, reported
+/// as "empty response". 16000 leaves room to answer. Effort is pinned to
+/// medium so the reply still lands inside the app's 120-second wait: picking
+/// moments is selection, not hard reasoning.
+fn anthropic_body(prompt: String) -> serde_json::Value {
+    serde_json::json!({
+        "model": "claude-sonnet-5",
+        "max_tokens": 16000,
+        "thinking": { "type": "adaptive" },
+        "output_config": { "effort": "medium" },
+        "messages": [{ "role": "user", "content": prompt }]
+    })
+}
+
+/// The answer text from a Messages API response, or why there isn't one.
+///
+/// Only `text` blocks are the answer; `thinking` blocks come back too (empty
+/// by default) and are skipped. A reply with no answer says which
+/// `stop_reason` caused it, because "empty response" alone sent us looking in
+/// the wrong place.
+fn anthropic_text(v: &serde_json::Value) -> Result<String, String> {
+    let stop = v["stop_reason"].as_str().unwrap_or("unknown");
+    match stop {
+        "max_tokens" => {
+            return Err("the AI ran out of room before finishing its answer (max_tokens)".into())
+        }
+        "refusal" => {
+            let why = v["stop_details"]["category"].as_str().unwrap_or("no category given");
+            return Err(format!("the AI declined to process this transcript (refusal: {why})"));
+        }
+        _ => {}
+    }
+    let text = v["content"]
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|b| b["type"] == "text")
+                .filter_map(|b| b["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    if text.trim().is_empty() {
+        return Err(format!("the AI returned no answer (stop_reason {stop})"));
+    }
+    Ok(text)
+}
+
 /// Call the Anthropic Messages API (blocking; run under spawn_blocking). Retry
 /// transient upstream errors (429 rate-limit, 529 overloaded, 5xx) a couple of
 /// times with backoff; genuine 4xx (bad key, no credits) fail fast. The model
@@ -825,11 +879,7 @@ fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
         .timeout(std::time::Duration::from_secs(90))
         .tls_connector(std::sync::Arc::new(connector))
         .build();
-    let body = serde_json::json!({
-        "model": "claude-sonnet-5",
-        "max_tokens": 3000,
-        "messages": [{ "role": "user", "content": prompt }]
-    });
+    let body = anthropic_body(prompt);
 
     let mut last_err = String::new();
     for attempt in 0..3 {
@@ -842,16 +892,7 @@ fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
         match resp {
             Ok(r) => {
                 let v: serde_json::Value = r.into_json().map_err(|e| e.to_string())?;
-                let text = v["content"]
-                    .as_array()
-                    .map(|blocks| {
-                        blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("")
-                    })
-                    .unwrap_or_default();
-                if text.trim().is_empty() {
-                    return Err("empty response from anthropic".into());
-                }
-                return Ok(text);
+                return anthropic_text(&v);
             }
             Err(ureq::Error::Status(code, r)) => {
                 let msg = r.into_string().unwrap_or_default();
@@ -1882,6 +1923,53 @@ mod tests {
         ai_charge(&s, hwid, false, cap, 90.0, t); // spills fully onto credits
         let db = s.db.lock_ok();
         assert!((ai_credit_secs(&db, hwid) - 30.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn finding_moments_leaves_room_to_answer_after_thinking() {
+        let b = anthropic_body("transcript".into());
+        assert!(
+            b["max_tokens"].as_u64().unwrap() >= 16000,
+            "Sonnet 5 thinks before answering and the thinking counts against \
+             max_tokens; at 3000 a 20-minute transcript left no room for the answer"
+        );
+        assert_eq!(b["thinking"]["type"], "adaptive");
+        assert_eq!(b["output_config"]["effort"], "medium");
+        assert!(b.get("temperature").is_none(), "sampling params are rejected from 2026-10-21");
+    }
+
+    #[test]
+    fn a_reply_with_no_answer_says_why() {
+        // the failure seen 2026-10-31: thinking used every token, no text
+        let thought_only = serde_json::json!({
+            "content": [{ "type": "thinking", "thinking": "" }],
+            "stop_reason": "max_tokens"
+        });
+        assert!(anthropic_text(&thought_only).unwrap_err().contains("ran out of room"));
+
+        let declined = serde_json::json!({
+            "content": [],
+            "stop_reason": "refusal",
+            "stop_details": { "type": "refusal", "category": "cyber" }
+        });
+        let e = anthropic_text(&declined).unwrap_err();
+        assert!(e.contains("declined") && e.contains("cyber"), "{e}");
+
+        let blank = serde_json::json!({ "content": [], "stop_reason": "end_turn" });
+        assert!(anthropic_text(&blank).unwrap_err().contains("end_turn"));
+    }
+
+    #[test]
+    fn the_answer_is_the_text_blocks_and_never_the_thinking() {
+        let v = serde_json::json!({
+            "content": [
+                { "type": "thinking", "thinking": "", "signature": "x" },
+                { "type": "text", "text": "[{\"start\": 1" },
+                { "type": "text", "text": "}]" }
+            ],
+            "stop_reason": "end_turn"
+        });
+        assert_eq!(anthropic_text(&v).unwrap(), "[{\"start\": 1}]");
     }
 
     #[test]
