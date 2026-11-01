@@ -1,8 +1,20 @@
-# Cutlass 0.2.1
+# Cutlass 0.2.2
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
+
+## New in 0.2.2
+
+- **Captions fit the frame.** A caption wider than a vertical clip ran off both edges in the export, its first and last letters simply missing. Long captions now break into balanced, centred lines that fit every clip shape, and the player lays them out the same way, so what you see is what you export. Titles in Studio also preview at the size they export; they used to look up to half again too large.
+- **Export in Create exports the clip you made.** The Export button and File → Export now give you the vertical, square or wide clip you picked, instead of a letterboxed 16:9 video. You name the file before it's saved, starting from the moment's title, and Cancel really cancels. Create exports always level your voice and match platform loudness.
+- **Clicking a clip no longer moves it.** A click could nudge a clip by a hundredth of a second: enough to open a hairline gap after a split, hide the Transition panel and add a step to undo. A clip now moves only when you drag it.
+- **Transitions look in the player the way they export**, with the next clip blending in over the end of this one. They're offered only on the lowest video track, the one the export draws them on.
+- **No more phantom captions.** The word being spoken was drawn over the player like a burned-in caption, so captions appeared with Captions off and doubled with them on. It's highlighted in the transcript instead.
+- **Studio warns before replacing a file** that already exists, and **Escape closes menus and dialogs.** Shortcuts no longer act behind an open dialog; Delete used to remove the selected clip behind the export window.
+- **Find the best moments copes with long recordings.** A long video could fail with *"empty response"*, or take long enough that Cutlass gave up and ran the on-device finder under a "no connection" banner. It now waits for a slow answer, and says so plainly if one never comes.
+- **Long jobs say how long they'll take.** Transcribing and removing music show the time left, and music removal warns you before it starts on a long clip.
+- **Clearer licence messages.** A recovery code that couldn't reach the server is no longer called wrong; the message tells you the code is still good.
 
 ## New in 0.2.1
 
@@ -33,7 +45,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.2.1_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.2.2_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
@@ -68,6 +80,8 @@ Hardware-accelerated H.264 export, plus ProRes and WebM.
 ## Buy it once
 
 **$49, one time.** No subscription, ever. Every update to the version you own is free. If a big new version ever arrives it'll be an optional paid upgrade, discounted for existing owners, and your copy keeps working exactly as it does today.
+
+Bought on the website? Collect your licence code at **<https://cutlass-production.up.railway.app/claim>** with the email you paid with and the order number on your receipt.
 
 Your video never leaves your machine. The AI features send only your audio or transcript, then discard it — never your footage. Your content is yours; Cutlass claims no licence to anything you make.
 
