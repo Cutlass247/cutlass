@@ -1,5 +1,6 @@
 import { ReactNode, useCallback, useEffect, useState } from "react";
 import { licenseStatus, licenseRedeem, openCheckout, LicenseInfo } from "../ipc";
+import { useEscape } from "./ui";
 
 /// Wraps the whole app: verifies entitlement on launch, shows a trial
 /// countdown while active, and blocks the editor behind a paywall once the
@@ -12,6 +13,22 @@ export function LicenseGate({ children }: { children: ReactNode }) {
     setChecking(true);
     try {
       setInfo(await licenseStatus());
+    } catch (e) {
+      // A check that throws must still leave something to show: with no info
+      // at all, the render below dereferenced null and the app crashed to its
+      // error screen. Someone already working keeps working — this also runs
+      // on every window focus — and anyone else gets "Try again".
+      setInfo(
+        (prev) =>
+          prev ?? {
+            status: "error",
+            active: false,
+            days_left: null,
+            machine_id: "",
+            message: `Couldn't check your license (${String(e)}).`,
+            needs_online: true,
+          }
+      );
     } finally {
       setChecking(false);
     }
@@ -72,6 +89,7 @@ function Blade() {
 
 function TrialBanner({ info, onUpgraded }: { info: LicenseInfo; onUpgraded: (i: LicenseInfo) => void }) {
   const [open, setOpen] = useState(false);
+  useEscape(() => setOpen(false), open);
   const days = info.days_left ?? 0;
   const urgent = days <= 2;
   return (

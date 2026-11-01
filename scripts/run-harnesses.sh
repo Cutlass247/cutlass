@@ -58,6 +58,9 @@ run denoise_check   "$CLIP" "$OUT/denoise"
 # so when ffmpeg 7.1 broke every dissolve, nothing here noticed, and 0.2.0
 # shipped unable to export one. Reads up to 6s into the clip.
 run export_check    "$CLIP" "$CLIP"
+# drawtext never wraps: a caption wider than a vertical frame was cut off at
+# both edges. Renders every clip shape and finds the caption by frame diff.
+run title_fit_check "$CLIP" "$OUT/titles"
 
 printf '\n%s\n' "----------------------------------------"
 echo "$pass ok, $fail with failures"

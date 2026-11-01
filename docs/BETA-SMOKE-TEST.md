@@ -93,9 +93,9 @@ those can't reach.
 24. **Cancel** — start another export of something longer and hit **Cancel**
     mid-way. → It stops promptly, returns to the editor cleanly, and **no partial
     file** is left behind.
-25. 🔴 **Feedback** — **Help → Send beta feedback…**, type a line, **Send**. → Your
+25. 🔴 **Feedback** — **Help → Send feedback…**, type a line, **Send**. → Your
     mail client opens a new message to `cutlass.beta@gmail.com`, subject
-    "Cutlass beta feedback", with your text + version/OS footer prefilled. (Send is
+    "Cutlass feedback", with your text + version/OS footer prefilled. (Send is
     disabled until you type something.)
 
 ## D. Stress & polish (if you have time)

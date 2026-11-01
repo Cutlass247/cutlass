@@ -284,7 +284,6 @@ export function Monitor(p: {
   /// axis, and panning the one that fits exactly moves nothing.
   format?: { w: number; h: number; reframe: "fill" | "blur"; rx: number; panX?: boolean } | null;
   titleOverlay?: ReactNode;
-  caption: string | null;
   playhead: number;
   playing: boolean;
   canPlay: boolean;
@@ -325,6 +324,22 @@ export function Monitor(p: {
     return fw / fh > a ? { w: fh * a, h: fh } : { w: fw, h: fw / a };
   })();
 
+  // Grain and vignette belong to the picture being made. In Create that is
+  // the clip's frame, not the whole screen: laid over the screen, a vignette's
+  // dark edges fell outside a vertical frame and the preview showed almost none
+  // of what the export draws in the frame's own corners.
+  const finish = (
+    <>
+      {p.grain && p.grain > 0.01 ? (
+        <div className="grain-overlay" style={{ opacity: Math.min(0.5, p.grain * 0.5) }} />
+      ) : null}
+      {p.vignette && p.vignette > 0.01 ? (
+        <div className="vignette-overlay" style={{ opacity: Math.min(1, p.vignette) }} />
+      ) : null}
+    </>
+  );
+  const inStage = !!(p.format && p.layers.length);
+
   return (
     <section className="monitor">
       <div className="monitor-frame" ref={frameRef}>
@@ -360,6 +375,11 @@ export function Monitor(p: {
                       : `50% ${(p.format.rx ?? 0.5) * 100}%`,
                 }}
               />
+              {/* titles belong to the frame being made, not the whole screen —
+                  drawn outside it they sized and wrapped against the 16:9
+                  monitor and ran past the edges of a vertical clip */}
+              {finish}
+              <div className="create-stage-titles">{p.titleOverlay}</div>
             </div>
           ) : (
             <div className="monitor-layers">
@@ -399,12 +419,17 @@ export function Monitor(p: {
         ) : (
           <div className="monitor-empty">No clip under the playhead</div>
         )}
-        {p.grain && p.grain > 0.01 ? (
-          <div className="grain-overlay" style={{ opacity: Math.min(0.5, p.grain * 0.5) }} />
-        ) : null}
-        {p.vignette && p.vignette > 0.01 ? (
-          <div className="vignette-overlay" style={{ opacity: Math.min(1, p.vignette) }} />
-        ) : null}
+        {!inStage && (
+          // Studio's equivalent of the Create stage: the box the 16:9 picture
+          // actually occupies. Laid over the whole monitor panel instead, titles
+          // were sized and placed against its height (often far taller than the
+          // picture — 56% too big in one layout) and the vignette darkened the
+          // bars rather than the picture's corners.
+          <div className="picture-stage" style={{ aspectRatio: `${p.resolution.w} / ${p.resolution.h}` }}>
+            {finish}
+            {p.titleOverlay}
+          </div>
+        )}
         {p.censors && p.censors.length > 0 && p.onCensor && (
           <CensorLayer
             censors={p.censors}
@@ -419,8 +444,6 @@ export function Monitor(p: {
             <div className="safe title" />
           </>
         )}
-        {p.titleOverlay}
-        {p.caption && <div className="caption">{p.caption}</div>}
       </div>
       <div className="transport">
         <IconButton label="Jump to start" hint="Home" onClick={() => p.onSeek(0)}>

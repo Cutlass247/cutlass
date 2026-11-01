@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { ExportOptions, pickExportDir } from "../ipc";
+import { ExportOptions, pathExists, pickExportDir } from "../ipc";
 import { RESOLUTIONS } from "./Monitor";
+import { useEscape } from "./ui";
 
 const FORMATS = [
   { value: "mp4_h264", label: "MP4 · H.264 (universal)", ext: "mp4" },
@@ -97,6 +98,20 @@ export function ExportDialog(p: {
   const ext = extOf(format);
   const sep = dir.includes("\\") ? "\\" : "/";
   const fullPath = `${dir}${dir && !dir.endsWith(sep) ? sep : ""}${name || "export"}.${ext}`;
+
+  useEscape(p.onCancel);
+
+  // The exporter overwrites, and the name starts as "export" every time, so a
+  // second export to the same folder used to replace the first without a word.
+  // Say so before it happens, the way a Save dialog would.
+  const [taken, setTaken] = useState(false);
+  useEffect(() => {
+    let live = true;
+    pathExists(fullPath).then((t) => live && setTaken(t));
+    return () => {
+      live = false;
+    };
+  }, [fullPath]);
 
   const browse = async () => {
     const d = await pickExportDir();
@@ -216,13 +231,19 @@ export function ExportDialog(p: {
         <div className="export-path" title={fullPath}>
           {fullPath}
         </div>
+        {taken && (
+          <div className="export-taken">
+            ⚠ A file with this name is already there. Exporting will replace it — change the
+            name to keep both.
+          </div>
+        )}
 
         <div className="modal-actions">
           <button className="ghost-btn" onClick={p.onCancel}>
             Cancel
           </button>
           <button className="primary-action" onClick={submit} disabled={!dir.trim() || !name.trim()}>
-            Export
+            {taken ? "Replace" : "Export"}
           </button>
         </div>
       </div>

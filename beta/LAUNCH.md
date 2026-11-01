@@ -46,7 +46,7 @@ Testers *will* ask about the "Windows protected your PC" warning. Get ahead of i
 
 ## 4. Close the loop
 
-- Watch **Help → Send beta feedback** emails.
+- Watch **Help → Send feedback** emails.
 - Log every report in **`feedback-tracker.csv`** (open in Excel, or import into Google Sheets via *File → Import → Upload*). Columns: Date, Tester, Source, GPU, OS, Area, Severity, Report, Status, Fixed in, Notes. Delete the two EXAMPLE rows once you start.
   - **Source:** Reddit / In-app / DM / Email
   - **Area:** Import / Transcribe / Edit / Effects / Export / Save-Open / UI / Perf / Feature / Other

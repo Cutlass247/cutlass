@@ -79,7 +79,7 @@ controversy factually with a link.
 - One-click Looks + .cube LUT grading (live preview), color controls,
   sharpen/grain/vignette, chroma key, motion presets (punch-in, Ken
   Burns), auto-captions, voice cleanup, transitions, titles, keyframes.
-- In-app beta feedback (Help → Send beta feedback).
+- In-app feedback (Help → Send feedback).
 
 ## Not yet true (don't claim)
 

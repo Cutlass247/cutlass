@@ -138,6 +138,21 @@ export interface MenuAction {
   checked?: boolean; // checkable item — shows a ✓ when true
 }
 
+/// Close on Escape while `active`, as dialogs do everywhere else on Windows.
+/// Every dialog here used to need a click on Cancel or the backdrop.
+export function useEscape(onClose: () => void, active = true): void {
+  const latest = useRef(onClose);
+  latest.current = onClose;
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") latest.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [active]);
+}
+
 export function MenuBarMenu({ title, items }: { title: string; items: MenuAction[] }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -146,8 +161,15 @@ export function MenuBarMenu({ title, items }: { title: string; items: MenuAction
     const close = (e: PointerEvent) => {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     };
+    const escape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
     window.addEventListener("pointerdown", close);
-    return () => window.removeEventListener("pointerdown", close);
+    window.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", escape);
+    };
   }, [open]);
   return (
     <div className="menu" ref={ref}>
@@ -248,10 +270,10 @@ export function fxStyle(clip: Clip | null, playhead: number): React.CSSPropertie
 
   const fi = fxValue(clip, "fade_in");
   const fo = fxValue(clip, "fade_out");
-  const tr = fxValue(clip, "trans_dur"); // incoming transition reads as fade-in
+  // An incoming transition is NOT a fade-in: it happens before the cut, over
+  // the previous clip — App.tsx's videoLayers draws it as the export does.
   let opacity = 1;
-  const rampIn = Math.max(fi, tr);
-  if (rampIn > 0 && inClip < rampIn) opacity = Math.max(0, inClip / rampIn);
+  if (fi > 0 && inClip < fi) opacity = Math.max(0, inClip / fi);
   if (fo > 0 && inClip > clip.len - fo)
     opacity = Math.min(opacity, Math.max(0, (clip.len - inClip) / fo));
 

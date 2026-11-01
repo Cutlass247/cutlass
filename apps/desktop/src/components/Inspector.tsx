@@ -628,6 +628,10 @@ function NumField(p: {
 function MusicRemovalControl(p: {
   removed: boolean;
   pct: number | undefined;
+  /// "about 4 min left" once there's enough progress to project from
+  eta: string | null;
+  /// the clip's length in seconds — long clips get told what they're in for
+  clipLen: number;
   hasAudio: boolean;
   strength: number;
   onToggle: () => void;
@@ -646,13 +650,22 @@ function MusicRemovalControl(p: {
         title="Separate the audio and drop the background music, keeping the voice. Runs on your machine — nothing is uploaded."
       >
         {working ? (
-          <>Removing music… {Math.round(p.pct as number)}%</>
+          <>
+            Removing music… {Math.round(p.pct as number)}%{p.eta ? ` · ${p.eta}` : ""}
+          </>
         ) : p.removed ? (
           <>♪ Music removed — click to restore</>
         ) : (
           <>♪ Remove background music</>
         )}
       </button>
+      {!working && !p.removed && p.clipLen > 60 && (
+        // Measured: 20s of audio took 54s on a fast desktop CPU. Saying so
+        // before the click beats a progress bar that seems to crawl.
+        <div className="fx-hint">
+          Runs on your PC: allow about 3 minutes per minute of video on a fast one, longer on slower PCs.
+        </div>
+      )}
       {p.removed && (
         // Lower this when separation isn't clean on a recording: it ducks the
         // music instead of removing it outright, which keeps the voice full.
@@ -690,6 +703,7 @@ export function Inspector(p: {
   musicRemoved: boolean;
   musicStrength: number;
   musicPct: number | undefined; // 0..100 while separating, undefined when idle
+  musicEta: string | null;
   clipTime: number;
   onSetKeyframe: (key: string, t: number, v: number) => void;
   onClearKeyframes: (key: string) => void;
@@ -703,6 +717,8 @@ export function Inspector(p: {
   onPreviewTitleText: (text: string) => void;
   // transcript
   words: Word[] | null;
+  /// index into `words` of the word under the playhead, or null
+  nowWord: number | null;
   transcriptMediaName: string | null;
   wordSel: { a: number; b: number } | null;
   isWordCut: (w: Word) => boolean;
@@ -714,8 +730,11 @@ export function Inspector(p: {
   silenceGapS: number;
 }) {
   const [tab, setTab] = useState<Tab>(p.mode === "create" ? "transcript" : "inspector");
+  // Each mode opens on its own panel. Create only has the transcript; Studio
+  // used to inherit it from Create, so the Inspector — what you reach for when
+  // you click a clip in Studio — was hidden until you went looking for it.
   useEffect(() => {
-    if (p.mode === "create") setTab("transcript");
+    setTab(p.mode === "create" ? "transcript" : "inspector");
   }, [p.mode]);
 
   const clipMedia = p.clip ? p.media[p.clip.media] : null;
@@ -801,6 +820,8 @@ export function Inspector(p: {
                     strength={p.musicStrength}
                     onStrength={p.onMusicStrength}
                     pct={p.musicPct}
+                    eta={p.musicEta}
+                    clipLen={p.clip.len}
                     // An empty waveform only means "no audio" for shorter media:
                     // import skips waveform generation past 30 min to stay
                     // responsive, so for long recordings we can't tell from it
@@ -843,7 +864,7 @@ export function Inspector(p: {
           {!p.words ? (
             <div className="empty-state">
               {p.mode === "create"
-                ? "Import a clip with speech — it transcribes automatically."
+                ? "The transcript appears here once ✨ Find the best moments has read your clip."
                 : "Transcribe a clip from the Media panel to edit it as text."}
             </div>
           ) : (
@@ -857,7 +878,7 @@ export function Inspector(p: {
                   return (
                     <span
                       key={i}
-                      className={`word${sel ? " sel" : ""}${p.isWordCut(w) ? " cut" : ""}${p.isFiller(w) ? " filler" : ""}`}
+                      className={`word${sel ? " sel" : ""}${i === p.nowWord ? " now" : ""}${p.isWordCut(w) ? " cut" : ""}${p.isFiller(w) ? " filler" : ""}`}
                       onClick={(e) => p.onWordClick(i, e.shiftKey)}
                     >
                       {w.text}

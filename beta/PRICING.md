@@ -79,7 +79,7 @@ Refunds are honoured on request. Because the software runs on the customer's
 own machine, a refund is processed through Lemon Squeezy and the licence is
 released server-side.
 
-Support: **Help → Send beta feedback** inside the application, or GitHub
+Support: **Help → Send feedback** inside the application, or GitHub
 issues at the repository above.
 
 ## Data handling

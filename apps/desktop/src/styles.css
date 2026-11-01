@@ -112,6 +112,10 @@ button {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
+  /* Positioned inside the narrow menu-title button, so without this the
+     browser shrinks the dropdown to its minimum and wraps any label longer
+     than that ("Save project as…" broke onto two lines). */
+  width: max-content;
   min-width: 220px;
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -701,6 +705,16 @@ button {
   background: #000;
   box-shadow: var(--shadow);
 }
+
+/* A size container exactly the frame's size, so a title's `cqh` font size is
+   a share of the clip's height, as it is in the export. (On .create-stage
+   itself, size containment would collapse it before it has been measured.) */
+.create-stage-titles {
+  position: absolute;
+  inset: 0;
+  container-type: size;
+  pointer-events: none;
+}
 .create-stage .cs-bg,
 .create-stage .cs-fg {
   position: absolute;
@@ -964,6 +978,13 @@ button {
   line-height: 1.35;
   color: var(--muted);
 }
+
+.fx-hint {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--muted);
+  margin-top: 4px;
+}
 /* Offline results came from the on-device finder, not the AI. Warm rather
    than red: nothing failed, the moments are real, they are just rougher. */
 .cf-offline {
@@ -1050,20 +1071,6 @@ button {
   border-style: dashed;
 }
 
-.caption {
-  position: absolute;
-  bottom: 26px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.78);
-  color: #fff;
-  font-size: 19px;
-  font-weight: 600;
-  padding: 4px 16px;
-  border-radius: 6px;
-  pointer-events: none;
-}
-
 .transport {
   display: flex;
   /* the monitor's min-width keeps this on one line; wrapping is the backstop
@@ -1114,7 +1121,10 @@ button {
 
 .field-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, …): a bare 1fr won't shrink below an input's ~20-character
+     natural width, so in a narrow Inspector Length and Track ran 51px past
+     the panel's edge */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1132,6 +1142,9 @@ button {
 }
 
 .field input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   background: var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1381,6 +1394,12 @@ button {
 
 .word:hover {
   background: var(--panel-3);
+}
+
+/* the word under the playhead — follows playback and scrubbing */
+.word.now {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  color: var(--text);
 }
 
 .word.sel {
@@ -2197,6 +2216,13 @@ button {
   line-height: 1.4;
 }
 /* upscale warning under the resolution picker */
+.export-taken {
+  color: var(--gold, #e8b339);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: -4px;
+}
+
 .ex-field > span.ex-warn {
   color: var(--gold, #e8b339);
   font-weight: 500;
@@ -2305,6 +2331,22 @@ button {
   mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: 130px 130px;
+}
+
+/* Studio's picture box — the same box the video image takes (sized exactly
+   like .censor-stage below), so vignette, grain and titles land on the
+   picture the export draws them on, not on the whole monitor panel. A size
+   container too: a title's `cqh` font size is a share of the picture height. */
+.picture-stage {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  max-width: 94%;
+  max-height: 92%;
+  pointer-events: none;
+  container-type: size;
+  overflow: hidden;
+  border-radius: 4px;
 }
 
 /* ── censor / blur region overlay ────────────────────────────────────── */

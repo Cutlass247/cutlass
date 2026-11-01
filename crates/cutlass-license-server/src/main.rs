@@ -875,8 +875,10 @@ fn anthropic_text(v: &serde_json::Value) -> Result<String, String> {
 /// outermost [...] (tolerating any stray markdown fences).
 fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
     let connector = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
+    // Room for a long video's transcript. The app waits 180s (license.rs
+    // AI_WAIT), so this must stay comfortably under that.
     let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(90))
+        .timeout(std::time::Duration::from_secs(150))
         .tls_connector(std::sync::Arc::new(connector))
         .build();
     let body = anthropic_body(prompt);

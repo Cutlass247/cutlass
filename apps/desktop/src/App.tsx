@@ -39,7 +39,7 @@ import {
   FX_DEFAULTS,
   fxValueAt,
   kfPoints,
-  pickExportDir,
+  pickExportFile,
   getProject,
   hydrateMedia,
   inTauri,
@@ -98,6 +98,7 @@ import {
   undoEdit,
 } from "./ipc";
 import { findHighlights } from "./highlights";
+import { fitTitle } from "./titleLayout";
 import { Mode, TopBar } from "./components/TopBar";
 import { MediaPanel } from "./components/MediaPanel";
 import { Monitor, RESOLUTIONS, Resolution, CensorItem } from "./components/Monitor";
@@ -105,7 +106,7 @@ import { ClipFormat, CLIP_FORMATS, ClipFormatDef, ShortSeg } from "./components/
 import { Inspector } from "./components/Inspector";
 import { ExportDialog } from "./components/ExportDialog";
 import { PPS_MAX, PPS_MIN, TRACK_H, Timeline, TrackCtl } from "./components/Timeline";
-import { fxStyle, Resizer } from "./components/ui";
+import { fxStyle, Resizer, useEscape } from "./components/ui";
 
 const MAX_TRACKS = 12; // per kind — a sane ceiling on "as many as you want"
 const TRIM_ZONE_PX = 10;
@@ -142,6 +143,17 @@ type DragState =
       srcIn: number;
       orig: { start: number; len: number; srcIn: number };
     };
+
+/// "about 4 min left", projected from how far a long job has got and how long
+/// that took. Says nothing until there's enough progress to be honest about —
+/// the first seconds of a job are mostly start-up and would mislead.
+function timeLeft(startedAt: number | undefined, pct: number | undefined): string | null {
+  if (!startedAt || pct === undefined || pct < 3 || pct >= 100) return null;
+  const elapsed = (Date.now() - startedAt) / 1000;
+  if (elapsed < 5) return null;
+  const left = (elapsed * (100 - pct)) / pct;
+  return left < 50 ? "under a minute left" : `about ${Math.round(left / 60)} min left`;
+}
 
 /// How much a panel may grow right now: whatever the element it would eat
 /// into has above its own minimum.
@@ -238,6 +250,10 @@ export default function App() {
   // per-clip music-removal progress (0..100) while a separation job runs; the
   // key is absent when idle.
   const [musicPct, setMusicPct] = useState<Record<string, number>>({});
+  // When each long job started ("music:<clip>", "tx:<media>"), so the time
+  // left can be projected from its own progress — right on any PC, which a
+  // fixed rate would not be.
+  const jobStart = useRef<Record<string, number>>({});
   const [wordSel, setWordSel] = useState<{ media: string; a: number; b: number } | null>(null);
   const [room, setRoom] = useState<string | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -905,8 +921,17 @@ export default function App() {
   // ── program monitor: stacked video layers, bottom→top = V1..Vn ───────
   // each visible video track contributes at most one clip under the
   // playhead; they composite in order so higher tracks overlay lower.
+  // The export's base program: the lowest video track carrying footage
+  // (main.rs `export_project`). Only it gets transitions — clips on higher
+  // tracks become overlays and their transition setting is never rendered.
+  const baseVideoTrack = useMemo(() => {
+    const v = clips.filter((c) => !c.text && trackKind(c.track) === "video").map((c) => c.track);
+    return v.length ? [...v].sort((a, b) => trackIndex(a) - trackIndex(b))[0] : null;
+  }, [clips]);
+
   const videoLayers = useMemo(() => {
-    const out: { clip: Clip; media: MediaItem; srcT: number }[] = [];
+    // `mix` scales a layer's opacity — the two halves of a transition
+    const out: { clip: Clip; media: MediaItem; srcT: number; mix?: number }[] = [];
     const vtracks = tracks
       .filter((t) => trackKind(t) === "video")
       .sort((a, b) => trackIndex(a) - trackIndex(b)); // ascending = bottom→top
@@ -921,11 +946,35 @@ export default function App() {
       if (!m || m.thumbs.length === 0) continue;
       const speed = clip.fx?.speed ?? 1;
       const srcT = clip.src_in + (playhead - clip.start) * speed;
+      // A transition into the next clip, previewed the way the export renders
+      // it (export.rs `build_segments`): in the last `d` seconds BEFORE the
+      // cut, the next clip's head — footage from before its in-point — over
+      // this clip's tail. The preview used to fade the next clip in from black
+      // AFTER the cut instead: a different effect, a second late.
+      const next =
+        track === baseVideoTrack
+          ? clips.find(
+              (c) =>
+                c.track === track && !c.text && c.id !== clip.id &&
+                Math.abs(c.start - (clip.start + clip.len)) < 1e-3
+            )
+          : undefined;
+      const d = next ? Math.min(next.fx?.trans_dur ?? 0, clip.len - 0.05, next.len) : 0;
+      const mb = next ? media[next.media] : undefined;
+      if (next && mb && mb.thumbs.length && d > 0.05 && playhead >= next.start - d) {
+        const into = playhead - (next.start - d);
+        const p = into / d;
+        const dip = (next.fx?.trans_dip ?? 0) > 0.5; // fadeblack: out, then in
+        const bSrc = Math.max(0, next.src_in - d) + into;
+        out.push({ clip, media: m, srcT: Math.min(srcT, m.duration_s), mix: dip ? Math.max(0, 1 - 2 * p) : 1 });
+        out.push({ clip: next, media: mb, srcT: Math.min(bSrc, mb.duration_s), mix: dip ? Math.max(0, 2 * p - 1) : p });
+        continue;
+      }
       out.push({ clip, media: m, srcT: Math.min(srcT, m.duration_s) });
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clips, media, playhead, tracks, trackCtl]);
+  }, [clips, media, playhead, tracks, trackCtl, baseVideoTrack]);
 
   // topmost layer drives transcript/caption context + the settled hq frame
   const underPlayhead = videoLayers.length ? videoLayers[videoLayers.length - 1] : null;
@@ -983,10 +1032,12 @@ export default function App() {
       const live = playing && playFrame && top ? playFrame : null;
       const settled = top && hq && hq.key === hqKey ? hq.src : null;
       const draft = selectedIds.includes(l.clip.id) ? fxDraft : {};
+      const base = layerStyle(l.clip);
       return {
         key: l.clip.id,
         src: live ?? settled ?? thumbAt(l.media, l.srcT),
-        style: layerStyle(l.clip),
+        style:
+          l.mix === undefined ? base : { ...base, opacity: Number(base.opacity ?? 1) * l.mix },
         chroma: (draft.chroma ?? l.clip.fx?.chroma ?? 0) > 0.5,
         chromaSim: draft.chroma_sim ?? l.clip.fx?.chroma_sim ?? 0.3,
         lut: l.clip.lut ? lutCache[l.clip.lut] ?? null : null,
@@ -1134,6 +1185,7 @@ export default function App() {
       // stop playback first: the job rewrites the clip's audio file, and on
       // Windows a file the preview still has open can't be replaced.
       setPlaying(false);
+      jobStart.current[`music:${id}`] = Date.now();
       setMusicPct((p) => ({ ...p, [id]: 0 }));
       removeMusic(id)
         .then(() => setEffect(id, "music_removed", 1))
@@ -1156,6 +1208,7 @@ export default function App() {
     (clip: Clip, v: number) => {
       const id = clip.id;
       setPlaying(false); // same reason: the re-mix replaces the clip's audio file
+      jobStart.current[`music:${id}`] = Date.now();
       setMusicPct((p) => ({ ...p, [id]: 0 }));
       setEffect(id, "music_strength", v)
         .then(applyEdit)
@@ -1212,15 +1265,18 @@ export default function App() {
 
   // a clip can take a transition if another clip on its track ends where
   // it begins (adjacency)
+  // Offer a transition only where the export will draw one: a clip on the base
+  // track butting up against the clip before it. On V2+ the control used to
+  // appear and the setting was silently ignored by the render.
   const selectedHasLeftNeighbor = useMemo(() => {
-    if (!selectedClip) return false;
+    if (!selectedClip || selectedClip.track !== baseVideoTrack) return false;
     return project.clips.some(
       (c) =>
         c.id !== selectedClip.id &&
         c.track === selectedClip.track &&
         Math.abs(c.start + c.len - selectedClip.start) < 1e-3
     );
-  }, [selectedClip, project]);
+  }, [selectedClip, project, baseVideoTrack]);
 
   const onSetTransition = useCallback(
     (dur: number, dip: boolean) => {
@@ -1386,7 +1442,12 @@ export default function App() {
       const sel = c.id === selected;
       const fx = sel ? { ...(c.fx ?? {}), ...fxDraft } : c.fx ?? {};
       const text = sel && textDraft !== null ? textDraft : c.text;
-      const fs = (fx.font_size ?? 56) / 1080; // fraction of frame height
+      // Lay it out the way the export will (titleLayout.ts mirrors export.rs):
+      // in Create the frame is the clip's shape; Studio exports 1920×1080 by
+      // default. Without this a caption ran straight off a vertical frame.
+      const [fw, fh] = mode === "create" ? [clipFormat.w, clipFormat.h] : [1920, 1080];
+      const fit = fitTitle(text ?? "", ((fx.font_size ?? 56) * fh) / 1080, fw);
+      const fs = fit.fs / fh; // fraction of frame height
       const bg = fx.title_bg ?? 0;
       const px = (fx.pos_x ?? 0) * 100;
       const py = (fx.pos_y ?? 0) * 100;
@@ -1401,14 +1462,15 @@ export default function App() {
               fontSize: `${fs * 100}cqh`,
               background: bg > 0 ? `rgba(0,0,0,${bg})` : "transparent",
               padding: bg > 0 ? "0.1em 0.4em" : 0,
+              whiteSpace: "pre", // the breaks are fitTitle's, not the browser's
             }}
           >
-            {text}
+            {fit.lines.join("\n")}
           </span>
         </div>
       );
     });
-  }, [clips, playhead, selected, fxDraft, textDraft]);
+  }, [clips, playhead, selected, fxDraft, textDraft, mode, clipFormat]);
 
   // ── import / transcribe ─────────────────────────────────────────────
   // `cloud` = Groq GPU transcription (fast, audio leaves the machine); else the
@@ -1416,6 +1478,7 @@ export default function App() {
   const doTranscribe = useCallback(
     async (mediaId: string, cloud = false): Promise<Word[] | null> => {
       setTranscribing(mediaId);
+      jobStart.current[`tx:${mediaId}`] = Date.now();
       setTranscribeProgress((p) => ({ ...p, [mediaId]: 0 }));
       try {
         const words = cloud ? await cloudTranscribe(mediaId) : await transcribeMedia(mediaId);
@@ -1456,6 +1519,7 @@ export default function App() {
         return next;
       });
       applyEdit(res.project);
+      if (res.media.length) setRevealMedia(res.media[res.media.length - 1].id);
       // One unreadable file must not look like a failed import of everything,
       // and must not pass silently either.
       if (res.failed.length) {
@@ -1478,6 +1542,19 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, doTranscribe]);
+
+  // Bring what was just imported into view. In Create the clip-maker panel
+  // sits above the bin, so on a laptop-height window the new clip landed
+  // ~240px below the fold — while the player said "your media is in the bin
+  // on the left", where nothing new could be seen.
+  const [revealMedia, setRevealMedia] = useState<string | null>(null);
+  useEffect(() => {
+    if (!revealMedia) return;
+    document
+      .querySelector(`.bin-item[data-media-id="${CSS.escape(revealMedia)}"]`)
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    setRevealMedia(null);
+  }, [revealMedia, media]);
 
   const doImport = useCallback(async () => {
     const paths = await pickVideos();
@@ -1682,6 +1759,9 @@ export default function App() {
     relaunchAfterQuit.current = false;
     setQuitPromptOpen(false);
   }, []);
+  useEscape(dismissQuitPrompt, quitPromptOpen);
+  useEscape(() => setFeedbackOpen(false), feedbackOpen);
+  useEscape(() => setRemoveMediaAsk(null), removeMediaAsk !== null);
   const leave = useCallback(async () => {
     if (relaunchAfterQuit.current && updateRef.current) await updateRef.current.relaunch();
     else forceClose();
@@ -1813,13 +1893,15 @@ export default function App() {
     setExportOpen(true);
   }, []);
 
-  // Beta feedback → open the user's mail client with a prefilled report
+  // Feedback → open the user's mail client with a prefilled report. Nothing
+  // the user sees says "beta" any more — Cutlass is sold as finished — but the
+  // address stays: it is the inbox the reports actually go to.
   const onSendFeedback = useCallback(() => {
     // Hardcoded, this claimed 0.1.0 on every report no matter what the sender
     // was running — the one field in a bug report that has to be right.
-    const body = `${feedbackText}\n\n---\nCutlass ${__APP_VERSION__} (beta) · ${navigator.userAgent}`;
+    const body = `${feedbackText}\n\n---\nCutlass ${__APP_VERSION__} · ${navigator.userAgent}`;
     const url = `mailto:cutlass.beta@gmail.com?subject=${encodeURIComponent(
-      "Cutlass beta feedback"
+      "Cutlass feedback"
     )}&body=${encodeURIComponent(body)}`;
     openUrl(url);
     setFeedbackOpen(false);
@@ -1866,11 +1948,14 @@ export default function App() {
     setError(null);
     const srcM = media[project.clips.find((c) => c.media && !c.text)?.media ?? ""];
     const panH = panIsHorizontal(srcM?.width, srcM?.height, clipFormat.w, clipFormat.h);
-    const dir = (await pickExportDir()) ?? exportDir;
-    if (!dir) return;
-    const sep = dir.includes("\\") ? "\\" : "/";
+    // Name it before it renders, starting from the moment's own title. It
+    // used to be a folder picker and a fixed `cutlass-vertical-<date>.mp4`,
+    // so every clip of a day got the same name — and cancelling the picker
+    // exported anyway, into the last folder.
     const stamp = new Date().toISOString().slice(0, 10);
-    const path = `${dir}${dir.endsWith(sep) ? "" : sep}cutlass-${clipFormat.id}-${stamp}.mp4`;
+    const moment = activeShort !== null ? shorts[activeShort]?.label : undefined;
+    const path = await pickExportFile(moment || `cutlass-${clipFormat.id}-${stamp}`);
+    if (!path) return;
     await runExport({
       path,
       width: clipFormat.w,
@@ -1885,8 +1970,12 @@ export default function App() {
       // multiplies by zero either way.
       reframe_x: panH ? clipReframeX : 0.5,
       reframe_y: panH ? 0.5 : clipReframeX,
+      // No dialog here, so nothing else will ask: level the voice and match
+      // platform loudness, as Studio's export does by default. Social clips
+      // are where loudness is normalised hardest.
+      master_audio: true,
     });
-  }, [clipFormat, clipReframe, clipReframeX, project.clips, media, exportDir, runExport]);
+  }, [clipFormat, clipReframe, clipReframeX, project.clips, media, activeShort, shorts, runExport]);
 
   // The room name is the only thing protecting a session: the relay has no
   // accounts and no access control, so anyone who knows the name is in the
@@ -2023,6 +2112,9 @@ export default function App() {
       const el = e.target as HTMLElement | null;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable))
         return;
+      // nor while a dialog is up: Delete removed the selected clip, S split it
+      // and Space started playback behind the quit prompt or export settings
+      if (document.querySelector(".modal-overlay")) return;
       if (e.ctrlKey && e.key.toLowerCase() === "z") {
         e.preventDefault();
         e.shiftKey ? doRedo() : doUndo();
@@ -2176,9 +2268,16 @@ export default function App() {
     [scrubTo]
   );
 
+  // Where a clip press started. Nothing moves until the pointer has travelled
+  // past DRAG_SLOP_PX from it, so the wobble in an ordinary click selects the
+  // clip instead of nudging it a pixel's worth of time.
+  const pressAt = useRef<{ x: number; y: number; live: boolean } | null>(null);
+  const DRAG_SLOP_PX = 4;
+
   const onClipPointerDown = useCallback(
     (e: React.PointerEvent, clip: Clip) => {
       e.stopPropagation();
+      pressAt.current = { x: e.clientX, y: e.clientY, live: false };
       // selection: Ctrl/Cmd/Shift toggles into a multi-selection; a plain click
       // on a clip already in the selection keeps the group (so you can drag it),
       // otherwise it selects just this clip.
@@ -2227,6 +2326,11 @@ export default function App() {
   const onClipPointerMove = useCallback(
     (e: React.PointerEvent) => {
       if (!drag || !(e.buttons & 1)) return;
+      const p = pressAt.current;
+      if (p && !p.live) {
+        if (Math.hypot(e.clientX - p.x, e.clientY - p.y) < DRAG_SLOP_PX) return;
+        p.live = true;
+      }
       const lanes = lanesRef.current!;
       const rect = lanes.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -2270,9 +2374,23 @@ export default function App() {
   );
 
   const onClipPointerUp = useCallback(async () => {
+    pressAt.current = null;
     if (!drag) return;
     setDrag(null);
-    const r2 = (v: number) => Math.round(v * 100) / 100;
+    // Tidy float noise only. This used to round to 0.01s, which moved any clip
+    // whose edge wasn't on that grid: after a split at the playhead, merely
+    // clicking the right half shifted it 5ms, opening a gap that hid the
+    // Transition panel and undid every snap to a neighbour's edge.
+    const r2 = (v: number) => Math.round(v * 1e6) / 1e6;
+    // A press and release that changed nothing is a selection, not an edit —
+    // committing it anyway also put a no-op step on the undo stack per click.
+    if (drag.kind === "move") {
+      const was = project.clips.find((c) => c.id === drag.clipId);
+      if (drag.start === drag.primaryStart && (drag.group || drag.track === was?.track)) return;
+    } else {
+      const o = drag.orig;
+      if (drag.start === o.start && drag.len === o.len && drag.srcIn === o.srcIn) return;
+    }
     try {
       if (drag.kind === "move") {
         if (drag.group) {
@@ -2291,7 +2409,7 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
-  }, [drag, applyEdit]);
+  }, [drag, applyEdit, project.clips]);
 
   // Marquee (rubber-band) select: pointer-down on empty lane space drags a box
   // and selects every clip it touches. Clips stopPropagation, so this only
@@ -2479,13 +2597,16 @@ export default function App() {
     }
   }, [transcriptMedia, transcripts, srcToTimeline, applyEdit, project.clips]);
 
-  const caption = useMemo(() => {
-    if (!underPlayhead) return null;
-    const w = transcripts[underPlayhead.media.id];
-    if (!w) return null;
+  // The word under the playhead, marked in the transcript. It used to be drawn
+  // over the picture like a caption, but it was never exported: the preview
+  // showed captions the file wouldn't have, and once Captions were on it put a
+  // second box over the real ones.
+  const nowWord = useMemo(() => {
+    if (!underPlayhead || !words || underPlayhead.media.id !== transcriptMedia) return null;
     const srcT = underPlayhead.srcT;
-    return w.find((x) => srcT >= x.start && srcT < x.end)?.text ?? null;
-  }, [underPlayhead, transcripts]);
+    const i = words.findIndex((x) => srcT >= x.start && srcT < x.end);
+    return i >= 0 ? i : null;
+  }, [underPlayhead, words, transcriptMedia]);
 
   // the first real footage clip on the timeline — what the Create clip maker acts on
   const createClip = useMemo(
@@ -2755,7 +2876,10 @@ export default function App() {
         onSaveAs={doSaveAs}
         autoSave={autoSave}
         onToggleAutoSave={toggleAutoSave}
-        onExport={doExport}
+        // In Create, Export means the clip in the shape you picked. The general
+        // dialog knows nothing of Vertical/Square/Wide, Fill or Pan, so from
+        // here it turned a vertical clip into letterboxed 16:9.
+        onExport={mode === "create" ? exportClip : doExport}
         onUndo={doUndo}
         onRedo={doRedo}
         onSplit={doSplit}
@@ -2865,6 +2989,11 @@ export default function App() {
               hasClip={createClip !== null}
               transcribing={createClip !== null && transcribing === createClip.media}
               transcribePct={createClip ? transcribeProgress[createClip.media] ?? 0 : 0}
+              transcribeEta={
+                createClip
+                  ? timeLeft(jobStart.current[`tx:${createClip.media}`], transcribeProgress[createClip.media])
+                  : null
+              }
               aiFinding={aiFinding}
               transcribeMode={transcribeMode}
               onTranscribeMode={chooseTranscribeMode}
@@ -2938,7 +3067,6 @@ export default function App() {
               : null
           }
           titleOverlay={titleOverlay}
-          caption={caption}
           noMedia={Object.keys(media).length === 0}
           playhead={playhead}
           playing={playing}
@@ -2975,6 +3103,9 @@ export default function App() {
             musicRemoved={(primaryClip?.fx?.music_removed ?? 0) > 0.5}
             musicStrength={primaryClip?.fx?.music_strength ?? 1}
             musicPct={primaryClip ? musicPct[primaryClip.id] : undefined}
+            musicEta={
+              primaryClip ? timeLeft(jobStart.current[`music:${primaryClip.id}`], musicPct[primaryClip.id]) : null
+            }
             clipTime={clipTime}
             onSetKeyframe={onSetKeyframe}
             onClearKeyframes={onClearKeyframes}
@@ -2987,6 +3118,7 @@ export default function App() {
             onSetTitleText={onSetTitleText}
             onPreviewTitleText={setTextDraft}
             words={words}
+            nowWord={nowWord}
             transcriptMediaName={transcriptMedia ? media[transcriptMedia]?.name ?? null : null}
             wordSel={wordSel && wordSel.media === transcriptMedia ? wordSel : null}
             isWordCut={(w) =>
@@ -3228,7 +3360,7 @@ export default function App() {
       {feedbackOpen && (
         <div className="modal-overlay" onPointerDown={() => setFeedbackOpen(false)}>
           <div className="modal" onPointerDown={(e) => e.stopPropagation()}>
-            <div className="modal-title">Send beta feedback</div>
+            <div className="modal-title">Send feedback</div>
             <div className="modal-sub">
               What worked, what broke, what you wish it did? Opens your mail app.
             </div>

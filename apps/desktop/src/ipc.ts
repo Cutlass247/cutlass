@@ -723,6 +723,49 @@ export async function pickExportDir(): Promise<string | null> {
   return dir;
 }
 
+/// Whether a file is already at `path` (the exporter would overwrite it).
+export async function pathExists(path: string): Promise<boolean> {
+  if (!inTauri) return /[\\/]export\.mp4$/i.test(path); // mock: the default name is "taken"
+  try {
+    return await invoke<boolean>("path_exists", { path });
+  } catch {
+    return false;
+  }
+}
+
+/// Ask where to save one exported clip, and under what name: a Save dialog,
+/// so the name is chosen in the same step as the folder and Windows itself
+/// asks before replacing a file already there. Opens on `suggested` (no
+/// extension) in the last export folder. Returns null if cancelled.
+export async function pickExportFile(suggested: string, ext = "mp4"): Promise<string | null> {
+  const name = safeFileName(suggested) || "clip";
+  if (!inTauri) return `C:/Users/You/Videos/${name}.${ext}`;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const dir = await defaultExportDir();
+  const picked = await save({
+    defaultPath: dir ? `${dir}/${name}.${ext}` : `${name}.${ext}`,
+    filters: [{ name: `${ext.toUpperCase()} video`, extensions: [ext] }],
+  });
+  if (!picked) return null;
+  rememberDir("lastExportDir", picked);
+  // a name typed without the extension still has to come out playable
+  return new RegExp(`\\.${ext}$`, "i").test(picked) ? picked : `${picked}.${ext}`;
+}
+
+/// A moment's title made safe as a Windows file name: no reserved characters,
+/// no trailing dots or spaces, not absurdly long, not a device name.
+export function safeFileName(s: string): string {
+  const cleaned = s
+    .replace(/\s+/g, " ") // first, so a tab or line break still separates words
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "")
+    .replace(/ {2,}/g, " ")
+    .trim()
+    .replace(/[. ]+$/, "")
+    .slice(0, 80)
+    .trim();
+  return /^(con|prn|aux|nul|com\d|lpt\d)$/i.test(cleaned) ? `${cleaned} clip` : cleaned;
+}
+
 /// A sensible default export folder (Downloads, else home).
 /// The folder the export dialog opens in: whatever was used last, else Videos.
 export async function defaultExportDir(): Promise<string> {

@@ -81,4 +81,4 @@ Your video never leaves your machine. The AI features send only your audio or tr
 
 ## Something wrong?
 
-**Help → Send beta feedback** inside Cutlass, or open an issue. Please include your **graphics card**, and for anything export-related the clip length and the file size you got.
+**Help → Send feedback** inside Cutlass, or open an issue. Please include your **graphics card**, and for anything export-related the clip length and the file size you got.

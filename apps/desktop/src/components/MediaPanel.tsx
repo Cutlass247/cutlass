@@ -252,6 +252,7 @@ export function MediaPanel(p: {
               <div
                 className="bin-item"
                 key={m.id}
+                data-media-id={m.id}
                 title="Drag onto a timeline track to place it"
                 onPointerDown={(e) => p.onMediaPointerDown(m.id, e)}
               >

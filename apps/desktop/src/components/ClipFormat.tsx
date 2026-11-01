@@ -40,6 +40,8 @@ export function ClipFormat(p: {
   // the AI (aiFinding) — one button, two phases.
   transcribing: boolean;
   transcribePct: number;
+  /// "about 4 min left" once there's enough progress to project from
+  transcribeEta: string | null;
   aiFinding: boolean;
   // how the transcription runs: "fast" = cloud GPU, "private" = on-device
   transcribeMode: "fast" | "private";
@@ -169,25 +171,31 @@ export function ClipFormat(p: {
         {p.aiFinding && <span className="cf-ai-scan" />}
         <span className="cf-captions-label">
           {p.transcribing
-            ? `Reading the video… ${pct}%`
+            ? `Reading the video… ${pct}%${p.transcribeEta ? ` · ${p.transcribeEta}` : ""}`
             : p.aiFinding
             ? "✨ Finding the best moments…"
             : "✨ Find the best moments"}
         </span>
       </button>
-      {p.usage &&
-        (p.usage.unlimited ? (
-          <div className="cf-usage">
-            {Math.round(p.usage.used_minutes)} min of AI used this month · unlimited during beta
-          </div>
-        ) : (
-          <div className={`cf-usage${p.usage.remaining_minutes <= 15 ? " low" : ""}`}>
-            {Math.max(0, Math.round(p.usage.remaining_minutes))} min of AI left this month ·{" "}
-            <button className="cf-usage-buy" onClick={p.onBuyCredits}>
-              Buy more
-            </button>
-          </div>
-        ))}
+      {p.aiFinding && (
+        // No percentage exists for this step, so say up front that a long
+        // video takes a while — otherwise a two-minute wait looks like a hang.
+        <div className="cf-split-hint">
+          The AI is reading the whole video — a long one can take a couple of minutes.
+        </div>
+      )}
+      {/* Only a real limit is worth a line. Unlimited means an owner machine
+          (or a server with no cap set), and it used to say "unlimited during
+          beta" — out of date once Cutlass went on sale, and right under the
+          button every demo and ad is filmed on. */}
+      {p.usage && !p.usage.unlimited && (
+        <div className={`cf-usage${p.usage.remaining_minutes <= 15 ? " low" : ""}`}>
+          {Math.max(0, Math.round(p.usage.remaining_minutes))} min of AI left this month ·{" "}
+          <button className="cf-usage-buy" onClick={p.onBuyCredits}>
+            Buy more
+          </button>
+        </div>
+      )}
       {!finding && p.shorts.length === 0 && (
         <div className="cf-split-hint">
           The AI scans your whole clip for standout moments and turns each into a

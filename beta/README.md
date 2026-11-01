@@ -49,7 +49,7 @@ A video editor where your transcript is your timeline — delete the words, and 
 
 ## Tell us what breaks
 
-- In the app: **Help → Send beta feedback** (opens your email with version + system info prefilled).
+- In the app: **Help → Send feedback** (opens your email with version + system info prefilled).
 - Or just reply to the invite that sent you here.
 
 The single most useful thing you can send: **a short clip of your honest first five minutes** — where it clicked, where it didn't.

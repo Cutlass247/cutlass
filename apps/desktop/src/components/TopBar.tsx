@@ -87,9 +87,9 @@ export function TopBar(p: {
         <MenuBarMenu
           title="Help"
           items={[
-            { label: "Send beta feedback…", onSelect: p.onFeedback },
+            { label: "Send feedback…", onSelect: p.onFeedback },
             { separator: true, label: "" },
-            { label: `Cutlass ${__APP_VERSION__} (beta)`, disabled: true, onSelect: () => {} },
+            { label: `Cutlass ${__APP_VERSION__}`, disabled: true, onSelect: () => {} },
           ]}
         />
       </nav>
@@ -134,7 +134,7 @@ export function TopBar(p: {
         className="export-btn"
         onClick={p.onExport}
         disabled={p.exporting !== null || !p.canEdit}
-        title="Export the timeline…"
+        title={p.mode === "create" ? "Export the clip in the shape you picked" : "Export the timeline…"}
       >
         {p.exporting !== null ? `Exporting ${Math.round(p.exporting * 100)}%` : "Export"}
         {p.exporting === null && <Kbd>MP4</Kbd>}

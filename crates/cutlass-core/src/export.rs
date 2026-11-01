@@ -367,11 +367,16 @@ fn ff_path(p: &str) -> String {
     p.replace('\\', "/").replace(':', "\\:")
 }
 
+/// Bold, to match the preview (which always drew titles at weight 700) and the
+/// way captions on short-form video look. The regular face exported here
+/// before, so what came out never quite matched what was shown.
 fn title_font() -> String {
     for f in [
+        "C:/Windows/Fonts/segoeuib.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
         "C:/Windows/Fonts/segoeui.ttf",
         "C:/Windows/Fonts/arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
     ] {
         if std::path::Path::new(f).exists() {
@@ -379,6 +384,80 @@ fn title_font() -> String {
         }
     }
     "C:/Windows/Fonts/arial.ttf".to_string()
+}
+
+/// Widest share of the frame a title line may use, and the box border drawn
+/// around it (`boxborderw`). Mirrored in apps/desktop/src/titleLayout.ts.
+const TITLE_MAX_W: f64 = 0.9;
+const TITLE_BOX_PAD: f64 = 14.0;
+
+/// Advance width of `c` as a fraction of the font size, for the bold sans the
+/// titles are drawn in (Segoe UI Bold, Arial Bold). Set from measurements of
+/// the real fonts and kept on the generous side: overestimating only wraps a
+/// line one word early, underestimating cuts letters off the frame. Mirrored
+/// in apps/desktop/src/titleLayout.ts so the preview breaks lines identically.
+fn glyph_em(c: char) -> f64 {
+    match c {
+        ' ' | 'i' | 'l' | 'j' | '!' | '|' | '.' | ',' | ':' | ';' | '\'' | '\u{2019}' => 0.28,
+        'f' | 't' | 'r' | 'I' | '(' | ')' => 0.40,
+        'm' => 0.90,
+        'w' => 0.82,
+        'M' | 'W' => 0.98,
+        'A'..='Z' => 0.74,
+        _ => 0.60,
+    }
+}
+
+fn text_em(s: &str) -> f64 {
+    s.chars().map(glyph_em).sum()
+}
+
+/// Lay a title out inside a frame `frame_w` pixels wide, at font size `fs` px.
+///
+/// drawtext never wraps, so a line wider than the picture was simply cut off
+/// at both edges: "honestly everything completely changed after that" came
+/// out of a vertical clip as "verything completely changed". This breaks the
+/// text into the fewest lines that fit, balanced so they're of similar width,
+/// and shrinks the font only when one word on its own is wider than the frame.
+/// Returns the lines and the font size to draw them at.
+pub fn fit_title(text: &str, fs: f64, frame_w: f64) -> (Vec<String>, f64) {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return (vec![text.to_string()], fs);
+    }
+    let room = (frame_w * TITLE_MAX_W - 2.0 * TITLE_BOX_PAD).max(1.0);
+    let longest = words.iter().map(|w| text_em(w)).fold(0.0, f64::max);
+    let fs = if longest * fs > room { (room / longest).max(8.0) } else { fs };
+    let lay = |limit_em: f64| -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        for w in &words {
+            let next = if cur.is_empty() { w.to_string() } else { format!("{cur} {w}") };
+            if !cur.is_empty() && text_em(&next) > limit_em {
+                lines.push(std::mem::replace(&mut cur, w.to_string()));
+            } else {
+                cur = next;
+            }
+        }
+        lines.push(cur);
+        lines
+    };
+    let limit = room / fs;
+    let n = lay(limit).len();
+    if n == 1 {
+        return (vec![words.join(" ")], fs);
+    }
+    // Balance: the narrowest line limit that still needs no more than n lines.
+    let (mut lo, mut hi) = (longest, limit);
+    for _ in 0..40 {
+        let mid = (lo + hi) / 2.0;
+        if lay(mid).len() <= n {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    (lay(hi), fs)
 }
 
 /// Build a clip's fitted-frame video chain `[{vi}:v] → [v{k}]`:
@@ -2173,7 +2252,10 @@ fn run_export(
         let font = ff_path(&title_font());
         let mut cur = base.clone();
         for (ti, title) in titles.iter().enumerate() {
-            let fs = ((title.font_size * h as f64 / 1080.0).round() as i64).max(8);
+            let (lines, fs) = fit_title(&title.text, title.font_size * h as f64 / 1080.0, w as f64);
+            let fs = (fs.floor() as i64).max(8);
+            // a real line break inside the quoted text; each line escaped alone
+            let txt = lines.iter().map(|l| esc_drawtext(l)).collect::<Vec<_>>().join("\n");
             let x = if title.pos_x.abs() < 1e-9 {
                 "(w-text_w)/2".to_string()
             } else {
@@ -2201,9 +2283,8 @@ fn run_export(
                 // came out wrong; it also treats "%{...}" as a function call,
                 // which has no business happening to someone's caption.
                 "[{cur}]drawtext=fontfile='{font}':text='{txt}':expansion=none:fontsize={fs}:\
-                 fontcolor=white:x={x}:y={y}{boxpart}:\
-                 enable='between(t,{t0:.3},{t1:.3})'[{out_lbl}];",
-                txt = esc_drawtext(&title.text)
+                 fontcolor=white:text_align=C:x={x}:y={y}{boxpart}:\
+                 enable='between(t,{t0:.3},{t1:.3})'[{out_lbl}];"
             ));
             cur = out_lbl;
         }
@@ -2815,6 +2896,52 @@ mod tests {
             (total - 8.0).abs() < 1e-9,
             "total preserved at 8s, got {total}"
         );
+    }
+
+    #[test]
+    fn the_width_estimate_never_undershoots_the_real_font() {
+        // Segoe UI Bold at 100px, measured from drawtext renders on 2026-11-01.
+        // Under means letters cut off; a little over only wraps a word early.
+        for (text, measured_px) in [
+            ("so um the quick brown fox", 1254.0),
+            ("honestly everything completely changed after that", 2378.0),
+            ("I literally could not believe it", 1335.0),
+            ("WOW WHAT A MOMENT", 1184.0),
+            ("mmmm wwww mmmm wwww", 1446.0),
+        ] {
+            let est = text_em(text) * 100.0;
+            assert!(est >= measured_px, "{text:?}: estimate {est:.0}px < real {measured_px}px");
+            assert!(est <= measured_px * 1.25, "{text:?}: estimate {est:.0}px is far too wide");
+        }
+    }
+
+    #[test]
+    fn a_caption_too_wide_for_a_vertical_frame_is_wrapped_not_cut_off() {
+        // the line that exported as "verything completely changed"
+        let fs = 46.0 * 1920.0 / 1080.0;
+        let (lines, got_fs) = fit_title("honestly everything completely changed after that", fs, 1080.0);
+        assert!(lines.len() >= 2, "{lines:?}");
+        assert_eq!(got_fs, fs, "wrapping alone fits it; the font shouldn't shrink");
+        let room = 1080.0 * TITLE_MAX_W - 2.0 * TITLE_BOX_PAD;
+        let widths: Vec<f64> = lines.iter().map(|l| text_em(l) * got_fs).collect();
+        assert!(widths.iter().all(|w| *w <= room), "{lines:?} {widths:?}");
+        // 25 em of text against 11.5 em of room: three lines is the fewest
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines.join(" "), "honestly everything completely changed after that");
+    }
+
+    #[test]
+    fn a_caption_that_fits_is_left_alone() {
+        // the same six words at the same 46px reference size, in a wide frame
+        let (lines, fs) = fit_title("so um the quick brown fox", 46.0, 1920.0);
+        assert_eq!((lines, fs), (vec!["so um the quick brown fox".to_string()], 46.0));
+    }
+
+    #[test]
+    fn only_a_word_wider_than_the_frame_shrinks_the_font() {
+        let (lines, fs) = fit_title("Supercalifragilisticexpialidocious", 82.0, 1080.0);
+        assert_eq!(lines.len(), 1);
+        assert!(fs < 82.0 && text_em(&lines[0]) * fs <= 1080.0 * TITLE_MAX_W - 2.0 * TITLE_BOX_PAD);
     }
 
     #[test]

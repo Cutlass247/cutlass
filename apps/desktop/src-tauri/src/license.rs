@@ -92,16 +92,71 @@ fn machine_guid() -> Option<String> {
 /// already per-installation.
 pub fn machine_id() -> String {
     let mut h = Sha256::new();
-    h.update(machine_guid().unwrap_or_default().as_bytes());
+    h.update(machine_seed().as_bytes());
     h.update(b"|cutlass-hwid-v2");
     let digest = h.finalize();
     digest[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// What the machine id is derived from: the Windows install GUID, or — only
+/// when that can't be read — a random id made once and kept in Cutlass's data
+/// folder. A machine whose GUID reads normally gets exactly the id it always
+/// had.
+///
+/// The fallback used to be the empty string, so every machine whose GUID
+/// couldn't be read (a locked-down registry, a damaged install) hashed to the
+/// SAME id and shared one trial and one licence: the first of them to buy
+/// would have licensed them all, and one expired trial would have locked out
+/// every one.
+fn machine_seed() -> String {
+    static SEED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SEED.get_or_init(|| seed_from(machine_guid(), &data_dir().join("machine-id")))
+        .clone()
+}
+
+fn seed_from(guid: Option<String>, store: &std::path::Path) -> String {
+    if let Some(g) = guid.filter(|g| !g.trim().is_empty()) {
+        return g;
+    }
+    if let Ok(s) = std::fs::read_to_string(store) {
+        let s = s.trim();
+        if s.len() >= 32 {
+            return format!("fallback:{s}");
+        }
+    }
+    let fresh = random_hex();
+    if let Some(dir) = store.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(store, &fresh);
+    format!("fallback:{fresh}")
+}
+
+/// 128 random bits as hex. There's no RNG crate in this app; `RandomState`'s
+/// keys come from the OS's random source, and the clock and process id are
+/// mixed in on top.
+fn random_hex() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = Sha256::new();
+    for i in 0..4u64 {
+        let mut k = std::collections::hash_map::RandomState::new().build_hasher();
+        k.write_u64(i);
+        h.update(k.finish().to_le_bytes());
+    }
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    h.update(t.as_nanos().to_le_bytes());
+    h.update(std::process::id().to_le_bytes());
+    h.finalize()[..16].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn data_dir() -> PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
+    PathBuf::from(base).join("Cutlass")
+}
+
 // ── lease cache ──────────────────────────────────────────────────────
 fn cache_path() -> PathBuf {
-    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
-    PathBuf::from(base).join("Cutlass").join("lease.json")
+    data_dir().join("lease.json")
 }
 
 fn load_cache() -> Option<SignedLease> {
@@ -160,9 +215,45 @@ pub fn checkout_url(kind: &str) -> String {
 }
 
 fn post_lease(path: &str, body: serde_json::Value) -> Option<SignedLease> {
-    let url = format!("{}{}", server_url().trim_end_matches('/'), path);
-    let resp: LeaseResp = agent().post(&url).send_json(body).ok()?.into_json().ok()?;
-    Some(resp.lease)
+    request_lease_at(&server_url(), path, body).ok()
+}
+
+/// Why a lease request came back without a lease. Redeeming must tell these
+/// apart: it used to answer every one with "That code wasn't accepted", so a
+/// dropped connection sent someone who had just paid off doubting their code.
+#[derive(Debug, PartialEq)]
+enum LeaseError {
+    /// Nothing answered: offline, DNS, firewall, timeout.
+    Unreachable,
+    /// The server answered and said no (an unknown code).
+    Refused,
+    /// The server answered with a fault, or with something unreadable.
+    ServerFault,
+}
+
+fn request_lease_at(base: &str, path: &str, body: serde_json::Value) -> Result<SignedLease, LeaseError> {
+    let url = format!("{}{}", base.trim_end_matches('/'), path);
+    match agent().post(&url).send_json(body) {
+        Ok(r) => r.into_json::<LeaseResp>().map(|x| x.lease).map_err(|_| LeaseError::ServerFault),
+        Err(ureq::Error::Status(code, _)) if code < 500 => Err(LeaseError::Refused),
+        Err(ureq::Error::Status(..)) => Err(LeaseError::ServerFault),
+        Err(_) => Err(LeaseError::Unreachable),
+    }
+}
+
+fn redeem_failure_message(e: &LeaseError) -> &'static str {
+    match e {
+        LeaseError::Refused => "That code wasn't accepted. Check it and try again.",
+        // A request that reached the server but lost its reply has bound the
+        // code to this machine, and redeeming it here again succeeds — so
+        // "still good" is true either way.
+        LeaseError::Unreachable => {
+            "Couldn't reach the license server. Check your internet connection and try again — your code is still good."
+        }
+        LeaseError::ServerFault => {
+            "The license server had a problem. Try again in a minute — your code is still good."
+        }
+    }
 }
 
 // ── decision ─────────────────────────────────────────────────────────
@@ -271,15 +362,15 @@ pub fn redeem(code: &str) -> LicenseInfo {
     let Some(vk) = verifying_key_from_b64(PUBLIC_KEY_B64) else {
         return LicenseInfo::error(&hwid, "Built with an invalid license key.");
     };
-    match post_lease("/redeem", serde_json::json!({ "hwid": hwid, "code": code })) {
-        Some(signed) => match signed.verify(&vk) {
+    match request_lease_at(&server_url(), "/redeem", serde_json::json!({ "hwid": hwid, "code": code })) {
+        Ok(signed) => match signed.verify(&vk) {
             Some(lease) if lease.hwid == hwid => {
                 save_cache(&signed);
                 info_from_lease(&lease, &hwid, now())
             }
             _ => LicenseInfo::error(&hwid, "The server returned an invalid response."),
         },
-        None => LicenseInfo::error(&hwid, "That code wasn't accepted. Check it and try again."),
+        Err(e) => LicenseInfo::error(&hwid, redeem_failure_message(&e)),
     }
 }
 
@@ -328,7 +419,21 @@ impl std::fmt::Display for AiError {
 /// Send the transcript (text only — never the video) to the server, which asks
 /// Claude for the best moments. Long timeout; the model call takes a while.
 pub fn ai_highlights(transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, AiError> {
-    ai_highlights_at(&server_url(), transcript, count)
+    ai_highlights_at(&server_url(), transcript, count, AI_WAIT)
+}
+
+/// How long to wait for the moment finder. The server allows Claude 150s
+/// (cutlass-license-server `call_anthropic`); this has to outlast that, or a
+/// long video that was about to succeed is abandoned at the client.
+const AI_WAIT: Duration = Duration::from_secs(180);
+
+/// A transport failure that happened after the request was sent: the server
+/// was reached and simply hadn't answered yet.
+fn timed_out_waiting(t: &ureq::Transport) -> bool {
+    t.kind() == ureq::ErrorKind::Io
+        && std::error::Error::source(t)
+            .and_then(|s| s.downcast_ref::<std::io::Error>())
+            .is_some_and(|e| matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock))
 }
 
 /// The body of [`ai_highlights`], with the server address passed in.
@@ -337,7 +442,12 @@ pub fn ai_highlights(transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, 
 /// connection comes back as `Offline`. That mapping is what decides whether
 /// the on-device finder runs, and it cannot be checked through `server_url()`
 /// without mutating the environment out from under every other test.
-fn ai_highlights_at(base: &str, transcript: Vec<TWord>, count: u32) -> Result<Vec<Moment>, AiError> {
+fn ai_highlights_at(
+    base: &str,
+    transcript: Vec<TWord>,
+    count: u32,
+    wait: Duration,
+) -> Result<Vec<Moment>, AiError> {
     let hwid = machine_id();
     let url = format!("{}/highlights", base.trim_end_matches('/'));
     let body = serde_json::json!({
@@ -346,7 +456,7 @@ fn ai_highlights_at(base: &str, transcript: Vec<TWord>, count: u32) -> Result<Ve
         "count": count,
         "app_version": env!("CARGO_PKG_VERSION"),
     });
-    match agent().post(&url).timeout(Duration::from_secs(120)).send_json(body) {
+    match agent().post(&url).timeout(wait).send_json(body) {
         Ok(resp) => {
             // Read the status before the body is consumed. A reply we cannot
             // parse still came from the server, so it is Failed, not Offline —
@@ -364,6 +474,15 @@ fn ai_highlights_at(base: &str, transcript: Vec<TWord>, count: u32) -> Result<Ve
                 message: msg.chars().take(200).collect::<String>(),
             })
         }
+        // Reached, but no answer in time: the server is still working on a
+        // long video. This used to count as Offline, which ran the on-device
+        // finder under a "no connection" banner while the server carried on —
+        // and counted the minutes.
+        Err(ureq::Error::Transport(t)) if timed_out_waiting(&t) => Err(AiError::Failed {
+            status: 504,
+            message: "The AI took longer than expected on this video. Try again in a moment."
+                .into(),
+        }),
         Err(e) => Err(AiError::Offline {
             message: format!("Couldn't reach the highlights service: {e}"),
         }),
@@ -502,10 +621,61 @@ mod tests {
             start: 0.0,
             end: 0.5,
         }];
-        match ai_highlights_at("http://127.0.0.1:1", words, 8) {
+        match ai_highlights_at("http://127.0.0.1:1", words, 8, AI_WAIT) {
             Err(AiError::Offline { .. }) => {}
             other => panic!("expected Offline, got {other:?}"),
         }
+    }
+
+    /// A server that took the request but is still thinking is not offline.
+    /// Treating it as offline swapped in the rough on-device finder with a
+    /// "no connection" banner on long videos.
+    #[test]
+    fn a_slow_reply_is_not_mistaken_for_being_offline() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // accept the connection and then say nothing at all
+        let hold = std::thread::spawn(move || {
+            let (_conn, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        let words = vec![TWord { text: "hello".into(), start: 0.0, end: 0.5 }];
+        match ai_highlights_at(&format!("http://127.0.0.1:{port}"), words, 8, Duration::from_secs(1)) {
+            Err(AiError::Failed { status: 504, message }) => {
+                assert!(message.contains("longer than expected"), "{message}")
+            }
+            other => panic!("expected a timeout Failed, got {other:?}"),
+        }
+        hold.join().unwrap();
+    }
+
+    /// Machines whose Windows GUID can't be read must not share one id —
+    /// with the old empty-string fallback they all hashed to the same one.
+    #[test]
+    fn machines_without_a_readable_guid_do_not_share_an_id() {
+        let dir = std::env::temp_dir().join(format!("cutlass-seed-test-{}", std::process::id()));
+        let (a, b) = (dir.join("a").join("machine-id"), dir.join("b").join("machine-id"));
+        let first = seed_from(None, &a);
+        assert_eq!(seed_from(None, &a), first, "the fallback must survive a restart");
+        assert_ne!(seed_from(None, &b), first, "two such machines must get different ids");
+        assert_eq!(seed_from(Some("GUID-1".into()), &a), "GUID-1", "a readable GUID always wins");
+        assert_eq!(seed_from(Some("   ".into()), &b), seed_from(None, &b), "blank counts as unreadable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Someone who has just paid, on a connection that drops, must not be
+    /// told their code is wrong.
+    #[test]
+    fn a_code_that_never_reached_the_server_is_not_called_wrong() {
+        let got = request_lease_at(
+            "http://127.0.0.1:1",
+            "/redeem",
+            serde_json::json!({ "hwid": "x", "code": "CUTLASS-AAAA-BBBB-CCCC" }),
+        );
+        assert_eq!(got.err(), Some(LeaseError::Unreachable));
+        let msg = redeem_failure_message(&LeaseError::Unreachable);
+        assert!(!msg.contains("wasn't accepted") && msg.contains("still good"), "{msg}");
+        assert!(redeem_failure_message(&LeaseError::Refused).contains("wasn't accepted"));
     }
 
     fn lease(status: Status, expires_at: i64, lease_expires_at: i64) -> Lease {

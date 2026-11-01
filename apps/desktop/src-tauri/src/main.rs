@@ -544,6 +544,14 @@ fn read_text_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(err_str)
 }
 
+/// Whether something is already at `path`. The exporter overwrites (`-y`), so
+/// the export dialog asks before reusing a name rather than silently
+/// replacing yesterday's render with today's.
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
 /// Open a URL (or mailto:) in the OS default handler — used by feedback.
 #[tauri::command]
 fn open_url(url: String) {
@@ -2803,6 +2811,7 @@ fn main() {
             remove_track,
             reveal_file,
             read_text_file,
+            path_exists,
             open_url,
             cancel_export,
             set_effects,
@@ -3006,18 +3015,6 @@ mod tests {
         assert!(is_conform_output(Path::new(r"C:\Users\x\AppData\Local\Temp\cutlass-cache\ab\cfr30.mp4")));
     }
 
-    /// Every mutex here must go through `lock_ok`, and this reads the file's
-    /// own source to say so.
-    ///
-    /// That sounds paranoid until you know how it went wrong. These were
-    /// converted once already, by searching for `.lock().unwrap()` — and five
-    /// were missed, because rustfmt had wrapped them onto two lines and the
-    /// search was one line at a time. Nothing noticed for months: a poisoned
-    /// mutex is a runtime state no test arrives at by accident, so the ones
-    /// left behind passed everything while doing exactly what the fix was
-    /// meant to stop. A grep that can be defeated by a line break is not a
-    /// guarantee; this is, and it costs nothing to run.
-    #[test]
     /// Pan has to drive whichever axis the footage overflows.
     ///
     /// `Reframe::Fill` crops on both — `crop=w:h:(iw-w)*rx:(ih-h)*ry` — and
@@ -3044,6 +3041,101 @@ mod tests {
             app.contains("fn panIsHorizontal") || app.contains("function panIsHorizontal"),
             "panIsHorizontal() is gone — the rule deciding which axis Pan drives has \
              to live somewhere both the preview and the export read."
+        );
+    }
+
+    /// Create's export has no dialog, so nothing asks about Enhance audio —
+    /// the call has to ask for it. It didn't: `master_audio` was never passed,
+    /// ipc.ts defaults it to false, and every short from the clip maker
+    /// skipped voice levelling and loudness matching.
+    #[test]
+    fn create_clips_are_exported_with_enhanced_audio() {
+        let app = include_str!("../../src/App.tsx");
+        let at = app
+            .find("const exportClip")
+            .expect("exportClip is gone — has Create's export moved?");
+        let body = &app[at..at + app[at..].find("}, [").expect("unterminated exportClip")];
+        assert!(
+            body.contains("master_audio: true"),
+            "Create's export no longer asks for Enhance audio. It has no dialog to \
+             switch it on, so leaving it out means no clip from the clip maker is \
+             ever levelled or loudness-matched."
+        );
+    }
+
+    /// A Create clip is named before it renders, and cancelling means no
+    /// export. It used to take a folder picker's cancel as "use the last
+    /// folder" (`pickExportDir() ?? exportDir`) and render anyway, under a
+    /// fixed name every clip of the day shared.
+    #[test]
+    fn create_clips_are_named_and_cancel_means_cancel() {
+        let app = include_str!("../../src/App.tsx");
+        let at = app
+            .find("const exportClip")
+            .expect("exportClip is gone — has Create's export moved?");
+        let body = &app[at..at + app[at..].find("}, [").expect("unterminated exportClip")];
+        assert!(
+            body.contains("pickExportFile("),
+            "Create's export no longer asks for a file name before rendering"
+        );
+        assert!(
+            body.contains("if (!path) return;"),
+            "a cancelled Save dialog must stop the export, not fall back to a folder"
+        );
+        assert!(!body.contains("?? exportDir"), "cancel falls back to the last folder again");
+    }
+
+    /// The preview lays titles out with a copy of the exporter's rule, so the
+    /// line breaks shown are the ones exported. A number changed on one side
+    /// only would quietly put them out of step again.
+    #[test]
+    fn the_preview_breaks_title_lines_where_the_export_does() {
+        let ts = include_str!("../../src/titleLayout.ts");
+        for needle in [
+            "TITLE_MAX_W = 0.9;",
+            "TITLE_BOX_PAD = 14;",
+            "return 0.28;",
+            "return 0.4;",
+            r#"if (c === "m") return 0.9;"#,
+            r#"if (c === "w") return 0.82;"#,
+            "return 0.98;",
+            "return 0.74;",
+            "return 0.6;",
+        ] {
+            assert!(
+                ts.contains(needle),
+                "titleLayout.ts no longer has `{needle}` — keep it identical to \
+                 export.rs (TITLE_MAX_W, TITLE_BOX_PAD, glyph_em)"
+            );
+        }
+    }
+
+    /// Clicking a clip selects it; it must not move it. The release handler
+    /// rounded positions to 0.01s and committed even when nothing moved, so a
+    /// click after a split shifted the clip 5ms — a gap that hid the
+    /// Transition panel — and every snapped edge was pulled off again.
+    #[test]
+    fn clicking_a_clip_does_not_move_it() {
+        let app = include_str!("../../src/App.tsx");
+        let at = app.find("const onClipPointerUp").expect("onClipPointerUp is gone");
+        let body = &app[at..at + app[at..].find("}, [").expect("unterminated")];
+        assert!(!body.contains("v * 100) / 100"), "clip edits are rounded to 0.01s again");
+        assert!(
+            body.contains("drag.start === drag.primaryStart"),
+            "a click that moved nothing is committed as an edit again"
+        );
+    }
+
+    /// Every way to export from Create exports the Create clip. The top-bar
+    /// button and File → Export… used to open the general dialog there, which
+    /// has no idea of the shape picked, and rendered a vertical clip as
+    /// letterboxed 16:9.
+    #[test]
+    fn exporting_from_create_keeps_the_shape_you_picked() {
+        let app = include_str!("../../src/App.tsx");
+        assert!(
+            app.contains(r#"onExport={mode === "create" ? exportClip : doExport}"#),
+            "the top bar's Export no longer routes Create to exportClip"
         );
     }
 
@@ -3090,6 +3182,17 @@ mod tests {
         }
     }
 
+    /// Every mutex here must go through `lock_ok`, and this reads the file's
+    /// own source to say so.
+    ///
+    /// That sounds paranoid until you know how it went wrong. These were
+    /// converted once already, by searching for `.lock().unwrap()` — and five
+    /// were missed, because rustfmt had wrapped them onto two lines and the
+    /// search was one line at a time. Nothing noticed for months: a poisoned
+    /// mutex is a runtime state no test arrives at by accident, so the ones
+    /// left behind passed everything while doing exactly what the fix was
+    /// meant to stop. A grep that can be defeated by a line break is not a
+    /// guarantee; this is, and it costs nothing to run.
     #[test]
     fn every_mutex_in_this_file_goes_through_lock_ok() {
         // Production code only — the poisoning test below locks deliberately.
