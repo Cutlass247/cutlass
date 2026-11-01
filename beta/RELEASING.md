@@ -137,6 +137,23 @@ manager alongside the licensing key.
    actually reachable. Drafting the previous one before that leaves nothing
    downloadable if the new one turns out to be broken.
 
+9. **Tell the antivirus vendors about it**, the day it's published.
+
+   Every new installer starts with no reputation, and a 240 MB self-extracting
+   binary nobody has downloaded yet is exactly what behavioural antivirus
+   blocks. Bitdefender flagged the clean 0.1.0 installer this way. Each report
+   clears the new file faster than waiting for downloads to build reputation:
+
+   - **Microsoft Defender:** <https://www.microsoft.com/en-us/wdsi/filesubmission>
+     → *Software developer* → upload the installer, say it's a false positive.
+     Needs your Microsoft account.
+   - **Bitdefender:** <https://www.bitdefender.com/submit/> → false positive.
+   - **VirusTotal:** upload the installer at <https://www.virustotal.com>. The
+     file itself, not the URL: a URL scan only asks reputation services.
+
+   A block on your own machine proves little: with Bitdefender installed,
+   Defender stands down entirely.
+
 ## The landing page is served from a different repo
 
 **https://cutlass247.github.io/ is not published by this repository.** It is a

@@ -16,6 +16,11 @@
 //!   CUTLASS_PORT                 listen port (default 8787)
 //!   CUTLASS_ANTHROPIC_KEY        Anthropic key for /highlights (AI moments)
 //!   CUTLASS_GROQ_KEY             Groq key for /transcribe (cloud STT)
+//!   CUTLASS_ANTHROPIC_MODEL      model for /highlights (default claude-sonnet-5);
+//!                                change it here when the provider retires one
+//!   CUTLASS_GROQ_MODEL           model for /transcribe (default whisper-large-v3-turbo)
+//!   CUTLASS_AI_MIN_CHARGE_MINUTES least a Find-the-best-moments run is charged
+//!                                (0/unset = off); bounds requests per allowance
 //!   CUTLASS_AI_MONTHLY_MINUTES   per-HWID monthly AI allowance (0/unset =
 //!                                unlimited, usage still tracked)
 //!   CUTLASS_AI_TRIAL_MINUTES     trial-licence AI allowance (0/unset = use the
@@ -92,11 +97,24 @@ struct Config {
     admin_token: Option<String>,
     anthropic_key: Option<String>,
     groq_key: Option<String>,
+    /// The models the AI features call. Settings rather than constants: when
+    /// a provider retires one, swapping it is a Railway variable, not a build.
+    anthropic_model: String,
+    groq_model: String,
+    /// Whether the database is on Railway's persistent volume: Some(false)
+    /// means a redeploy would wipe every trial, licence and code. None = not
+    /// running on Railway, so there's nothing to say.
+    db_on_volume: Option<bool>,
     /// Monthly AI processing allowance in SECONDS (0 = unlimited / track-only).
     ai_monthly_secs: f64,
     /// Trial-license AI allowance in SECONDS (0 = fall back to the monthly cap).
     /// Lets a trial taste the AI without draining our API credits.
     ai_trial_secs: f64,
+    /// The least a Find-the-best-moments run is charged, in SECONDS (0 = off).
+    /// The allowance counts minutes of video, but Claude bills per request: a
+    /// stream of one-minute clips is many requests for few minutes. A floor
+    /// bounds the number of requests an allowance can buy.
+    ai_min_call_secs: f64,
     /// Lemon Squeezy webhook HMAC signing secret (None = webhook disabled).
     ls_signing_secret: Option<String>,
     /// Lemon Squeezy variant IDs that grant a paid licence.
@@ -121,6 +139,81 @@ struct AppState {
     db: Arc<Mutex<Connection>>,
     cfg: Arc<Config>,
     key: Arc<PrivateKey>,
+    /// Last check that the configured AI models still exist (`model_watch`).
+    models: Arc<Mutex<ModelCheck>>,
+    /// Recent failed /claim attempts per client address. A code moves a
+    /// licence to whichever machine redeems it, so guessing is limited.
+    claim_fails: Arc<Mutex<HashMap<String, Vec<i64>>>>,
+}
+
+/// Whether each provider still knows the model we call. Some(false) is the
+/// day a model was retired: every Find the best moments (or transcription)
+/// fails from then on, so /health says so and the uptime check goes red.
+#[derive(Clone, Default, serde::Serialize)]
+struct ModelCheck {
+    anthropic_model_ok: Option<bool>,
+    groq_model_ok: Option<bool>,
+    checked_at: Option<i64>,
+}
+
+/// Is `db_path` on Railway's volume? Railway sets RAILWAY_ENVIRONMENT on every
+/// service and RAILWAY_VOLUME_MOUNT_PATH only when a volume is attached.
+fn db_on_volume(db_path: &str, railway_env: Option<&str>, mount: Option<&str>) -> Option<bool> {
+    railway_env?;
+    Some(mount.is_some_and(|m| {
+        let m = m.trim_end_matches('/');
+        !m.is_empty() && (db_path == m || db_path.starts_with(&format!("{m}/")))
+    }))
+}
+
+/// Ask a provider's model-listing endpoint (free) whether `url` exists:
+/// Some(true) 200, Some(false) 404, None when it couldn't be told.
+fn model_exists(url: &str, auth: (&str, &str), extra: Option<(&str, &str)>) -> Option<bool> {
+    let connector = native_tls::TlsConnector::new().ok()?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(20))
+        .tls_connector(std::sync::Arc::new(connector))
+        .build();
+    let mut req = agent.get(url).set(auth.0, auth.1);
+    if let Some((k, v)) = extra {
+        req = req.set(k, v);
+    }
+    match req.call() {
+        Ok(_) => Some(true),
+        Err(ureq::Error::Status(404, _)) => Some(false),
+        Err(_) => None,
+    }
+}
+
+fn check_models(cfg: &Config) -> ModelCheck {
+    ModelCheck {
+        anthropic_model_ok: cfg.anthropic_key.as_deref().and_then(|k| {
+            model_exists(
+                &format!("https://api.anthropic.com/v1/models/{}", cfg.anthropic_model),
+                ("x-api-key", k),
+                Some(("anthropic-version", "2023-06-01")),
+            )
+        }),
+        groq_model_ok: cfg.groq_key.as_deref().and_then(|k| {
+            model_exists(
+                &format!("https://api.groq.com/openai/v1/models/{}", cfg.groq_model),
+                ("Authorization", &format!("Bearer {k}")),
+                None,
+            )
+        }),
+        checked_at: Some(now()),
+    }
+}
+
+/// Re-check the models at startup and every six hours.
+async fn model_watch(state: AppState) {
+    loop {
+        let cfg = state.cfg.clone();
+        if let Ok(found) = tokio::task::spawn_blocking(move || check_models(&cfg)).await {
+            *state.models.lock_ok() = found;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+    }
 }
 
 // ── storage ──────────────────────────────────────────────────────────
@@ -175,6 +268,25 @@ fn init_db(conn: &Connection) {
         [],
     );
     let _ = conn.execute("ALTER TABLE codes ADD COLUMN order_id TEXT", []);
+    // What a buyer can prove they own, for /claim: the order number on their
+    // receipt, and a one-way hash of their email (the address is never kept).
+    let _ = conn.execute("ALTER TABLE codes ADD COLUMN order_number TEXT", []);
+    let _ = conn.execute("ALTER TABLE codes ADD COLUMN buyer_hash TEXT", []);
+}
+
+/// One-way fingerprint of a buyer's email, so /claim can check "is this the
+/// person who paid" without the server ever storing the address.
+fn buyer_hash(email: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"cutlass-buyer|");
+    h.update(email.trim().to_lowercase().as_bytes());
+    hex::encode(h.finalize())
+}
+
+/// The order number as a buyer types it: "#1234", " 1234 " and "1234" agree.
+fn clean_order_number(s: &str) -> String {
+    s.trim().trim_start_matches('#').trim().to_string()
 }
 
 /// UTC calendar year-month ("YYYY-MM") for a unix time — the usage period
@@ -246,6 +358,12 @@ fn ai_gate(
         }
     }
     Ok((is_owner, cap))
+}
+
+/// What one Find-the-best-moments run costs the allowance: the span of video
+/// analysed, but never less than the configured floor (see `ai_min_call_secs`).
+fn highlight_charge(span_secs: f64, min_secs: f64) -> f64 {
+    span_secs.max(0.0).max(min_secs.max(0.0))
 }
 
 /// Record `cost_secs` of AI media processing against the allowance (`cap`),
@@ -426,15 +544,156 @@ fn signed_response(state: &AppState, hwid: &str, mut lease: Lease) -> Json<Lease
 }
 
 // ── handlers ─────────────────────────────────────────────────────────
-async fn health() -> impl IntoResponse {
+async fn health(State(state): State<AppState>) -> impl IntoResponse {
     // The commit is here so a redeploy can be confirmed from outside. It used
     // to answer {"ok":true} regardless of what was running, which meant there
     // was no way to tell whether a deploy had actually landed.
+    //
+    // The rest is what can fail silently and badly: a database off the
+    // volume (wiped by the next redeploy) and an AI model the provider has
+    // retired. .github/workflows/uptime.yml reads these and goes red.
+    let models = state.models.lock_ok().clone();
     Json(serde_json::json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
         "commit": std::env::var("CUTLASS_BUILD_SHA").unwrap_or_else(|_| "unknown".into()),
+        "db_on_volume": state.cfg.db_on_volume,
+        "ai": {
+            "anthropic_model": state.cfg.anthropic_model,
+            "anthropic_model_ok": models.anthropic_model_ok,
+            "groq_model": state.cfg.groq_model,
+            "groq_model_ok": models.groq_model_ok,
+            "checked_at": models.checked_at,
+        },
     }))
+}
+
+// ── /claim: a web buyer collects their licence code ──────────────────
+//
+// Someone who buys on the website hasn't installed Cutlass yet, so there's no
+// machine to grant to: the webhook mints a code instead. Nothing used to
+// deliver it — every web sale waited on a code sent by hand. Here the buyer
+// proves the purchase with what's on their Lemon Squeezy receipt (the email
+// they paid with and the order number) and the code is shown to them.
+
+/// Failed claims allowed per client address per hour. A code moves a licence
+/// to whichever machine redeems it, so it mustn't be guessable.
+const CLAIM_LIMIT: usize = 10;
+
+#[derive(Deserialize)]
+struct ClaimReq {
+    email: String,
+    order: String,
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// The client address behind Railway's proxy (first X-Forwarded-For hop).
+fn client_addr(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn claim_page(inner: &str) -> axum::response::Html<String> {
+    axum::response::Html(format!(
+        r#"<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Get your Cutlass licence code</title>
+<style>
+:root{{--bg:#111214;--panel:#1b1d21;--text:#eef0f3;--muted:#9aa1ab;--accent:#4a90ff;--warn:#e8b339;--line:#2a2d33}}
+@media (prefers-color-scheme: light){{:root{{--bg:#f4f5f7;--panel:#fff;--text:#16181c;--muted:#5d6470;--line:#dde1e6}}}}
+*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 "Segoe UI",system-ui,sans-serif}}
+main{{max-width:30rem;margin:12vh auto;padding:0 16px}}
+.card{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:28px}}
+h1{{font-size:1.3rem;margin:0 0 6px}}p{{margin:0 0 16px;color:var(--muted)}}
+label{{display:block;font-size:.85rem;color:var(--muted);margin:14px 0 4px}}
+input{{width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit}}
+input:focus{{outline:2px solid var(--accent);outline-offset:1px}}
+button{{margin-top:20px;width:100%;padding:11px;border:0;border-radius:8px;background:var(--accent);color:#fff;font-family:inherit;font-size:1rem;font-weight:600;cursor:pointer}}
+button:focus-visible{{outline:2px solid var(--text);outline-offset:2px}}
+.note{{color:var(--warn);margin-top:14px}}
+.code{{font:600 1.25rem Consolas,monospace;letter-spacing:.04em;padding:14px;border:1px dashed var(--accent);border-radius:8px;text-align:center;margin:8px 0 18px;user-select:all}}
+ol{{padding-left:1.2rem;margin:0 0 14px}}li{{margin:4px 0}}a{{color:var(--accent)}}
+</style></head><body><main><div class="card">{inner}</div></main></body></html>"#
+    ))
+}
+
+fn claim_form(note: &str) -> String {
+    let note = if note.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<p class="note">{}</p>"#, html_escape(note))
+    };
+    format!(
+        r#"<h1>Get your licence code</h1>
+<p>Bought Cutlass on the website? Enter the email you paid with and the order number from your receipt.</p>
+<form method="post" action="/claim">
+<label for="email">Email you paid with</label><input id="email" name="email" type="email" required autocomplete="email">
+<label for="order">Order number</label><input id="order" name="order" required placeholder="e.g. #123456" inputmode="numeric">
+<button type="submit">Show my code</button></form>{note}"#
+    )
+}
+
+async fn claim_get() -> axum::response::Html<String> {
+    claim_page(&claim_form(""))
+}
+
+async fn claim_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Form(req): axum::Form<ClaimReq>,
+) -> axum::response::Html<String> {
+    let who = client_addr(&headers);
+    let t = now();
+    {
+        let mut fails = state.claim_fails.lock_ok();
+        let recent = fails.entry(who.clone()).or_default();
+        recent.retain(|&at| t - at < 3600);
+        if recent.len() >= CLAIM_LIMIT {
+            return claim_page(&claim_form(
+                "Too many tries from here. Wait an hour, or email cutlass.beta@gmail.com with your order number.",
+            ));
+        }
+    }
+    let found: Option<String> = state
+        .db
+        .lock_ok()
+        .query_row(
+            "SELECT code FROM codes WHERE order_number=?1 AND buyer_hash=?2",
+            rusqlite::params![clean_order_number(&req.order), buyer_hash(&req.email)],
+            |r| r.get(0),
+        )
+        .ok();
+    match found {
+        Some(code) => claim_page(&format!(
+            r#"<h1>Your licence code</h1>
+<div class="code">{}</div>
+<ol><li><a href="https://cutlass247.github.io/">Download Cutlass</a> and open it.</li>
+<li>Click <b>Enter license key</b> at the top right.</li>
+<li>Paste this code and press <b>Activate</b>.</li></ol>
+<p>Keep this code somewhere safe: entering it on a new computer moves your licence there.</p>"#,
+            html_escape(&code)
+        )),
+        None => {
+            // The same answer whether the email or the order number was wrong,
+            // so a guess learns nothing about which half was right.
+            state.claim_fails.lock_ok().entry(who).or_default().push(t);
+            claim_page(&claim_form(
+                "We couldn't find that order. Check the email you paid with and the order number on your Lemon Squeezy receipt.",
+            ))
+        }
+    }
 }
 
 /// Where to send someone who wants to buy.
@@ -823,9 +1082,9 @@ Transcript:\n{}",
 /// as "empty response". 16000 leaves room to answer. Effort is pinned to
 /// medium so the reply still lands inside the app's 120-second wait: picking
 /// moments is selection, not hard reasoning.
-fn anthropic_body(prompt: String) -> serde_json::Value {
+fn anthropic_body(model: &str, prompt: String) -> serde_json::Value {
     serde_json::json!({
-        "model": "claude-sonnet-5",
+        "model": model,
         "max_tokens": 16000,
         "thinking": { "type": "adaptive" },
         "output_config": { "effort": "medium" },
@@ -873,7 +1132,7 @@ fn anthropic_text(v: &serde_json::Value) -> Result<String, String> {
 /// times with backoff; genuine 4xx (bad key, no credits) fail fast. The model
 /// is asked for a bare JSON array in the prompt and the caller extracts the
 /// outermost [...] (tolerating any stray markdown fences).
-fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
+fn call_anthropic(key: &str, model: &str, prompt: String) -> Result<String, String> {
     let connector = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
     // Room for a long video's transcript. The app waits 180s (license.rs
     // AI_WAIT), so this must stay comfortably under that.
@@ -881,7 +1140,7 @@ fn call_anthropic(key: &str, prompt: String) -> Result<String, String> {
         .timeout(std::time::Duration::from_secs(150))
         .tls_connector(std::sync::Arc::new(connector))
         .build();
-    let body = anthropic_body(prompt);
+    let body = anthropic_body(model, prompt);
 
     let mut last_err = String::new();
     for attempt in 0..3 {
@@ -943,7 +1202,8 @@ async fn highlights(
 
     let count = req.count.unwrap_or(8).clamp(1, 15);
     let prompt = build_prompt(&req.transcript, count);
-    let text = tokio::task::spawn_blocking(move || call_anthropic(&key, prompt))
+    let model = state.cfg.anthropic_model.clone();
+    let text = tokio::task::spawn_blocking(move || call_anthropic(&key, &model, prompt))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
@@ -964,7 +1224,7 @@ async fn highlights(
     moments.retain(|m| m.end > m.start && m.end - m.start >= 5.0);
     // meter the analysed span (Claude cost is incurred on either transcribe path)
     let span = dur - req.transcript.first().map(|w| w.start).unwrap_or(0.0);
-    ai_charge(&state, &hwid, is_owner, cap, span.max(0.0), t);
+    ai_charge(&state, &hwid, is_owner, cap, highlight_charge(span, state.cfg.ai_min_call_secs), t);
     Ok(Json(moments))
 }
 
@@ -997,7 +1257,7 @@ fn push_text_field(body: &mut Vec<u8>, boundary: &str, name: &str, value: &str) 
 
 /// POST one audio chunk to Groq's OpenAI-compatible transcription API and
 /// return word-level timestamps (relative to the chunk start).
-fn call_groq(key: &str, audio: &[u8]) -> Result<Vec<SttWord>, String> {
+fn call_groq(key: &str, model: &str, audio: &[u8]) -> Result<Vec<SttWord>, String> {
     let connector = native_tls::TlsConnector::new().map_err(|e| e.to_string())?;
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(150))
@@ -1006,7 +1266,7 @@ fn call_groq(key: &str, audio: &[u8]) -> Result<Vec<SttWord>, String> {
 
     let boundary = format!("----cutlass{}", now());
     let mut body: Vec<u8> = Vec::with_capacity(audio.len() + 512);
-    push_text_field(&mut body, &boundary, "model", "whisper-large-v3-turbo");
+    push_text_field(&mut body, &boundary, "model", model);
     push_text_field(&mut body, &boundary, "response_format", "verbose_json");
     push_text_field(&mut body, &boundary, "timestamp_granularities[]", "word");
     body.extend_from_slice(
@@ -1084,7 +1344,8 @@ async fn transcribe(
     let (is_owner, cap) = ai_gate(&state, &hwid, q.app_version.as_deref(), t)?;
 
     let audio = body.to_vec();
-    let mut words = tokio::task::spawn_blocking(move || call_groq(&key, &audio))
+    let model = state.cfg.groq_model.clone();
+    let mut words = tokio::task::spawn_blocking(move || call_groq(&key, &model, &audio))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
@@ -1317,12 +1578,25 @@ async fn lemonsqueezy_webhook(
         // way onto a different machine later, so it is worth having even if
         // marking this machine paid fails.
         code_for_order(&db, &order_id, t).and_then(|code| {
+            // Let the buyer fetch it themselves at /claim with what's on their
+            // receipt. Web sales used to need the code sent by hand.
+            let attrs = &v["data"]["attributes"];
+            let number = attrs["order_number"]
+                .as_i64()
+                .map(|n| n.to_string())
+                .or_else(|| attrs["order_number"].as_str().map(clean_order_number));
+            if let (Some(number), Some(email)) = (number, attrs["user_email"].as_str()) {
+                db.execute(
+                    "UPDATE codes SET order_number=?2, buyer_hash=?3 WHERE code=?1",
+                    rusqlite::params![code, number, buyer_hash(email)],
+                )?;
+            }
             if hwid.is_empty() {
                 // Nobody to grant to yet. The code IS the delivery.
                 return Ok(format!(
                     "granted: licence code {code} (no machine id on this order, so \
-                     nothing was activated — give the buyer this code and they \
-                     redeem it in the app)"
+                     nothing was activated — the buyer can collect it at /claim \
+                     with their email and order number, or give it to them)"
                 ));
             }
             mark_paid(&db, &hwid, t)?;
@@ -1412,7 +1686,30 @@ async fn main() -> anyhow::Result<()> {
     let key = signing_key_from_b64(&key_b64)
         .ok_or_else(|| anyhow::anyhow!("CUTLASS_LICENSE_PRIVATE_KEY is not a valid 32-byte base64 key"))?;
 
+    let db_path = env::var("CUTLASS_DB_PATH").unwrap_or_else(|_| "cutlass-license.db".into());
+    let on_volume = db_on_volume(
+        &db_path,
+        env::var("RAILWAY_ENVIRONMENT").ok().as_deref(),
+        env::var("RAILWAY_VOLUME_MOUNT_PATH").ok().as_deref(),
+    );
+    if on_volume == Some(false) {
+        eprintln!(
+            "WARNING: the database ({db_path}) is NOT on a Railway volume. The next \
+             redeploy will erase every trial, licence and code. Attach a volume at /data."
+        );
+    }
     let cfg = Config {
+        anthropic_model: env::var("CUTLASS_ANTHROPIC_MODEL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "claude-sonnet-5".into()),
+        groq_model: env::var("CUTLASS_GROQ_MODEL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "whisper-large-v3-turbo".into()),
+        db_on_volume: on_volume,
         trial_secs: env_days("CUTLASS_TRIAL_DAYS", 7),
         trial_grace_secs: env_days("CUTLASS_TRIAL_GRACE_DAYS", 3),
         paid_grace_secs: env_days("CUTLASS_PAID_GRACE_DAYS", 30),
@@ -1434,6 +1731,11 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(0.0)
             * 60.0,
         ai_trial_secs: env::var("CUTLASS_AI_TRIAL_MINUTES")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0)
+            * 60.0,
+        ai_min_call_secs: env::var("CUTLASS_AI_MIN_CHARGE_MINUTES")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(0.0)
@@ -1462,7 +1764,6 @@ async fn main() -> anyhow::Result<()> {
             .collect(),
     };
 
-    let db_path = env::var("CUTLASS_DB_PATH").unwrap_or_else(|_| "cutlass-license.db".into());
     let conn = Connection::open(&db_path)?;
     init_db(&conn);
 
@@ -1470,7 +1771,10 @@ async fn main() -> anyhow::Result<()> {
         db: Arc::new(Mutex::new(conn)),
         cfg: Arc::new(cfg),
         key: Arc::new(key),
+        models: Arc::new(Mutex::new(ModelCheck::default())),
+        claim_fails: Arc::new(Mutex::new(HashMap::new())),
     };
+    tokio::spawn(model_watch(state.clone()));
 
     // Honor the platform's assigned port (Railway/Render/Fly set $PORT) before
     // our own override, so the service is reachable without extra config.
@@ -1504,6 +1808,7 @@ fn router_with(state: AppState, extra: Router<AppState>) -> Router {
         .route("/health", get(health))
         .route("/checkout", get(checkout))
         .route("/buy/:what", get(buy))
+        .route("/claim", get(claim_get).post(claim_post))
         .route("/activate", post(activate))
         .route("/redeem", post(redeem))
         .route("/admin/mint", post(mint))
@@ -1547,8 +1852,12 @@ mod tests {
             admin_token: Some("t".into()),
             anthropic_key: None,
             groq_key: None,
+            anthropic_model: "claude-sonnet-5".into(),
+            groq_model: "whisper-large-v3-turbo".into(),
+            db_on_volume: None,
             ai_monthly_secs: cap_minutes * 60.0,
             ai_trial_secs: trial_minutes * 60.0,
+            ai_min_call_secs: 0.0,
             ls_signing_secret: None,
             ls_license_variants: HashSet::new(),
             ls_credit_variants: HashMap::new(),
@@ -1562,7 +1871,120 @@ mod tests {
             db: Arc::new(Mutex::new(conn)),
             cfg: Arc::new(cfg),
             key: Arc::new(key),
+            models: Arc::new(Mutex::new(ModelCheck::default())),
+            claim_fails: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// A web buyer collects their code at /claim with what's on their
+    /// receipt — and nobody can get it by guessing. Web sales used to need
+    /// the code sent by hand.
+    #[tokio::test]
+    async fn a_web_buyer_collects_their_code_and_a_guesser_does_not() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let mut s = test_state(0.0, 0.0, &[]);
+        {
+            let cfg = Arc::get_mut(&mut s.cfg).unwrap();
+            cfg.ls_signing_secret = Some("whsec".into());
+            cfg.ls_license_variants.insert("777".into());
+        }
+        // a website order: paid, a licence, and no machine id
+        let order = serde_json::json!({
+            "meta": { "event_name": "order_created", "custom_data": {} },
+            "data": { "id": "9001", "attributes": {
+                "status": "paid", "order_number": 123456, "user_email": "Buyer@Example.com",
+                "first_order_item": { "variant_id": 777 } } }
+        })
+        .to_string();
+        let sig = {
+            use hmac::{Hmac, Mac};
+            let mut m = Hmac::<sha2::Sha256>::new_from_slice(b"whsec").unwrap();
+            m.update(order.as_bytes());
+            hex::encode(m.finalize().into_bytes())
+        };
+        let app = router(s.clone());
+        let res = app
+            .clone()
+            .oneshot(
+                Request::post("/webhook/lemonsqueezy")
+                    .header("x-signature", sig)
+                    .header("content-type", "application/json")
+                    .body(Body::from(order))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let code: String = s
+            .db
+            .lock_ok()
+            .query_row("SELECT code FROM codes WHERE order_id='9001'", [], |r| r.get(0))
+            .unwrap();
+
+        let claim = |email: &str, number: &str| {
+            let form = format!(
+                "email={}&order={}",
+                email.replace('@', "%40").replace(' ', "+"),
+                number.replace('#', "%23")
+            );
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(
+                        Request::post("/claim")
+                            .header("content-type", "application/x-www-form-urlencoded")
+                            .body(Body::from(form))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+                String::from_utf8(bytes.to_vec()).unwrap()
+            }
+        };
+        // the buyer, typing it the way people do
+        assert!(claim(" buyer@example.com ", "#123456").await.contains(&code));
+        // the right order number with someone else's email gets nothing
+        let wrong = claim("someone@else.com", "123456").await;
+        assert!(!wrong.contains(&code) && wrong.contains("find that order"), "{wrong}");
+        // and guessing is cut off — after which even the right details wait
+        for _ in 0..CLAIM_LIMIT {
+            claim("x@y.z", "1").await;
+        }
+        let locked = claim(" buyer@example.com ", "#123456").await;
+        assert!(locked.contains("Too many tries") && !locked.contains(&code));
+    }
+
+    #[test]
+    fn a_short_clip_can_be_charged_a_floor() {
+        // off by default: a run costs exactly the minutes analysed
+        assert_eq!(highlight_charge(60.0, 0.0), 60.0);
+        // with a 5-minute floor, a 1-minute clip costs 5, a 20-minute one 20
+        assert_eq!(highlight_charge(60.0, 300.0), 300.0);
+        assert_eq!(highlight_charge(1200.0, 300.0), 1200.0);
+        assert_eq!(highlight_charge(-3.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn a_database_off_the_volume_is_flagged() {
+        let rail = Some("production");
+        assert_eq!(db_on_volume("/data/cutlass-license.db", rail, Some("/data")), Some(true));
+        assert_eq!(db_on_volume("/data/cutlass-license.db", rail, Some("/data/")), Some(true));
+        // no volume attached: the container's own disk, wiped on redeploy
+        assert_eq!(db_on_volume("/data/cutlass-license.db", rail, None), Some(false));
+        // a volume, but the database isn't on it
+        assert_eq!(db_on_volume("/app/cutlass-license.db", rail, Some("/data")), Some(false));
+        assert_eq!(db_on_volume("/database.db", rail, Some("/data")), Some(false));
+        // not on Railway at all: nothing to report
+        assert_eq!(db_on_volume("cutlass-license.db", None, None), None);
+    }
+
+    #[test]
+    fn the_ai_models_are_settings_not_constants() {
+        let b = anthropic_body("claude-next", "transcript".into());
+        assert_eq!(b["model"], "claude-next");
     }
 
     // ── staying up (see `LockExt`) ────────────────────────────────────
@@ -1929,7 +2351,7 @@ mod tests {
 
     #[test]
     fn finding_moments_leaves_room_to_answer_after_thinking() {
-        let b = anthropic_body("transcript".into());
+        let b = anthropic_body("claude-sonnet-5", "transcript".into());
         assert!(
             b["max_tokens"].as_u64().unwrap() >= 16000,
             "Sonnet 5 thinks before answering and the thinking counts against \

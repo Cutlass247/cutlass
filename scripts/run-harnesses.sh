@@ -65,4 +65,12 @@ run title_fit_check "$CLIP" "$OUT/titles"
 printf '\n%s\n' "----------------------------------------"
 echo "$pass ok, $fail with failures"
 echo "logs: $OUT"
+# release-manifest.sh refuses to write a release's update file unless this is
+# newer than the installer — so the harnesses can't be skipped by forgetting.
+PASSED="$ROOT/target/harnesses-passed"
+if [ "$fail" -eq 0 ]; then
+  echo "$(date -u +%Y-%m-%dT%H:%MZ) at $(git -C "$ROOT" rev-parse --short HEAD) on $(basename "$CLIP")" > "$PASSED"
+else
+  rm -f "$PASSED"
+fi
 [ "$fail" -eq 0 ]

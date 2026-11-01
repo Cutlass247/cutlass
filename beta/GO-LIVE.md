@@ -198,22 +198,29 @@ a code and grants nothing; the code is the delivery. A **credit** order without
 one grants nothing and says so, because credits attach to a machine and have no
 code form — refund it, or add the minutes by hand once you know the buyer's id.
 
-## The website sells licences directly — and fulfilment is MANUAL
+## The website sells licences directly — buyers collect their code at /claim
 
 `/buy/license` forwards to the checkout with or without a machine id, because
 a licence is deliverable either way: with one it is granted to that machine,
 without one the webhook mints a recovery code.
 
-**But nothing emails that code to the buyer.** The server has no mail. The code
-appears in the webhook's response body in Lemon Squeezy's delivery log, and in
-`/admin/code?order=…` — both of which only you can see.
+The server has no mail, so the buyer collects that code themselves at
+**https://cutlass-production.up.railway.app/claim**. They enter the email they
+paid with and the order number from their Lemon Squeezy receipt, and the page
+shows the code with the three steps to activate it. The server keeps only a
+one-way hash of the email, not the address. Wrong details get the same answer
+whichever half was wrong, and an address gets 10 failed tries an hour, since a
+code moves a licence to whichever machine redeems it.
 
-So every web sale needs you to send the code by hand. Lemon Squeezy emails you
-on each order, so you will know; at launch volumes it is a couple of minutes
-per sale. **If you stop watching for those emails, people who paid are left
-with nothing**, which is worse than the site not selling at all. Automating it
-needs either Lemon Squeezy's own licence-key feature or a post-purchase
-redirect to a page that displays the minted code.
+**One step in Lemon Squeezy makes buyers find it.** Products → Cutlass → edit →
+the **receipt / confirmation "thank you" note**: add
+
+> Bought on the website? Get your licence code at
+> https://cutlass-production.up.railway.app/claim — you'll need this email
+> address and your order number.
+
+Orders placed **before** /claim existed (2026-11) have no email hash stored, so
+those still need the code sent by hand: `/admin/code?order=…`.
 
 `/buy/credits` still requires a machine id and sends everyone else to the
 download: credits attach to a machine and have no code form, so there is

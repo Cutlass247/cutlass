@@ -1,0 +1,69 @@
+name: Uptime
+
+# The licence server is the only server Cutlass has. If it's down, new trials
+# can't start, paid codes can't be activated and the AI features fail, while
+# existing users carry on only until their offline grace runs out. Nothing
+# used to notice. This runs every 30 minutes and goes red — and GitHub emails
+# whoever last edited this schedule — when any of these is true:
+#
+#   - the server doesn't answer
+#   - its database isn't on the Railway volume (the next redeploy would erase
+#     every trial, licence and code)
+#   - Anthropic or Groq no longer know the model the AI features call
+#   - the update manifest doesn't point at an installer that downloads
+#
+# GitHub pauses scheduled workflows in a repository with no activity for 60
+# days. If the repo goes quiet, re-enable this from the Actions tab.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Licence server answers, keeps its data and its AI models exist
+        run: |
+          set -u
+          body=""
+          for i in 1 2 3; do
+            body=$(curl -fsS --max-time 20 https://cutlass-production.up.railway.app/health) && break
+            body=""
+            sleep 20
+          done
+          if [ -z "$body" ]; then
+            echo "::error::The licence server didn't answer three times in a row."
+            exit 1
+          fi
+          echo "$body" | jq .
+          fail=0
+          if [ "$(echo "$body" | jq '.db_on_volume')" = "false" ]; then
+            echo "::error::The licence database is not on the Railway volume — the next redeploy erases every licence. Attach a volume at /data."
+            fail=1
+          fi
+          for m in anthropic groq; do
+            if [ "$(echo "$body" | jq ".ai.${m}_model_ok")" = "false" ]; then
+              echo "::error::${m} no longer knows the model $(echo "$body" | jq -r ".ai.${m}_model"). Set CUTLASS_$(echo $m | tr a-z A-Z)_MODEL on Railway to a current one."
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Update manifest points at an installer that downloads
+        run: |
+          set -u
+          manifest=$(curl -fsSL --max-time 30 https://github.com/Cutlass247/cutlass/releases/latest/download/latest.json) || {
+            echo "::error::latest.json is missing from the latest release — installed copies can't update."
+            exit 1
+          }
+          url=$(echo "$manifest" | jq -r '.platforms["windows-x86_64"].url')
+          echo "manifest version $(echo "$manifest" | jq -r .version) -> $url"
+          curl -fsSIL --max-time 30 -o /dev/null "$url" || {
+            echo "::error::The installer the manifest names doesn't download: $url"
+            exit 1
+          }

@@ -73,6 +73,21 @@ if [ ! -f "$SIG" ]; then
   exit 1
 fi
 
+# The real-footage harnesses must have passed AFTER this installer was built.
+# They need the shipped ffmpeg and a real encoder, so CI can't run them — they
+# only protect a release if someone runs them first. When ffmpeg 7.1 broke
+# every dissolve, they would have caught it; they weren't run, and it shipped.
+# scripts/run-harnesses.sh leaves this marker only when every harness passes.
+PASSED="$ROOT/target/harnesses-passed"
+if [ "${CUTLASS_SKIP_HARNESS_CHECK:-}" = "1" ]; then
+  echo "WARNING: skipping the harness check (CUTLASS_SKIP_HARNESS_CHECK=1)." >&2
+elif [ ! -f "$PASSED" ] || [ "$PASSED" -ot "$SETUP" ]; then
+  echo "The export harnesses haven't passed since this installer was built." >&2
+  echo "Run them first:  scripts/run-harnesses.sh <a-video-with-audio>" >&2
+  [ -f "$PASSED" ] && echo "(last pass: $(cat "$PASSED"))" >&2
+  exit 1
+fi
+
 # The asset name the updater downloads must match what gets uploaded to the
 # release, exactly, or every client 404s. So it comes from this one place and
 # is the name the build already produced — nothing gets renamed on the way to
