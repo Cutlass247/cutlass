@@ -1,8 +1,16 @@
-# Cutlass 0.2.2
+# Cutlass 0.2.3
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
+
+## New in 0.2.3
+
+- **Import MP3s and other audio files.** MP3, WAV, M4A, AAC, FLAC, OGG, Opus, WMA, AIFF and more now come in through File → Import and by dragging them onto the window. MP3s couldn't be imported at all before. A sound file goes on an audio track, for music, a voiceover or sound effects under your video, and shows its waveform in the media bin. Create makes clips from a video, so add audio in Studio.
+- **More kinds of video.** Camcorder footage (.mts, .m2ts), TV and OBS recordings (.ts), DVD video (.vob, .mpg), phone video (.3gp), and .mxf, .dv, .ogv and .asf join MP4, MOV, MKV, WebM, AVI, WMV and FLV. The Import dialog lists all of them; it used to show only six.
+- **WMA and WMV sound plays.** The audio in WMA files, and in WMV videos, decoded to silence. It now plays, draws its waveform and can be transcribed.
+- **Sound starts on time when you play from the middle of a clip.** It used to begin slightly late: a few hundredths of a second for most files, and up to a second for FLAC and WavPack.
+- **TS, MPG, VOB and FLV show and export the right frame.** These files have no index for jumping to a point in them, so an export could start on a corrupt frame, show nothing in a clip's last second, or run a frame or two early, and the preview of a .ts file could be 1.4 seconds out. When you import one, Cutlass now makes an indexed copy in the background (it takes seconds and loses no quality) and edits that.
 
 ## New in 0.2.2
 
@@ -45,7 +53,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.2.2_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.2.3_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
