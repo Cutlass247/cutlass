@@ -178,6 +178,7 @@ fn media_json(info: &MediaInfo) -> Result<serde_json::Value, String> {
         "id": info.id,
         "name": info.name,
         "path": info.path,
+        "kind": info.kind,
         "duration_s": info.duration_s,
         "width": info.width,
         "height": info.height,
@@ -320,6 +321,7 @@ fn import_with_engine_pass(path: &Path, pass: Pass) -> anyhow::Result<MediaInfo>
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "clip".into()),
         path: path_str.clone(),
+        kind: media::MediaKind::Video,
         duration_s,
         width: src_w,
         height: src_h,
@@ -329,19 +331,75 @@ fn import_with_engine_pass(path: &Path, pass: Pass) -> anyhow::Result<MediaInfo>
     })
 }
 
-/// Variable-frame-rate sources (screen recordings, many phone clips) place
-/// their frames at irregular timestamps; cutting and reassembling them drifts
-/// the audio out of sync in both the preview and the export. Detect that on
-/// import and transcode a constant-frame-rate working copy to edit against.
-/// Returns the conformed path, or None to keep using the original as-is.
-fn conform_if_vfr(path: &Path) -> Option<PathBuf> {
-    let (vfr, avg, w, h) = {
+/// Longest sound file whose waveform is drawn at import. Longer than the
+/// 30 minutes allowed for video, because on an audio track the waveform is the
+/// only picture there is, and podcasts and voice memos run long. Decoding it
+/// is the whole cost of importing a sound file: measured on the shipped
+/// libav, an hour of MP3 takes about 3.6 seconds.
+const AUDIO_WAVEFORM_MAX_S: f64 = 3.0 * 3600.0;
+
+/// A sound file: its length and waveform are all the bin and an audio track
+/// draw. No thumbnails to build and no frame rate to conform, so neither of
+/// the background jobs a video gets has anything to do.
+fn import_audio(path: &Path, container_s: f64) -> anyhow::Result<MediaInfo> {
+    let path_str = path.to_string_lossy().to_string();
+    let (waveform, decoded_s) = if container_s <= AUDIO_WAVEFORM_MAX_S {
+        cutlass_engine::audio::waveform_and_length(&path_str, 1200, container_s)
+    } else {
+        (Vec::new(), 0.0)
+    };
+    // The decoded length is exact; the container's can be a guess from the
+    // bitrate (see `waveform_and_length`).
+    let duration_s = if decoded_s > 0.05 { decoded_s } else { container_s };
+    anyhow::ensure!(duration_s > 0.05, "no usable duration");
+    Ok(MediaInfo {
+        id: format!("m{:016x}", media::path_hash(path)),
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "audio".into()),
+        path: path_str,
+        kind: media::MediaKind::Audio,
+        duration_s,
+        width: 0,
+        height: 0,
+        scrub_fps: 0.0,
+        thumb_paths: Vec::new(),
+        waveform,
+    })
+}
+
+/// The copy of a video to edit against, when the original won't do. Returns
+/// its path, or None to keep using the original as-is. Two reasons to make one:
+///
+/// - Variable-frame-rate sources (screen recordings, many phone clips) place
+///   their frames at irregular timestamps; cutting and reassembling them
+///   drifts the audio out of sync in both the preview and the export. They
+///   get a constant-frame-rate re-encode.
+/// - Containers with no seek index (MPEG-TS, MPEG-PS, FLV) make export's
+///   seek land on the wrong frame or none. They get a stream copy into MKV,
+///   which is quick and leaves the picture untouched. A re-encode above
+///   covers this too, since it writes an MP4.
+fn make_working_copy(path: &Path) -> Option<PathBuf> {
+    let (vfr, avg, w, h, unindexed) = {
         let eng = cutlass_engine::MediaEngine::open(&path.to_string_lossy()).ok()?;
         let (w, h) = eng.dimensions();
-        (eng.is_vfr(), eng.avg_fps(), w, h)
+        (eng.is_vfr(), eng.avg_fps(), w, h, eng.needs_index())
     };
     if !vfr {
-        return None;
+        if !unindexed {
+            return None;
+        }
+        return match media::remux_to_mkv(path) {
+            Ok(p) => {
+                eprintln!("copied {} into MKV for seeking: {}", path.display(), p.display());
+                Some(p)
+            }
+            Err(e) => {
+                eprintln!("MKV copy failed ({e:#}); editing the original");
+                None
+            }
+        };
     }
     // 30 for typical screen recordings, 60 when the average cadence is high.
     let fps = if avg > 40.0 { 60 } else { 30 };
@@ -373,6 +431,16 @@ fn conform_if_vfr(path: &Path) -> Option<PathBuf> {
 /// fractionally off where the cadence is irregular, which is invisible in a
 /// scrub strip and worth it for an import that finishes.
 fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
+    // A sound file has no picture, which the engine refuses outright and the
+    // ffmpeg fallback fails on trying to thumbnail it, so an MP3 could not be
+    // imported at all. Recognise it first. A probe that fails falls through to
+    // the video path, whose error is the one worth reporting.
+    if let Ok(p) = cutlass_engine::probe_streams(&path.to_string_lossy()) {
+        if !p.has_video {
+            anyhow::ensure!(p.has_audio, "this file has no picture or sound in it");
+            return import_audio(path, p.duration_s);
+        }
+    }
     // A conform done on a previous run is cached on disk; use it if it's
     // already there, since it costs nothing and is strictly more correct.
     let working = cached_conform(path);
@@ -394,10 +462,11 @@ fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
     Ok(info)
 }
 
-/// A conformed copy that already exists on disk, or None. Never does work.
+/// A working copy (see `make_working_copy`) that already exists on disk, or
+/// None. Never does work.
 fn cached_conform(path: &Path) -> Option<std::path::PathBuf> {
     if is_conform_output(path) {
-        return Some(path.to_path_buf()); // already the CFR copy
+        return Some(path.to_path_buf()); // already the working copy
     }
     let dir = media::cache_dir(path).ok()?;
     for fps in [30u32, 60] {
@@ -406,18 +475,21 @@ fn cached_conform(path: &Path) -> Option<std::path::PathBuf> {
             return Some(p);
         }
     }
-    None
+    Some(dir.join(media::REMUX_NAME)).filter(|p| p.exists())
 }
 
-/// Is this path already a conform result? Named `cfr<fps>.mp4` by
-/// `conform_to_cfr`. Checked by name so an export doesn't reopen and re-probe
-/// every source just to rediscover it is already CFR.
+/// Is this path already a working copy? Named `cfr<fps>.mp4` by
+/// `conform_to_cfr` and `remux.mkv` by `remux_to_mkv`. Checked by name so an
+/// export doesn't reopen and re-probe every source just to rediscover it.
 fn is_conform_output(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_prefix("cfr"))
-        .and_then(|r| r.strip_suffix(".mp4"))
-        .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    name == media::REMUX_NAME
+        || name
+            .strip_prefix("cfr")
+            .and_then(|r| r.strip_suffix(".mp4"))
+            .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// Import a video: probe, build scrub proxy, register it in the media
@@ -446,16 +518,19 @@ async fn import_media(
             .map_err(err_str)
     })?;
     let id = info.id.clone();
+    let kind = info.kind;
     state.media.lock_ok().insert(info.id.clone(), info);
-    // The scrub strip came back coarse so the clip could appear at once; fill
-    // in the rest behind it. Same path import read, since a cached conform
-    // keeps its thumbnails in a different folder.
-    let working = cached_conform(&src).unwrap_or_else(|| src.clone());
-    spawn_thumbnails(app.clone(), id.clone(), working);
-    // A variable-frame-rate source still needs a CFR copy, but not before the
-    // clip appears. This finishes in the background and repoints the project
-    // at it; an export that arrives first waits on the same lock.
-    spawn_conform(app, id, src);
+    if kind == media::MediaKind::Video {
+        // The scrub strip came back coarse so the clip could appear at once;
+        // fill in the rest behind it. Same path import read, since a cached
+        // conform keeps its thumbnails in a different folder.
+        let working = cached_conform(&src).unwrap_or_else(|| src.clone());
+        spawn_thumbnails(app.clone(), id.clone(), working);
+        // A variable-frame-rate source still needs a CFR copy, but not before
+        // the clip appears. This finishes in the background and repoints the
+        // project at it; an export that arrives first waits on the same lock.
+        spawn_conform(app, id, src);
+    }
     Ok(json!({ "media": media_value, "project": snap }))
 }
 
@@ -469,11 +544,12 @@ fn add_clip_from_media(
     start: f64,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    let (name, dur) = {
+    let (name, dur, kind) = {
         let media = state.media.lock_ok();
         let info = media.get(&media_id).ok_or("unknown media")?;
-        (info.name.clone(), info.duration_s)
+        (info.name.clone(), info.duration_s, info.kind)
     };
+    let track = track_for(kind, track);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -494,6 +570,19 @@ fn add_clip_from_media(
     };
     let snap = with_undo(&state, |project| project.add_clip(&clip).map_err(err_str))?;
     Ok(json!({ "project": snap, "clipId": id }))
+}
+
+/// The track a clip of this kind actually goes on, given the one it was
+/// dropped on. A sound file on a video track would show nothing, and export
+/// reads the picture of every video-track clip, so it would fail; it goes to
+/// the first audio track instead. Video can go anywhere: on an audio track it
+/// contributes its sound, as a bed.
+fn track_for(kind: media::MediaKind, dropped_on: String) -> String {
+    if kind == media::MediaKind::Audio && !track_is_audio(&dropped_on) {
+        "A1".to_string()
+    } else {
+        dropped_on
+    }
 }
 
 /// Remove a track: delete its clips, then shift the higher same-kind
@@ -607,6 +696,22 @@ fn move_clip(
     start: f64,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
+    // The rule `track_for` applies when a sound file is placed holds when its
+    // clip is dragged, too: it stays where it was rather than going onto a
+    // video track.
+    let track = {
+        let project = state.project.lock_ok();
+        let pool = state.media.lock_ok();
+        match project.clips_state().into_iter().find(|c| c.id == id) {
+            Some(c)
+                if !track_is_audio(&track)
+                    && pool.get(&c.media).is_some_and(|m| m.kind == media::MediaKind::Audio) =>
+            {
+                c.track
+            }
+            _ => track,
+        }
+    };
     with_undo(&state, |p| p.move_clip(&id, &track, start).map_err(err_str))
 }
 
@@ -1062,7 +1167,7 @@ async fn ensure_conformed(
     if let Some(p) = cached_conform(&src) {
         return Some(p);
     }
-    tauri::async_runtime::spawn_blocking(move || conform_if_vfr(&src)).await.ok().flatten()
+    tauri::async_runtime::spawn_blocking(move || make_working_copy(&src)).await.ok().flatten()
 }
 
 /// Conform a newly imported file in the background, then point the project at
@@ -1215,15 +1320,20 @@ async fn import_media_many(
                                 .map_err(err_str)
                         });
                         let id = info.id.clone();
+                        let kind = info.kind;
                         state.media.lock_ok().insert(info.id.clone(), info);
                         media_out.push(v);
-                        let src = std::path::PathBuf::from(&path);
-                        // Fill in the rest of the scrub strip behind the clip.
-                        let working = cached_conform(&src).unwrap_or_else(|| src.clone());
-                        spawn_thumbnails(app.clone(), id.clone(), working);
-                        // Conform after the clip is usable, not before it
-                        // appears. See `spawn_conform`.
-                        spawn_conform(app.clone(), id, src);
+                        // Sound files have no strip to fill in or frame rate
+                        // to conform.
+                        if kind == media::MediaKind::Video {
+                            let src = std::path::PathBuf::from(&path);
+                            // Fill in the rest of the scrub strip behind the clip.
+                            let working = cached_conform(&src).unwrap_or_else(|| src.clone());
+                            spawn_thumbnails(app.clone(), id.clone(), working);
+                            // Conform after the clip is usable, not before it
+                            // appears. See `spawn_conform`.
+                            spawn_conform(app.clone(), id, src);
+                        }
                     }
                 }
                 // One unreadable file must not lose the other nineteen.
@@ -3013,6 +3123,9 @@ mod tests {
         }
         // and it must work on a full path, not just a bare name
         assert!(is_conform_output(Path::new(r"C:\Users\x\AppData\Local\Temp\cutlass-cache\ab\cfr30.mp4")));
+        // the MKV copy made of an unindexed container, but not its temp file
+        assert!(is_conform_output(Path::new(r"C:\Users\x\AppData\Local\Temp\cutlass-cache\ab\remux.mkv")));
+        assert!(!is_conform_output(Path::new("remux.partial.mkv")));
     }
 
     /// Pan has to drive whichever axis the footage overflows.
@@ -3389,5 +3502,346 @@ mod tests {
             slot.lock_ok().is_none(),
             "slot must be free again, or exports are blocked for the session"
         );
+    }
+
+    /// Pull the quoted strings out of `export const <name> = [ ... ];`.
+    fn ts_string_array(src: &str, name: &str) -> Vec<String> {
+        let start = src
+            .find(&format!("export const {name} = ["))
+            .unwrap_or_else(|| panic!("ipc.ts no longer declares {name}"));
+        let body = &src[start..];
+        let body = &body[body.find('[').unwrap() + 1..body.find("];").unwrap()];
+        body.split('"').skip(1).step_by(2).map(str::to_string).collect()
+    }
+
+    /// The Import dialog offered six video types while a drop on the window
+    /// accepted seventeen, so an MP3 could be dropped but never picked. Both
+    /// now read one list in ipc.ts, which must match the list
+    /// `every_offered_file_type_imports` proves the engine can read.
+    #[test]
+    fn the_import_dialog_and_a_drop_offer_the_same_file_types() {
+        let ipc = include_str!("../../src/ipc.ts");
+        assert_eq!(ts_string_array(ipc, "VIDEO_EXTS"), media::VIDEO_EXTS, "video types differ from media.rs");
+        assert_eq!(ts_string_array(ipc, "AUDIO_EXTS"), media::AUDIO_EXTS, "audio types differ from media.rs");
+
+        let picker = &ipc[ipc.find("export async function pickVideos").expect("pickVideos")..];
+        let picker = &picker[..picker.find("\n}").unwrap()];
+        assert!(picker.contains("filters: IMPORT_FILTERS"), "the dialog must use the shared list");
+        let filters = &ipc[ipc.find("const IMPORT_FILTERS").expect("IMPORT_FILTERS")..];
+        let filters = &filters[..filters.find("];").unwrap()];
+        assert!(
+            filters.contains("...VIDEO_EXTS, ...AUDIO_EXTS"),
+            "the dialog's default filter must offer audio as well as video: {filters}"
+        );
+        let drop = &ipc[ipc.find("export function isImportable").expect("isImportable")..];
+        let drop = &drop[..drop.find("\n}").unwrap()];
+        assert!(
+            drop.contains("VIDEO_EXTS.includes") && drop.contains("AUDIO_EXTS.includes"),
+            "a drop must accept exactly what the dialog offers: {drop}"
+        );
+    }
+
+    /// A sound file on a video track shows nothing, and export reads the
+    /// picture of every video-track clip, so it would fail. Placing one there
+    /// puts it on the first audio track; video goes wherever it's dropped.
+    #[test]
+    fn sound_files_go_on_audio_tracks() {
+        use media::MediaKind::{Audio, Video};
+        assert_eq!(track_for(Audio, "V1".into()), "A1");
+        assert_eq!(track_for(Audio, "V3".into()), "A1");
+        assert_eq!(track_for(Audio, "A2".into()), "A2", "an audio track it was dropped on is kept");
+        assert_eq!(track_for(Video, "V2".into()), "V2");
+        assert_eq!(track_for(Video, "A1".into()), "A1", "video on an audio track plays as a bed");
+
+        // Dragging a placed clip follows the same rule, and Create, which
+        // shows no audio tracks, refuses a sound file rather than hiding it.
+        let code = include_str!("main.rs").split("#[cfg(test)]").next().unwrap();
+        let mv = &code[code.find("fn move_clip(").expect("move_clip")..];
+        let mv = &mv[..mv.find("\n}").unwrap()];
+        assert!(mv.contains("MediaKind::Audio") && mv.contains("c.track"), "move_clip must keep sound off video tracks");
+        let app = include_str!("../../src/App.tsx");
+        let drop = &app[app.find("const onDropMedia").expect("onDropMedia")..];
+        let drop = &drop[..drop.find("try {").unwrap()];
+        assert!(
+            drop.contains(r#"modeRef.current === "create""#) && drop.contains(r#"kind === "audio""#),
+            "Create must refuse a sound file"
+        );
+    }
+
+    /// Every file type the Import dialog offers, made by the shipped ffmpeg and
+    /// imported the way the app imports. A list of extensions is only a claim;
+    /// this is the check that each one actually works, including the case that
+    /// started it: an MP3, which the engine refused for having no picture.
+    ///
+    /// Also checks the sound files that are easy to get wrong (an MP3 carrying
+    /// album art, whose cover is a one-frame "video" stream) and that an MP3 on
+    /// an audio track reaches an export.
+    ///
+    /// Ignored by `cargo test` because it needs the vendored ffmpeg and takes a
+    /// minute; `scripts/run-harnesses.sh` runs it before every release.
+    #[test]
+    #[ignore]
+    fn every_offered_file_type_imports() {
+        let ff = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../vendor/ffmpeg/bin/ffmpeg.exe");
+        assert!(ff.is_file(), "needs the vendored ffmpeg at {}", ff.display());
+        std::env::set_var("FFMPEG_BINARY", &ff);
+        let dir = std::env::temp_dir().join(format!("cutlass_formats_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Three seconds of moving test pattern, and a tone that starts at 1.5s,
+        // in each format. The codecs are ones each container really carries,
+        // so a file here looks like a file someone would have. The silence
+        // first is so a seek that lands at the wrong moment can be heard.
+        let pic = "-f lavfi -i testsrc2=size=320x240:rate=25 \
+                   -f lavfi -i aevalsrc=if(gte(t\\,1.5)\\,0.3*sin(2*PI*440*t)\\,0):s=48000:d=3 -t 3";
+        let tone = "-f lavfi -i aevalsrc=if(gte(t\\,1.5)\\,0.3*sin(2*PI*440*t)\\,0):s=48000:d=3 -t 3";
+        // A keyframe a second, as cameras and OBS write; libopenh264 would
+        // otherwise make one for the whole file.
+        let h264 = "-c:v libopenh264 -g 25 -c:a aac";
+        let samples: &[(&str, &str, &str)] = &[
+            ("mp4", pic, h264),
+            ("mov", pic, h264),
+            ("m4v", pic, "-c:v libopenh264 -g 25 -c:a aac -f mp4"),
+            ("mkv", pic, h264),
+            ("webm", pic, "-c:v libvpx-vp9 -c:a libopus"),
+            ("avi", pic, "-c:v mpeg4 -c:a libmp3lame"),
+            ("wmv", pic, "-c:v wmv2 -c:a wmav2"),
+            ("asf", pic, "-c:v wmv2 -c:a wmav2"),
+            ("flv", pic, "-c:v flv -c:a libmp3lame -ar 44100"),
+            ("f4v", pic, "-c:v libopenh264 -g 25 -c:a aac -f mp4"),
+            ("mpg", pic, "-c:v mpeg2video -c:a mp2"),
+            ("mpeg", pic, "-c:v mpeg2video -c:a mp2"),
+            ("vob", pic, "-c:v mpeg2video -c:a mp2 -f vob"),
+            ("ts", pic, h264),
+            ("mts", pic, "-c:v libopenh264 -g 25 -c:a aac -f mpegts"),
+            ("m2ts", pic, "-c:v libopenh264 -g 25 -c:a aac -f mpegts -mpegts_m2ts_mode 1"),
+            ("3gp", pic, "-c:v mpeg4 -c:a aac"),
+            ("3g2", pic, "-c:v mpeg4 -c:a aac"),
+            ("ogv", pic, "-c:v libtheora -c:a libvorbis"),
+            ("mxf", pic, "-c:v mpeg2video -c:a pcm_s16le"),
+            ("dv", pic, "-vf scale=720:576 -pix_fmt yuv420p -c:v dvvideo -c:a pcm_s16le -ac 2"),
+            ("mp3", tone, "-c:a libmp3lame"),
+            ("wav", tone, "-c:a pcm_s16le"),
+            ("m4a", tone, "-c:a aac"),
+            ("m4b", tone, "-c:a aac -f ipod"),
+            ("aac", tone, "-c:a aac"),
+            ("flac", tone, "-c:a flac"),
+            ("ogg", tone, "-c:a libvorbis"),
+            ("opus", tone, "-c:a libopus"),
+            ("wma", tone, "-c:a wmav2"),
+            ("aif", tone, "-c:a pcm_s16be -f aiff"),
+            ("aiff", tone, "-c:a pcm_s16be"),
+            ("ac3", tone, "-c:a ac3"),
+            ("mka", tone, "-c:a flac"),
+            ("caf", tone, "-c:a pcm_s16le"),
+            ("wv", tone, "-c:a wavpack"),
+            ("amr", tone, "-c:a libopencore_amrnb -ar 8000 -ac 1 -b:a 12.2k"),
+            ("mp2", tone, "-c:a mp2"),
+        ];
+        let make = |out: &Path, args: &str| {
+            let ok = std::process::Command::new(&ff)
+                .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"])
+                .args(args.split_whitespace())
+                .arg(out)
+                .status()
+                .is_ok_and(|s| s.success());
+            assert!(ok, "ffmpeg could not make {}", out.display());
+        };
+
+        // Every offered type has a sample, so adding one to the list without
+        // proving it works fails here.
+        let tested: Vec<&str> = samples.iter().map(|s| s.0).collect();
+        for ext in media::VIDEO_EXTS.iter().chain(media::AUDIO_EXTS) {
+            assert!(tested.contains(ext), ".{ext} is offered but has no sample here");
+        }
+
+        // The frame at `t`, as RGBA. `seek_first` is how export seeks (`-ss`
+        // before `-i`); otherwise ffmpeg decodes from the start and drops
+        // frames until `t`, which is slow but exact: the reference.
+        let ffmpeg_frame = |path: &Path, t: f64, w: u32, h: u32, seek_first: bool| -> Vec<u8> {
+            let ss = ["-ss".to_string(), format!("{t:.3}")];
+            let mut cmd = std::process::Command::new(&ff);
+            cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error"]);
+            if seek_first {
+                cmd.args(&ss).arg("-i").arg(path);
+            } else {
+                cmd.arg("-i").arg(path).args(&ss);
+            }
+            cmd.args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{w}x{h}"), "-"])
+                .output()
+                .map(|o| o.stdout)
+                .unwrap_or_default()
+        };
+        let mean_diff = |a: &[u8], b: &[u8]| -> f64 {
+            if a.len() != b.len() || a.is_empty() {
+                return f64::INFINITY;
+            }
+            a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as f64).sum::<f64>() / a.len() as f64
+        };
+        // Loudness of the sound a seek to `t` plays, as playback decodes it.
+        let rms_after_seek = |path: &Path, t: f64| -> Result<f32, String> {
+            let mut dec = cutlass_engine::audio::AudioDecoder::open(&path.to_string_lossy(), 48_000).map_err(err_str)?;
+            dec.seek(t).map_err(err_str)?;
+            let mut s: Vec<f32> = Vec::new();
+            while s.len() < 48_000 * 2 * 4 / 10 {
+                match dec.next_chunk().map_err(err_str)? {
+                    Some(c) => s.extend(c),
+                    None => break,
+                }
+            }
+            Ok((s.iter().map(|v| v * v).sum::<f32>() / s.len().max(1) as f32).sqrt())
+        };
+
+        let mut failures = Vec::new();
+        for (ext, input, codec) in samples {
+            let path = dir.join(format!("sample.{ext}"));
+            make(&path, &format!("{input} {codec}"));
+            let want = if media::AUDIO_EXTS.contains(ext) { media::MediaKind::Audio } else { media::MediaKind::Video };
+
+            // Sound: silent before 1.5s, a tone after. Silent everywhere was
+            // every WMA and WMV; loud at 0.5s would be a seek counted from the
+            // wrong place.
+            match (rms_after_seek(&path, 0.5), rms_after_seek(&path, 2.0)) {
+                (Ok(quiet), Ok(loud)) if quiet < 0.01 && loud > 0.05 => {}
+                (Ok(quiet), Ok(loud)) => failures.push(format!(".{ext}: sound after a seek is wrong: {quiet:.3} at 0.5s, {loud:.3} at 2s")),
+                (Err(e), _) | (_, Err(e)) => failures.push(format!(".{ext}: sound won't decode: {e}")),
+            }
+
+            // Picture, in the copy the app edits (an MKV copy of a container
+            // with no seek index, or the original): at the start, middle and
+            // end, both the preview and export's seek show the exact frame,
+            // and the preview plays through in order.
+            if want == media::MediaKind::Video {
+                let edit = make_working_copy(&path).unwrap_or_else(|| path.clone());
+                match cutlass_engine::MediaEngine::open(&edit.to_string_lossy()) {
+                    Err(e) => failures.push(format!(".{ext}: preview can't open it: {e:#}")),
+                    Ok(mut eng) => {
+                        for t in [0.0, 1.0, 2.0, 2.8] {
+                            match eng.frame_at(t, 0) {
+                                Err(e) => failures.push(format!(".{ext}: no preview frame at {t}s: {e:#}")),
+                                Ok(f) => {
+                                    let exact = ffmpeg_frame(&path, t, f.width, f.height, false);
+                                    let d = mean_diff(&f.data, &exact);
+                                    if d > 3.0 {
+                                        failures.push(format!(".{ext}: preview at {t}s is the wrong frame (differs by {d:.1})"));
+                                    }
+                                    let d = mean_diff(&ffmpeg_frame(&edit, t, f.width, f.height, true), &exact);
+                                    if d > 3.0 {
+                                        failures.push(format!(".{ext}: export at {t}s is the wrong frame (differs by {d:.1})"));
+                                    }
+                                }
+                            }
+                        }
+                        let (mut t, mut last) = (0.0, f64::NEG_INFINITY);
+                        while t < 2.9 {
+                            match eng.stream_frame_at(t, 320) {
+                                Ok(f) if f.pts_s + 1e-6 >= last => last = f.pts_s,
+                                Ok(f) => {
+                                    failures.push(format!(".{ext}: playback went backwards at {t:.2}s ({:.2}s)", f.pts_s));
+                                    break;
+                                }
+                                Err(e) => {
+                                    failures.push(format!(".{ext}: playback stopped at {t:.2}s: {e:#}"));
+                                    break;
+                                }
+                            }
+                            t += 0.04;
+                        }
+                    }
+                }
+            }
+
+            match import_any(&path) {
+                Err(e) => failures.push(format!(".{ext}: import failed: {e:#}")),
+                Ok(m) => {
+                    let mut why = Vec::new();
+                    if m.kind != want {
+                        why.push(format!("kind {:?}", m.kind));
+                    }
+                    if (m.duration_s - 3.0).abs() > 0.25 {
+                        why.push(format!("duration {:.2}s", m.duration_s));
+                    }
+                    if m.waveform.is_empty() {
+                        why.push("no waveform".into());
+                    }
+                    if want == media::MediaKind::Video && m.thumb_paths.is_empty() {
+                        why.push("no thumbnails".into());
+                    }
+                    if !why.is_empty() {
+                        failures.push(format!(".{ext}: {}", why.join(", ")));
+                    }
+                }
+            }
+        }
+
+        // Album art: the cover is a one-frame video stream flagged as an
+        // attached picture. It is a song, not a video.
+        let cover = dir.join("cover.png");
+        make(&cover, "-f lavfi -i testsrc2=size=300x300 -frames:v 1");
+        let song = dir.join("with-cover.mp3");
+        // The cover's path is its own argument, since a temp folder can have a
+        // space in it. `-t` goes after both inputs: before the cover's `-i` it
+        // would limit the cover instead, and the tone would never end.
+        let made = std::process::Command::new(&ff)
+            .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-i"])
+            .arg(&cover)
+            .args(["-map", "0:a", "-map", "1:v", "-t", "3", "-c:a", "libmp3lame", "-c:v", "png"])
+            .args(["-disposition:v", "attached_pic", "-id3v2_version", "3"])
+            .arg(&song)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(made, "ffmpeg could not make an MP3 with album art");
+        match import_any(&song) {
+            Ok(m) if m.kind == media::MediaKind::Audio => {}
+            Ok(m) => failures.push(format!("an MP3 with album art imported as {:?}", m.kind)),
+            Err(e) => failures.push(format!("an MP3 with album art failed: {e:#}")),
+        }
+
+        // An MP3 on an audio track, under a video, reaches the export.
+        use cutlass_core::export::{export, ClipFx, ExportSettings, Overlay, Segment};
+        let out = dir.join("with-music.mp4");
+        let rendered = export(
+            &[Segment::Clip {
+                path: dir.join("sample.mp4").to_string_lossy().to_string(),
+                src_in: 0.0,
+                len: 3.0,
+                fx: ClipFx::default(),
+                lut: String::new(),
+            }],
+            &[Overlay {
+                path: dir.join("sample.mp3").to_string_lossy().to_string(),
+                src_in: 0.0,
+                len: 3.0,
+                start: 0.0,
+                fx: ClipFx::default(),
+                audio_only: true,
+            }],
+            &[],
+            &out,
+            &ExportSettings { width: 640, height: 360, fps: 25, ..Default::default() },
+            &mut |_| {},
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        match rendered {
+            Err(e) => failures.push(format!("export with an MP3 on an audio track failed: {e:#}")),
+            Ok(_) => {
+                let d = media::probe_duration_s(&out).unwrap_or(0.0);
+                if (d - 3.0).abs() > 0.25 || !cutlass_core::export::has_audio(&out.to_string_lossy()) {
+                    failures.push(format!("export with an MP3 bed came out {d:.2}s, audio {}", cutlass_core::export::has_audio(&out.to_string_lossy())));
+                }
+            }
+        }
+
+        // thumbnails and working copies live in the shared cache, by path
+        for (ext, ..) in samples {
+            if let Ok(c) = media::cache_dir(&dir.join(format!("sample.{ext}"))) {
+                let _ = std::fs::remove_dir_all(c);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(failures.is_empty(), "{} of the offered file types don't work:\n  {}", failures.len(), failures.join("\n  "));
+        println!("PASS every offered file type imports ({} types)", samples.len());
     }
 }

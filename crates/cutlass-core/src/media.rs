@@ -38,11 +38,44 @@ pub const COARSE_PASS_ABOVE_S: f64 = 20.0;
 pub const FULL_FRAME_PREFIX: char = 'f';
 pub const COARSE_FRAME_PREFIX: char = 'c';
 
+/// What an imported file is. Decides which track it can go on and what the
+/// bin draws for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaKind {
+    /// Has a picture (and usually sound).
+    Video,
+    /// Sound only: no thumbnails, no frame rate, never on a video track.
+    Audio,
+}
+
+/// File extensions Cutlass imports, by kind. The Import dialog and a drop on
+/// the window offer exactly these (`apps/desktop/src/ipc.ts` keeps a copy,
+/// held equal by a test), and `every_offered_file_type_imports` in the app
+/// imports a real file of each one through the shipped ffmpeg.
+///
+/// The dialog used to offer six video types while a drop accepted seventeen,
+/// so an MP3 could be dropped but never picked from Import.
+///
+/// Not offered: .oga. It almost always holds FLAC, and after a seek libav
+/// times FLAC-in-Ogg about 0.8s wrong (frames labelled 2.0s carry the sound
+/// from 1.2s), in playback and in export's `-ss` alike. Ogg Vorbis (.ogg) and
+/// Opus seek correctly.
+pub const VIDEO_EXTS: &[&str] = &[
+    "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v", "mpg", "mpeg",
+    "vob", "ts", "mts", "m2ts", "3gp", "3g2", "ogv", "mxf", "dv",
+];
+pub const AUDIO_EXTS: &[&str] = &[
+    "mp3", "wav", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wma", "aif", "aiff",
+    "ac3", "mka", "caf", "wv", "amr", "mp2",
+];
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MediaInfo {
     pub id: String,
     pub name: String,
     pub path: String,
+    pub kind: MediaKind,
     pub duration_s: f64,
     /// native source dimensions; 0 when unknown
     pub width: u32,
@@ -251,6 +284,51 @@ pub fn conform_to_cfr(src: &Path, fps: u32, bitrate: u64) -> anyhow::Result<Path
     anyhow::bail!("no working encoder to conform {}", src.display())
 }
 
+/// What [`remux_to_mkv`] names its copy, in the source's cache folder.
+pub const REMUX_NAME: &str = "remux.mkv";
+
+/// Copy `src` into Matroska without re-encoding the picture, for containers
+/// with no seek index (`MediaEngine::needs_index`: MPEG-TS, MPEG-PS, FLV).
+/// MKV carries one, so preview and export both seek exactly in the copy. A
+/// stream copy takes seconds even for a long file, and the picture is
+/// untouched. A prior copy is reused.
+///
+/// `+genpts` because a program stream (.vob) leaves some packets without a
+/// timestamp, which Matroska refuses. Only picture and sound are copied: a
+/// transport stream also carries data and subtitle streams that MKV can't
+/// hold and nothing here edits. Sound MKV won't take as it is (Blu-ray's PCM)
+/// is made FLAC instead, which is lossless.
+pub fn remux_to_mkv(src: &Path) -> anyhow::Result<PathBuf> {
+    ensure_ffmpeg()?;
+    let dir = cache_dir(src)?;
+    let out = dir.join(REMUX_NAME);
+    if out.exists() {
+        return Ok(out);
+    }
+    // a temp name first, so a crash never leaves a half-written copy that
+    // later looks finished
+    let tmp = dir.join("remux.partial.mkv");
+    for audio in ["copy", "flac"] {
+        let _ = std::fs::remove_file(&tmp);
+        let mut cmd = FfmpegCommand::new();
+        cmd.args(["-fflags", "+genpts"]);
+        cmd.input(src.to_string_lossy());
+        cmd.args(["-map", "0:v:0", "-map", "0:a?", "-c:v", "copy", "-c:a", audio, "-y"]);
+        cmd.output(tmp.to_string_lossy());
+        let Ok(mut child) = cmd.spawn() else { continue };
+        // drain, so a long copy never stalls on a full stderr pipe
+        if let Ok(events) = child.iter() {
+            for _ in events {}
+        }
+        if child.wait().map(|s| s.success()).unwrap_or(false) && tmp.exists() {
+            std::fs::rename(&tmp, &out)?;
+            return Ok(out);
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+    anyhow::bail!("could not copy {} into MKV", src.display())
+}
+
 /// Decode any source's audio to a clean float WAV at `rate`, stereo. Used to
 /// feed the music-separation model from a uniform, well-formed input — ffmpeg
 /// normalises odd channel layouts and containers that the in-process decoder
@@ -361,6 +439,7 @@ pub fn import(path: &Path) -> anyhow::Result<MediaInfo> {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "clip".into()),
         path: path.to_string_lossy().to_string(),
+        kind: MediaKind::Video,
         duration_s,
         width,
         height,

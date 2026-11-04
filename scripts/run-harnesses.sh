@@ -62,6 +62,21 @@ run export_check    "$CLIP" "$CLIP"
 # both edges. Renders every clip shape and finds the caption by frame diff.
 run title_fit_check "$CLIP" "$OUT/titles"
 
+# Every file type the Import dialog offers, made by the shipped ffmpeg, then
+# imported, previewed, played and exported the way the app does it. A test in
+# the app rather than an example here, because it drives the app's own import;
+# ignored by `cargo test`, as it needs this ffmpeg and takes a couple of
+# minutes. The Import dialog once offered six video types while drops took
+# seventeen, MP3 among them, and the MP3s then failed to import at all.
+printf '\n=== file types ===\n'
+if cargo test -q -p cutlass-desktop --all-features -- --ignored every_offered_file_type_imports 2>&1 \
+    | tee "$OUT/file_types.log" | grep -q "test result: ok"; then
+  echo "  -> ok"; pass=$((pass+1))
+else
+  grep -A60 "don't work" "$OUT/file_types.log" | head -40
+  echo "  -> FAILURES in file types"; fail=$((fail+1))
+fi
+
 printf '\n%s\n' "----------------------------------------"
 echo "$pass ok, $fail with failures"
 echo "logs: $OUT"

@@ -584,6 +584,16 @@ button {
   display: block;
 }
 
+/* A sound file's waveform, in the audio tracks' green. Sized like a 16:9
+   thumbnail so audio and video line up in the bin. */
+.bin-audio {
+  width: 72px;
+  height: 40px;
+  display: block;
+  background: var(--panel-3);
+  fill: hsl(150 45% 55%);
+}
+
 .bin-meta-block {
   min-width: 0;
 }

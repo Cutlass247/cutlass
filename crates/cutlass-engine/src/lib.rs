@@ -29,11 +29,64 @@ pub struct RgbaFrame {
     pub data: Vec<u8>,
 }
 
+/// What a file holds, read from its header without opening a decoder.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamProbe {
+    /// A real picture stream. Album art does not count; see [`probe_streams`].
+    pub has_video: bool,
+    pub has_audio: bool,
+    /// 0 when the container doesn't say.
+    pub duration_s: f64,
+}
+
+/// Which kinds of stream a file has, and how long it is.
+///
+/// [`MediaEngine::open`] needs a picture, so a sound file has to be recognised
+/// before it gets there. The catch is album art: MP3s and M4As very often carry
+/// their cover as a one-frame video stream flagged `ATTACHED_PIC`. Counted as
+/// footage, a song imports as a "video" whose picture ends after its first
+/// frame, so those streams are skipped here.
+pub fn probe_streams(path: &str) -> anyhow::Result<StreamProbe> {
+    use ffmpeg::format::stream::Disposition;
+    ffmpeg::init().context("ffmpeg init")?;
+    let ictx = ffmpeg::format::input(&path).with_context(|| format!("open {path}"))?;
+    let (mut has_video, mut has_audio) = (false, false);
+    for s in ictx.streams() {
+        match s.parameters().medium() {
+            Type::Video if !s.disposition().contains(Disposition::ATTACHED_PIC) => has_video = true,
+            Type::Audio => has_audio = true,
+            _ => {}
+        }
+    }
+    let d = ictx.duration();
+    let duration_s = if d > 0 { d as f64 / AV_TIME_BASE as f64 } else { 0.0 };
+    Ok(StreamProbe { has_video, has_audio, duration_s })
+}
+
+/// Where a file's own timestamps start, in seconds.
+///
+/// Every time this engine is given or returns counts from the start of the
+/// clip, the way export's `ffmpeg -ss` counts it: ffmpeg adds this offset to
+/// `-ss` before seeking. Most files start at 0, so treating raw timestamps as
+/// clip time went unnoticed, but MPEG-TS (.ts, and camcorders' .mts/.m2ts)
+/// starts around 1.4s: the preview showed a moment 1.4s earlier than the
+/// export and could never reach the last 1.4s. 0 when the file doesn't say.
+pub(crate) fn file_start_s(ictx: &ffmpeg::format::context::Input) -> f64 {
+    let st = unsafe { (*ictx.as_ptr()).start_time };
+    if st == ffmpeg::ffi::AV_NOPTS_VALUE || st < 0 {
+        0.0
+    } else {
+        st as f64 / AV_TIME_BASE as f64
+    }
+}
+
 pub struct MediaEngine {
     ictx: ffmpeg::format::context::Input,
     decoder: ffmpeg::decoder::Video,
     stream_index: usize,
     time_base: f64,
+    /// Where the file's timestamps start, in seconds; see [`file_start_s`].
+    start_s: f64,
     duration_s: f64,
     width: u32,
     height: u32,
@@ -74,11 +127,13 @@ impl MediaEngine {
         let decoder = ctx.decoder().video()?;
         let duration_s = ictx.duration() as f64 / AV_TIME_BASE as f64;
         let (width, height) = (decoder.width(), decoder.height());
+        let start_s = file_start_s(&ictx);
         Ok(Self {
             ictx,
             decoder,
             stream_index,
             time_base,
+            start_s,
             duration_s,
             width,
             height,
@@ -92,6 +147,23 @@ impl MediaEngine {
     /// Average frames-per-second over the whole clip (0 when unknown).
     pub fn avg_fps(&self) -> f64 {
         self.avg_fps
+    }
+
+    /// The demuxer libav read the file with: "mpegts", "flv", "mpeg" (program
+    /// stream: .mpg, .vob), "matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2", ...
+    pub fn container(&self) -> &'static str {
+        self.ictx.format().name()
+    }
+
+    /// True for containers with no seek index, where ffmpeg's `-ss` (what
+    /// export seeks with) lands on the wrong frame or none at all. Measured on
+    /// the shipped ffmpeg, keyframes a second apart: in the last second of an
+    /// MPEG-TS or MPEG-PS file it renders no frame, and an FLV of Sorenson
+    /// video starts on a corrupt one. Every other container tested (MP4, MOV,
+    /// MKV, WebM, AVI, WMV, 3GP, OGV, MXF, DV) seeks exactly. These get a
+    /// stream copy into MKV, which has an index, to edit; see `remux_to_mkv`.
+    pub fn needs_index(&self) -> bool {
+        matches!(self.container(), "mpegts" | "mpeg" | "flv")
     }
 
     /// True when the source is variable-frame-rate enough to need conforming
@@ -126,7 +198,14 @@ impl MediaEngine {
             for r in self.ictx.packets() {
                 let (stream, packet) = r?;
                 if stream.index() == self.stream_index {
-                    self.decoder.send_packet(&packet)?;
+                    // A damaged packet (where a seek into a stream with no
+                    // index lands mid-frame) is skipped, as ffmpeg does,
+                    // rather than ending the decode there.
+                    match self.decoder.send_packet(&packet) {
+                        Ok(()) => {}
+                        Err(ffmpeg::Error::InvalidData) => continue,
+                        Err(e) => return Err(e.into()),
+                    }
                     sent = true;
                     break;
                 }
@@ -143,8 +222,11 @@ impl MediaEngine {
         }
     }
 
+    /// A frame's time in the clip (from its start, not the file's timestamps).
+    /// libav's best-effort timestamp, which fills in where a container leaves
+    /// `pts` out; that is also what ffmpeg itself times frames by.
     fn frame_pts_s(&self, frame: &ffmpeg::frame::Video) -> f64 {
-        frame.pts().unwrap_or(0) as f64 * self.time_base
+        frame.timestamp().or_else(|| frame.pts()).unwrap_or(0) as f64 * self.time_base - self.start_s
     }
 
     /// Sequential decode of every remaining frame; returns count.
@@ -158,15 +240,18 @@ impl MediaEngine {
     }
 
     fn seek_raw(&mut self, t: f64) -> anyhow::Result<()> {
-        let ts = (t.max(0.0) * AV_TIME_BASE as f64) as i64;
-        let ret = unsafe {
-            ffmpeg::ffi::av_seek_frame(
-                self.ictx.as_mut_ptr(),
-                -1,
-                ts,
-                ffmpeg::ffi::AVSEEK_FLAG_BACKWARD,
-            )
+        let ts = ((t.max(0.0) + self.start_s) * AV_TIME_BASE as f64) as i64;
+        let seek = |ctx: &mut ffmpeg::format::context::Input, flags| unsafe {
+            ffmpeg::ffi::av_seek_frame(ctx.as_mut_ptr(), -1, ts, flags)
         };
+        // Backward finds the keyframe at or before `ts`. A file whose first
+        // keyframe comes after it has none (an FLV's first video frame is
+        // often a few ms in, behind its audio), and is refused; forward then
+        // finds the first one, which is the frame that was wanted.
+        let mut ret = seek(&mut self.ictx, ffmpeg::ffi::AVSEEK_FLAG_BACKWARD);
+        if ret < 0 {
+            ret = seek(&mut self.ictx, 0);
+        }
         if ret < 0 {
             return Err(anyhow!("av_seek_frame({t:.3}s) failed: {ret}"));
         }
@@ -175,6 +260,32 @@ impl MediaEngine {
         self.pending = None;
         self.stream_pts = None;
         Ok(())
+    }
+
+    /// Seek so decoding resumes at or before `t`, and return the first frame
+    /// decoded there (None only past the end).
+    ///
+    /// Files with an index (MP4, MKV, MOV) seek to the keyframe before `t`.
+    /// MPEG-TS, and FLV without a keyframe index (OBS writes them without),
+    /// land on whatever packet is nearest instead, and the decoder skips
+    /// ahead to the next keyframe, which can be seconds after `t`. When the
+    /// first frame comes back late, seek again earlier, doubling the margin,
+    /// until it doesn't or the seek reaches the start.
+    fn seek_landing_before(&mut self, t: f64) -> anyhow::Result<Option<ffmpeg::frame::Video>> {
+        let mut back = 0.0;
+        loop {
+            let target = (t - back).max(0.0);
+            self.seek_raw(target)?;
+            let first = self.decode_next()?;
+            let late = match &first {
+                Some(f) => self.frame_pts_s(f) > t + 1e-3,
+                None => true,
+            };
+            if !late || target <= 0.0 {
+                return Ok(first);
+            }
+            back = if back == 0.0 { 0.5 } else { back * 2.0 };
+        }
     }
 
     /// Streaming playback access: return the frame current at time `t`.
@@ -189,7 +300,9 @@ impl MediaEngine {
             Some(p) => t < p - 0.05 || t > p + 1.0,
         };
         if need_seek {
-            self.seek_raw(t)?;
+            let first = self.seek_landing_before(t)?;
+            self.stream_pts = first.as_ref().map(|f| self.frame_pts_s(f));
+            self.pending = first;
         }
         loop {
             let have = self.pending.as_ref().map(|f| self.frame_pts_s(f));
@@ -255,15 +368,13 @@ impl MediaEngine {
         let t = t.clamp(0.0, self.duration_s.max(0.0));
         // av_seek_frame directly: Input::seek's avformat_seek_file form
         // fails with EPERM on some demuxers/states
-        self.seek_raw(t)?;
-
-        let mut last = None;
-        while let Some(frame) = self.decode_next()? {
-            let pts = self.frame_pts_s(&frame);
-            let hit = !exact || pts + 1e-6 >= t;
-            last = Some(frame);
-            if hit {
-                break;
+        let mut last = self.seek_landing_before(t)?;
+        if exact {
+            while last.as_ref().is_some_and(|f| self.frame_pts_s(f) + 1e-6 < t) {
+                match self.decode_next()? {
+                    Some(frame) => last = Some(frame),
+                    None => break, // past the last frame: that one is nearest
+                }
             }
         }
         let frame = last.ok_or_else(|| anyhow!("no frame at t={t}"))?;

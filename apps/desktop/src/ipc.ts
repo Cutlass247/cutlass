@@ -133,6 +133,9 @@ export interface MediaItem {
   id: string;
   name: string;
   path: string;
+  /// "audio" = sound only: no thumbnails, and only ever on an audio track.
+  /// Absent on media from before this existed, which was all video.
+  kind?: "video" | "audio";
   duration_s: number;
   /// native source size; 0 when unknown. Used to warn about upscaling.
   width?: number;
@@ -155,22 +158,31 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   return invoke<T>(cmd, args);
 }
 
-const VIDEO_FILTERS = [
-  { name: "Video", extensions: ["mp4", "mov", "mkv", "webm", "avi", "m4v"] },
+/// The file types Cutlass imports. The Import dialog and a drop on the window
+/// both read these, so they can't disagree again: the dialog used to offer six
+/// video types while a drop took seventeen, so an MP3 could be dropped but
+/// never picked. A copy of `VIDEO_EXTS` / `AUDIO_EXTS` in cutlass-core's
+/// media.rs, held equal by a test that also imports a real file of each type.
+export const VIDEO_EXTS = [
+  "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v", "mpg", "mpeg",
+  "vob", "ts", "mts", "m2ts", "3gp", "3g2", "ogv", "mxf", "dv",
+];
+export const AUDIO_EXTS = [
+  "mp3", "wav", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wma", "aif", "aiff",
+  "ac3", "mka", "caf", "wv", "amr", "mp2",
 ];
 
-export async function pickVideo(): Promise<string | null> {
-  if (!inTauri) return "mock://sample.mp4";
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const file = await open({ multiple: false, filters: VIDEO_FILTERS });
-  return typeof file === "string" ? file : null;
-}
+const IMPORT_FILTERS = [
+  { name: "Video and audio", extensions: [...VIDEO_EXTS, ...AUDIO_EXTS] },
+  { name: "Video", extensions: VIDEO_EXTS },
+  { name: "Audio", extensions: AUDIO_EXTS },
+];
 
 /// Pick one or more files. Returns [] if the dialog was cancelled.
 export async function pickVideos(): Promise<string[]> {
   if (!inTauri) return ["mock://sample.mp4"];
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const picked = await open({ multiple: true, filters: VIDEO_FILTERS });
+  const picked = await open({ multiple: true, filters: IMPORT_FILTERS });
   if (!picked) return [];
   return Array.isArray(picked) ? picked : [picked];
 }
@@ -873,16 +885,11 @@ export async function onMediaConformed(
   );
 }
 
-/// File extensions an import will accept. Dropping a .pdf on the window should
-/// say so rather than handing it to the media engine to fail on.
-const IMPORTABLE = [
-  "mp4", "mov", "mkv", "webm", "avi", "m4v", "mpg", "mpeg", "wmv", "flv",
-  "wav", "mp3", "aac", "flac", "m4a", "ogg", "opus",
-];
-
+/// Whether a dropped file is one Cutlass imports. Dropping a .pdf on the
+/// window should say so rather than handing it to the media engine to fail on.
 export function isImportable(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return IMPORTABLE.includes(ext);
+  return VIDEO_EXTS.includes(ext) || AUDIO_EXTS.includes(ext);
 }
 
 /// Fires when files are dropped onto the window from the desktop.

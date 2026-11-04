@@ -1,6 +1,7 @@
 //! Verifies the exact_frame path the desktop app uses: decode a frame,
 //! strip alpha, JPEG-encode. `cargo run -p cutlass-engine --example
-//! jpeg_check -- <video> <t>`
+//! jpeg_check -- <video> <t> [out.jpg]` — with a third argument the frame is
+//! saved, to set beside the one `ffmpeg -ss <t>` gives (what export renders).
 
 use cutlass_engine::MediaEngine;
 
@@ -23,6 +24,9 @@ fn main() -> anyhow::Result<()> {
         image::ExtendedColorType::Rgb8,
     )?;
     assert!(jpeg.starts_with(&[0xFF, 0xD8]), "not a JPEG");
+    if let Some(out) = std::env::args().nth(3) {
+        std::fs::write(&out, &jpeg)?;
+    }
     println!(
         "OK: {}x{} frame at pts {:.3}s -> {} byte JPEG",
         frame.width,

@@ -1607,6 +1607,14 @@ export default function App() {
   // place a clip from a bin item at a given track + start
   const onDropMedia = useCallback(
     async (mediaId: string, track: string, start: number) => {
+      // Create shows only video tracks, so a sound file would land on a track
+      // it never draws: an invisible clip. Say where it does go instead.
+      if (modeRef.current === "create" && mediaRef.current[mediaId]?.kind === "audio") {
+        setError(
+          "Create makes clips from a video. To add music or a voiceover, switch to Studio and drop it on an audio track."
+        );
+        return;
+      }
       try {
         const placed = await addClipFromMedia(mediaId, track, start);
         applyEdit(placed.project);
@@ -2349,7 +2357,11 @@ export default function App() {
           const clampedDelta = Math.max(-minStart, delta); // no clip past t=0
           setDrag({ ...drag, start: drag.primaryStart + clampedDelta });
         } else {
-          setDrag({ ...drag, track: tracks[lane], start });
+          // A sound clip stays on the audio tracks: on a video track it would
+          // show nothing, and export would fail reading its picture.
+          const sound = clip ? media[clip.media]?.kind === "audio" : false;
+          const target = tracks[lane];
+          setDrag({ ...drag, track: sound && trackKind(target) !== "audio" ? drag.track : target, start });
         }
         setPlayhead(start);
         return;

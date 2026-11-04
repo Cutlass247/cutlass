@@ -17,6 +17,20 @@ fn main() {
 }
 
 fn probe(path: &str) -> anyhow::Result<String> {
+    // A sound file takes the app's audio path: there is no picture to decode,
+    // so import is its length and its waveform, and the waveform is the cost.
+    let streams = cutlass_engine::probe_streams(path)?;
+    if !streams.has_video {
+        anyhow::ensure!(streams.has_audio, "no picture or sound");
+        let t = std::time::Instant::now();
+        let wf = cutlass_engine::audio::waveform_peaks(path, 1200);
+        return Ok(format!(
+            "audio dur={:.2}s wf={} in {:.1}s",
+            streams.duration_s,
+            wf.len(),
+            t.elapsed().as_secs_f64()
+        ));
+    }
     let mut eng = MediaEngine::open(path)?;
     let dur = eng.duration_s();
     anyhow::ensure!(dur > 0.0, "non-positive duration");

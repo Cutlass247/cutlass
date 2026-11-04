@@ -285,7 +285,8 @@ function ClipView({
   const hue = isTitle ? 265 : audio ? 150 : mediaHue(clip.media);
 
   const filmstrip = useMemo(() => {
-    if (!media || isTitle || audio) return []; // audio bed → waveform only
+    // audio bed → waveform only; a sound file has no frames to show anywhere
+    if (!media || isTitle || audio || media.thumbs.length === 0) return [];
     // Cap the thumbnail count so a long clip doesn't spawn thousands of
     // <img> nodes and freeze the timeline; they flex-stretch to fill.
     const cellW = 56;

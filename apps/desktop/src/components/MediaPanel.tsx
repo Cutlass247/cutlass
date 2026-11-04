@@ -3,6 +3,28 @@ import { MediaItem } from "../ipc";
 import { EffectPreset, EFFECT_GROUPS, LOOKS } from "../effects";
 import { lookStyle, mediaHue, Segmented } from "./ui";
 
+/// A sound file has no frame to show, so the bin draws its waveform: the
+/// loudest peak in each of a couple of dozen slices, as bars. A file too long
+/// to have had its waveform decoded shows a flat line.
+function AudioThumb({ peaks }: { peaks: number[] }) {
+  const n = 24;
+  const bars = Array.from({ length: n }, (_, i) => {
+    const a = Math.floor((i / n) * peaks.length);
+    const b = Math.max(a + 1, Math.floor(((i + 1) / n) * peaks.length));
+    let v = 0;
+    for (let j = a; j < b && j < peaks.length; j++) v = Math.max(v, peaks[j]);
+    return v;
+  });
+  return (
+    <svg className="bin-audio" viewBox={`0 0 ${n * 3} 40`} preserveAspectRatio="none" aria-hidden="true">
+      {bars.map((v, i) => {
+        const h = Math.max(2, v * 32);
+        return <rect key={i} x={i * 3 + 0.5} y={20 - h / 2} width={2} height={h} rx={1} />;
+      })}
+    </svg>
+  );
+}
+
 /// A Look button. When a current frame is available it renders as a live
 /// thumbnail graded with the look, so you pick by eye.
 function LookChip(p: {
@@ -253,7 +275,11 @@ export function MediaPanel(p: {
                 className="bin-item"
                 key={m.id}
                 data-media-id={m.id}
-                title="Drag onto a timeline track to place it"
+                title={
+                  m.kind === "audio"
+                    ? "Drag onto an audio track to place it"
+                    : "Drag onto a timeline track to place it"
+                }
                 onPointerDown={(e) => p.onMediaPointerDown(m.id, e)}
               >
                 <button
@@ -271,13 +297,18 @@ export function MediaPanel(p: {
                   className="bin-thumb"
                   style={{ borderColor: `hsl(${mediaHue(m.id)} 60% 45%)` }}
                 >
-                  <img src={m.thumbs[0]} alt="" draggable={false} />
+                  {m.kind === "audio" ? (
+                    <AudioThumb peaks={m.waveform} />
+                  ) : (
+                    <img src={m.thumbs[0]} alt="" draggable={false} />
+                  )}
                 </div>
                 <div className="bin-meta-block">
                   <div className="bin-name">{m.name}</div>
                   <div className="bin-meta">
-                    {m.duration_s.toFixed(1)}s · {m.thumbs.length} frames
-                    {m.waveform.length > 0 ? " · audio" : ""}
+                    {m.kind === "audio"
+                      ? `${m.duration_s.toFixed(1)}s · audio file`
+                      : `${m.duration_s.toFixed(1)}s · ${m.thumbs.length} frames${m.waveform.length > 0 ? " · audio" : ""}`}
                   </div>
                   {p.transcripts[m.id] ? (
                     <div className="bin-meta ok">📝 transcribed</div>
