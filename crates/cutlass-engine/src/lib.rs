@@ -155,6 +155,18 @@ pub struct MediaEngine {
     /// on first use and returned for any time.
     still: bool,
     still_frame: Option<ffmpeg::frame::Video>,
+    /// See [`MediaEngine::hdr`].
+    hdr: Option<Hdr>,
+}
+
+/// The two ways video records high dynamic range, by its transfer tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hdr {
+    /// Hybrid log-gamma: what an iPhone records with HDR Video on (the
+    /// default), Dolby Vision's base layer included.
+    Hlg,
+    /// Perceptual quantizer (HDR10): many Android phones and cameras.
+    Pq,
 }
 
 impl MediaEngine {
@@ -179,6 +191,14 @@ impl MediaEngine {
         let rate_f64 = |r: ffmpeg::Rational| if r.denominator() != 0 { f64::from(r) } else { 0.0 };
         let avg_fps = rate_f64(stream.avg_frame_rate());
         let r_fps = rate_f64(stream.rate());
+        let hdr = {
+            use ffmpeg::ffi::AVColorTransferCharacteristic as Trc;
+            match unsafe { (*stream.parameters().as_ptr()).color_trc } {
+                Trc::ARIB_STD_B67 => Some(Hdr::Hlg),
+                Trc::SMPTE2084 => Some(Hdr::Pq),
+                _ => None,
+            }
+        };
         let decoder = ctx.decoder().video()?;
         let duration_s = ictx.duration() as f64 / AV_TIME_BASE as f64;
         let (width, height) = (decoder.width(), decoder.height());
@@ -205,7 +225,16 @@ impl MediaEngine {
             stream_pts: None,
             still,
             still_frame: None,
+            hdr,
         })
+    }
+
+    /// Whether the picture is HDR, and which kind. Shown without converting,
+    /// HDR comes out washed out and grey everywhere, preview and export alike,
+    /// because nothing here manages colour; such a clip gets an SDR working
+    /// copy (`cutlass_core::media::make_sdr_copy`).
+    pub fn hdr(&self) -> Option<Hdr> {
+        self.hdr
     }
 
     /// True for a still picture. It has no time to seek in, so every frame
@@ -487,6 +516,39 @@ impl MediaEngine {
             h,
             scaling::Flags::BILINEAR,
         )?;
+        // The colour matrix the frame is tagged with. swscale assumes BT.601
+        // unless told, while nearly all HD and 4K footage (phones, cameras,
+        // the SDR copy of HDR) is tagged BT.709, so the player showed it with
+        // shifted colours: measured 8.9 per channel off the frame ffmpeg (and
+        // so export) gives. Untagged frames keep swscale's default, which is
+        // also what ffmpeg uses for them.
+        unsafe {
+            use ffmpeg::ffi::{AVColorRange, AVColorSpace};
+            let f = frame.as_ptr();
+            let matrix = match (*f).colorspace {
+                AVColorSpace::BT709 => Some(ffmpeg::ffi::SWS_CS_ITU709),
+                AVColorSpace::BT2020_NCL => Some(ffmpeg::ffi::SWS_CS_BT2020),
+                _ => None,
+            };
+            if let Some(m) = matrix {
+                let full = (*f).color_range == AVColorRange::JPEG
+                    || matches!(
+                        frame.format(),
+                        Pixel::YUVJ420P | Pixel::YUVJ422P | Pixel::YUVJ444P | Pixel::YUVJ440P | Pixel::YUVJ411P
+                    );
+                let to = ffmpeg::ffi::sws_getCoefficients(ffmpeg::ffi::SWS_CS_DEFAULT);
+                ffmpeg::ffi::sws_setColorspaceDetails(
+                    scaler.as_mut_ptr(),
+                    ffmpeg::ffi::sws_getCoefficients(m),
+                    full as i32,
+                    to,
+                    1, // RGB out is full range
+                    0,
+                    1 << 16,
+                    1 << 16,
+                );
+            }
+        }
         let mut rgba = ffmpeg::frame::Video::empty();
         scaler.run(frame, &mut rgba)?;
 

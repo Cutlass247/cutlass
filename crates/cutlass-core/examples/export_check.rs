@@ -41,6 +41,11 @@ fn main() -> anyhow::Result<()> {
             b_src: 0.0,
             dur: 1.0,
             dip: false,
+            // the outgoing side keeps its look through the dissolve
+            a_fx: ClipFx { saturation: 1.4, scale: 0.8, ..Default::default() },
+            a_lut: String::new(),
+            b_fx: ClipFx::default(),
+            b_lut: String::new(),
         },
         Segment::Clip { path: a.clone(), src_in: 0.0, len: 2.0, fx: ClipFx::default(), lut: String::new() },
         Segment::Gap { len: 1.5 },

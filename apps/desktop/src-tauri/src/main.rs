@@ -507,11 +507,28 @@ fn import_audio(path: &Path, container_s: f64) -> anyhow::Result<MediaInfo> {
 ///   which is quick and leaves the picture untouched. A re-encode above
 ///   covers this too, since it writes an MP4.
 fn make_working_copy(path: &Path) -> Option<PathBuf> {
-    let (vfr, avg, w, h, unindexed) = {
+    let (vfr, avg, w, h, unindexed, hdr) = {
         let eng = cutlass_engine::MediaEngine::open(&path.to_string_lossy()).ok()?;
         let (w, h) = eng.dimensions();
-        (eng.is_vfr(), eng.avg_fps(), w, h, eng.needs_index())
+        (eng.is_vfr(), eng.avg_fps(), w, h, eng.needs_index(), eng.hdr())
     };
+    // HDR (an iPhone records HLG by default) gets an SDR re-encode, at a
+    // constant rate too if it needs one; a re-encode writes an MP4, so it
+    // covers a missing index as well.
+    if hdr.is_some() {
+        let fps = if avg > 40.0 { 60 } else { 30 };
+        let bitrate = ((w as u64 * h as u64 * fps as u64) / 5).max(12_000_000);
+        return match media::make_sdr_copy(path, vfr.then_some(fps), bitrate) {
+            Ok(p) => {
+                eprintln!("tone-mapped {hdr:?} source to SDR: {}", p.display());
+                Some(p)
+            }
+            Err(e) => {
+                eprintln!("SDR copy failed ({e:#}); editing the original");
+                None
+            }
+        };
+    }
     if !vfr {
         if !unindexed {
             return None;
@@ -600,27 +617,32 @@ fn cached_conform(path: &Path) -> Option<std::path::PathBuf> {
         return Some(path.to_path_buf()); // already the working copy
     }
     let dir = media::cache_dir(path).ok()?;
-    for fps in [30u32, 60] {
-        let p = dir.join(format!("cfr{fps}.mp4"));
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    Some(dir.join(media::REMUX_NAME)).filter(|p| p.exists())
+    ["sdr.mp4", "sdr30.mp4", "sdr60.mp4", "cfr30.mp4", "cfr60.mp4", media::REMUX_NAME]
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.exists())
 }
 
 /// Is this path already a working copy? Named `cfr<fps>.mp4` by
-/// `conform_to_cfr` and `remux.mkv` by `remux_to_mkv`. Checked by name so an
-/// export doesn't reopen and re-probe every source just to rediscover it.
+/// `conform_to_cfr`, `sdr.mp4` or `sdr<fps>.mp4` by `make_sdr_copy`, and
+/// `remux.mkv` by `remux_to_mkv`. Checked by name so an export doesn't reopen
+/// and re-probe every source just to rediscover it.
 fn is_conform_output(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    name == media::REMUX_NAME
-        || name
-            .strip_prefix("cfr")
+    let numbered = |prefix: &str, digits_needed: bool| {
+        name.strip_prefix(prefix)
             .and_then(|r| r.strip_suffix(".mp4"))
-            .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+            .is_some_and(|d| (!digits_needed || !d.is_empty()) && d.chars().all(|c| c.is_ascii_digit()))
+    };
+    name == media::REMUX_NAME || numbered("cfr", true) || numbered("sdr", false)
+}
+
+/// Whether a working copy is an SDR one made from HDR, whose thumbnails have
+/// to be built again: the ones from import show the HDR original washed out.
+fn is_sdr_copy(path: &Path) -> bool {
+    is_conform_output(path) && path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("sdr"))
 }
 
 /// Import a video: probe, build scrub proxy, register it in the media
@@ -1333,6 +1355,11 @@ fn spawn_conform(app: tauri::AppHandle, media_id: String, src: std::path::PathBu
             let _ = project.set_media(&media_id, &name, &path, dur);
         }
         eprintln!("conformed in background: {}", conformed.display());
+        // An SDR copy of HDR footage: the scrub strip import built shows the
+        // original washed out, so build it again from the copy.
+        if is_sdr_copy(&conformed) {
+            spawn_thumbnails(app.clone(), media_id.clone(), conformed.clone());
+        }
         // The frontend holds its own copy of the path and decodes preview
         // frames from it, so it has to move too — otherwise the monitor keeps
         // reading the VFR original while the export uses the CFR copy.
@@ -3309,6 +3336,14 @@ mod tests {
         // the MKV copy made of an unindexed container, but not its temp file
         assert!(is_conform_output(Path::new(r"C:\Users\x\AppData\Local\Temp\cutlass-cache\ab\remux.mkv")));
         assert!(!is_conform_output(Path::new("remux.partial.mkv")));
+        // the SDR copy of an HDR source, at its own rate or a conformed one
+        for p in ["sdr.mp4", "sdr30.mp4", "sdr60.mp4"] {
+            assert!(is_conform_output(Path::new(p)) && is_sdr_copy(Path::new(p)), "{p}");
+        }
+        for p in ["sdr30.partial.mp4", "my sdr.mp4", "sdrx.mp4"] {
+            assert!(!is_conform_output(Path::new(p)), "{p} is NOT a working copy");
+        }
+        assert!(!is_sdr_copy(Path::new("cfr30.mp4")), "a frame-rate conform keeps its thumbnails");
     }
 
     /// Pan has to drive whichever axis the footage overflows.
@@ -4105,6 +4140,55 @@ mod tests {
                     failures.push(format!("export with an MP3 bed came out {d:.2}s, audio {}", cutlass_core::export::has_audio(&out.to_string_lossy())));
                 }
             }
+        }
+
+        // HDR, as an iPhone (HLG) and an HDR10 camera (PQ) record it, made from
+        // an SDR picture. Shown as it was, HDR came out washed out and grey,
+        // preview and export alike. Each is recognised, gets an SDR working
+        // copy, and that copy looks like the picture it was made from, far
+        // more than the HDR shown as-is, and previews and exports exactly.
+        let sdr_src = dir.join("hdr-source.mp4");
+        make(&sdr_src, "-f lavfi -i testsrc2=size=1280x720:rate=30 -t 3 -pix_fmt yuv420p -c:v libopenh264 -b:v 8M");
+        let grade = |trc: &str| {
+            format!(
+                "-i {} -vf zscale=tin=bt709:min=bt709:pin=bt709:t={trc}:m=bt2020nc:p=bt2020:r=tv,format=yuv422p10le \
+                 -c:v prores_ks -profile:v 2 -color_trc {trc} -color_primaries bt2020 -colorspace bt2020nc",
+                sdr_src.display()
+            )
+        };
+        let engine_frame = |p: &Path| -> Vec<u8> {
+            cutlass_engine::MediaEngine::open(&p.to_string_lossy())
+                .and_then(|mut e| e.frame_at(1.0, 640))
+                .map(|f| f.data)
+                .unwrap_or_default()
+        };
+        let original = engine_frame(&sdr_src);
+        for (label, trc, want) in [
+            ("HLG", "arib-std-b67", cutlass_engine::Hdr::Hlg),
+            ("PQ", "smpte2084", cutlass_engine::Hdr::Pq),
+        ] {
+            let hdr = dir.join(format!("{label}.mov"));
+            make(&hdr, &grade(trc));
+            let found = cutlass_engine::MediaEngine::open(&hdr.to_string_lossy()).ok().and_then(|e| e.hdr());
+            if found != Some(want) {
+                failures.push(format!("{label} video recognised as {found:?}"));
+                continue;
+            }
+            let Some(copy) = make_working_copy(&hdr) else {
+                failures.push(format!("{label} video got no SDR copy"));
+                continue;
+            };
+            if !is_sdr_copy(&copy) || cutlass_engine::MediaEngine::open(&copy.to_string_lossy()).ok().and_then(|e| e.hdr()).is_some() {
+                failures.push(format!("{label} video's working copy {} isn't SDR", copy.display()));
+            }
+            let as_is = mean_diff(&engine_frame(&hdr), &original);
+            let mapped = mean_diff(&engine_frame(&copy), &original);
+            if mapped > as_is * 0.6 {
+                failures.push(format!(
+                    "{label} video still looks wrong in SDR: differs from the original by {mapped:.1}, as-is by {as_is:.1}"
+                ));
+            }
+            check_footage(&format!("{label} video's SDR copy"), &copy, &mut failures);
         }
 
         // Mean colour of the 8x8 block at (x, y) of an RGBA frame `w` wide.

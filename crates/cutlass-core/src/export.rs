@@ -105,6 +105,56 @@ pub struct ClipFx {
     /// time, value): the [`SMOOTH_KF`] ones. Set by `build_segments`; the
     /// rest of a clip's keyframes are sampled into steps instead.
     pub motion: BTreeMap<String, Vec<(f64, f64)>>,
+    /// Where this piece starts within its clip, and the clip's whole length
+    /// (0 = this piece is the whole clip). Set when `build_segments` steps a
+    /// clip into pieces, or a long export slices an overlay across parts,
+    /// so the clip's fades land where they do in the clip (see
+    /// [`piece_fades`]). Each piece used to fade in and out on its own: a
+    /// clip with a stepped keyframe and a fade flickered through black five
+    /// times a second, and an overlay faded in again at every part.
+    pub fade_into: f64,
+    pub fade_clip_len: f64,
+}
+
+#[derive(Clone, Copy)]
+enum FadeKind {
+    /// to black: the base track
+    Picture,
+    /// to transparent: an overlay
+    Alpha,
+    Sound,
+}
+
+/// The clip's fades as they fall on this piece of it, `len` long, as one
+/// filter string (no leading or trailing comma), or None where neither
+/// reaches it. For a piece that starts partway into its clip, its timestamps
+/// are moved on to the clip's own for the fades and then put back, so a fade
+/// the piece starts in the middle of is already that far along.
+fn piece_fades(fx: &ClipFx, len: f64, kind: FadeKind) -> Option<String> {
+    let into = fx.fade_into.max(0.0);
+    let whole = if fx.fade_clip_len > 0.0 { fx.fade_clip_len } else { len };
+    let (name, alpha, setpts) = match kind {
+        FadeKind::Picture => ("fade", "", "setpts"),
+        FadeKind::Alpha => ("fade", ":alpha=1", "setpts"),
+        FadeKind::Sound => ("afade", "", "asetpts"),
+    };
+    let mut f = Vec::new();
+    if fx.fade_in > into + 1e-6 {
+        f.push(format!("{name}=t=in:st=0:d={:.3}{alpha}", fx.fade_in));
+    }
+    let out_at = (whole - fx.fade_out).max(0.0);
+    if fx.fade_out > 0.0 && out_at < into + len - 1e-6 {
+        f.push(format!("{name}=t=out:st={out_at:.3}:d={:.3}{alpha}", fx.fade_out));
+    }
+    if f.is_empty() {
+        return None;
+    }
+    let body = f.join(",");
+    Some(if into > 1e-6 {
+        format!("{setpts}=PTS+{into:.4}/TB,{body},{setpts}=PTS-STARTPTS")
+    } else {
+        body
+    })
 }
 
 /// Keyframed params export follows frame by frame, as the player does:
@@ -149,6 +199,8 @@ impl Default for ClipFx {
                 CensorSlot::default(),
             ],
             motion: BTreeMap::new(),
+            fade_into: 0.0,
+            fade_clip_len: 0.0,
         }
     }
 }
@@ -278,6 +330,8 @@ impl ClipFx {
                 [slot("censor"), slot("censor2"), slot("censor3")]
             },
             motion: BTreeMap::new(),
+            fade_into: 0.0,
+            fade_clip_len: 0.0,
         }
     }
     fn has_transform(&self) -> bool {
@@ -298,7 +352,9 @@ pub enum Segment {
         len: f64,
     },
     /// A `dur`-second dissolve (or dip-to-black) from A's tail into B's
-    /// head. Both windows are fitted then combined with xfade/acrossfade.
+    /// head. Each window gets its clip's own look (`a_fx`/`a_lut`,
+    /// `b_fx`/`b_lut`, set up for the window by `build_segments`), then the
+    /// two are combined with xfade/acrossfade.
     Transition {
         a_path: String,
         a_src: f64,
@@ -306,6 +362,10 @@ pub enum Segment {
         b_src: f64,
         dur: f64,
         dip: bool,
+        a_fx: ClipFx,
+        a_lut: String,
+        b_fx: ClipFx,
+        b_lut: String,
     },
 }
 
@@ -530,18 +590,35 @@ fn censor_chain(
     Some((f, out))
 }
 
-/// Fit one side of a dissolve (input `vi`) to the frame, labelled `[{tag}{k}]`
-/// for xfade.
+/// One side of a dissolve (input `vi`), labelled `[{tag}{k}]` for xfade: the
+/// clip's own chain, with its look, LUT, transform and reframing, as its
+/// body has. The windows used to be fitted and nothing else, so for the
+/// length of every dissolve a graded clip flashed ungraded, and a filled or
+/// blurred-background frame letterboxed.
 ///
-/// `fps` must come AFTER `setpts`. xfade refuses inputs whose frame rate is
-/// unknown, and since ffmpeg 7.1 `setpts` marks its output's rate unknown — so
-/// the old order (`fps,setpts`) failed every export containing a dissolve or a
-/// dip to black, on every encoder, with "current rate of 1/0 is invalid".
-fn transition_window_chain(vi: u32, tag: &str, k: usize, w: u32, h: u32, fps: u32) -> String {
+/// `fps` must come AFTER the last `setpts`. xfade refuses inputs whose frame
+/// rate is unknown, and since ffmpeg 7.1 `setpts` marks its output's rate
+/// unknown — so the old order (`fps,setpts`) failed every export containing a
+/// dissolve or a dip to black, on every encoder, with "current rate of 1/0 is
+/// invalid". The clip chain ends after its own setpts, so it gets one more.
+#[allow(clippy::too_many_arguments)]
+fn transition_window(
+    vi: u32,
+    tag: &str,
+    k: usize,
+    len: f64,
+    w: u32,
+    h: u32,
+    fps: u32,
+    fx: &ClipFx,
+    lut: &str,
+    s: &ExportSettings,
+) -> String {
+    // labels of their own: a window is not one of the program's segments
+    let own = 1_000_000 + k * 2 + usize::from(tag == "xb");
     format!(
-        "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
-         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setpts=PTS-STARTPTS,fps={fps},\
-         format=yuv420p[{tag}{k}];"
+        "{}[v{own}]fps={fps}[{tag}{k}];",
+        clip_video_chain(vi, own, len, w, h, fps, fx, lut, s.reframe, s.reframe_x, s.reframe_y)
     )
 }
 
@@ -731,25 +808,8 @@ fn clip_video_chain(
             cur = out;
         }
     }
-    if fx.fade_in > 0.0 || fx.fade_out > 0.0 {
-        s.push_str(&format!("[{cur}]"));
-        if fx.fade_in > 0.0 {
-            s.push_str(&format!("fade=t=in:st=0:d={:.3}", fx.fade_in));
-            if fx.fade_out > 0.0 {
-                s.push(',');
-            }
-        }
-        if fx.fade_out > 0.0 {
-            s.push_str(&format!(
-                "fade=t=out:st={:.3}:d={:.3}",
-                (len - fx.fade_out).max(0.0),
-                fx.fade_out
-            ));
-        }
-        s.push_str(&format!("[v{k}];"));
-    } else {
-        s.push_str(&format!("[{cur}]null[v{k}];"));
-    }
+    let fades = piece_fades(fx, len, FadeKind::Picture);
+    s.push_str(&format!("[{cur}]{}[v{k}];", fades.as_deref().unwrap_or("null")));
     s
 }
 
@@ -924,18 +984,7 @@ fn fx_flips_and_blur(fx: &ClipFx) -> String {
 
 /// Fades take the transparency down, as the preview's opacity does.
 fn fade_alpha(fx: &ClipFx, len: f64) -> String {
-    let mut f = String::new();
-    if fx.fade_in > 0.0 {
-        f.push_str(&format!("fade=t=in:st=0:d={:.3}:alpha=1,", fx.fade_in));
-    }
-    if fx.fade_out > 0.0 {
-        f.push_str(&format!(
-            "fade=t=out:st={:.3}:d={:.3}:alpha=1,",
-            (len - fx.fade_out).max(0.0),
-            fx.fade_out
-        ));
-    }
-    f
+    piece_fades(fx, len, FadeKind::Alpha).map(|f| f + ",").unwrap_or_default()
 }
 
 
@@ -973,15 +1022,9 @@ fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
     if fx.volume != 1.0 {
         c.push_str(&format!(",volume={:.4}", fx.volume));
     }
-    if fx.fade_in > 0.0 {
-        c.push_str(&format!(",afade=t=in:st=0:d={:.3}", fx.fade_in));
-    }
-    if fx.fade_out > 0.0 {
-        c.push_str(&format!(
-            ",afade=t=out:st={:.3}:d={:.3}",
-            (len - fx.fade_out).max(0.0),
-            fx.fade_out
-        ));
+    if let Some(fades) = piece_fades(fx, len, FadeKind::Sound) {
+        c.push(',');
+        c.push_str(&fades);
     }
     // audio offset: slip the audio against the video to fix baked-in A/V sync
     // (e.g. an OBS recording whose audio lags the picture). Applied last, on the
@@ -1761,7 +1804,12 @@ fn slice_overlay(ov: &Overlay, t0: f64, t1: f64) -> Option<Overlay> {
         src_in: ov.src_in + into,
         len: end - start,
         start: start - t0,
-        fx: ov.fx.clone(),
+        // its fades fall where they do in the whole clip, not at each part
+        fx: ClipFx {
+            fade_into: ov.fx.fade_into + into,
+            fade_clip_len: if ov.fx.fade_clip_len > 0.0 { ov.fx.fade_clip_len } else { ov.len },
+            ..ov.fx.clone()
+        },
         audio_only: ov.audio_only,
         // keyframe times are the clip's own, so they move back by as much
         kf: ov
@@ -2288,8 +2336,15 @@ fn run_export(
                 b_src,
                 dur,
                 dip,
+                a_fx,
+                a_lut,
+                b_fx,
+                b_lut,
             } => {
-                let fit = |vi: u32, tag: &str| transition_window_chain(vi, tag, k, w, h, fps);
+                let fit = |vi: u32, tag: &str| {
+                    let (fx, lut) = if tag == "xa" { (a_fx, a_lut) } else { (b_fx, b_lut) };
+                    transition_window(vi, tag, k, *dur, w, h, fps, fx, lut, s)
+                };
                 // A tail window (input `ai`) and B head window (input `bi`);
                 // each input carries both :v and :a.
                 let (a_still, b_still) = (crate::media::is_still(a_path), crate::media::is_still(b_path));
@@ -2307,9 +2362,13 @@ fn run_export(
                     "[xa{k}][xb{k}]xfade=transition={kind}:duration={dur:.3}:offset=0[v{k}];"
                 ));
 
-                // audio: crossfade both windows' audio, silence where absent
+                // audio: crossfade both windows' audio, each at its clip's
+                // volume, silence where absent
+                let vol = |fx: &ClipFx| {
+                    if (fx.volume - 1.0).abs() > 1e-9 { format!(",volume={:.4}", fx.volume) } else { String::new() }
+                };
                 let a_audio = if has_audio(a_path) {
-                    filters.push_str(&format!("[{ai}:a]aresample=48000[xaa{k}];"));
+                    filters.push_str(&format!("[{ai}:a]aresample=48000{}[xaa{k}];", vol(a_fx)));
                     format!("[xaa{k}]")
                 } else {
                     cmd.args(["-f", "lavfi", "-t", &format!("{dur:.3}")]);
@@ -2318,7 +2377,7 @@ fn run_export(
                     format!("[{}:a]", input_idx - 1)
                 };
                 let b_audio = if has_audio(b_path) {
-                    filters.push_str(&format!("[{bi}:a]aresample=48000[xba{k}];"));
+                    filters.push_str(&format!("[{bi}:a]aresample=48000{}[xba{k}];", vol(b_fx)));
                     format!("[xba{k}]")
                 } else {
                     cmd.args(["-f", "lavfi", "-t", &format!("{dur:.3}")]);
@@ -2595,6 +2654,7 @@ fn run_export(
     };
 
     let mut saw_error = None;
+    let mut device_failed = false;
     for event in child.iter()? {
         use std::sync::atomic::Ordering::Relaxed;
 
@@ -2625,6 +2685,15 @@ fn run_export(
                 if format!("{level:?}").contains("Error") && saw_error.is_none() =>
             {
                 log.line(&format!("ffmpeg error: {line}"));
+                // An Intel encoder whose GPU faults says "device failed" and
+                // then hangs without exiting, so the stall watchdog was the
+                // only way out: three minutes frozen before the retry, which
+                // then went through. Measured twice in the release benchmark
+                // (part 14 of 30: error at 31s, killed at 210s). Stop it now.
+                if line.contains("device failed") {
+                    device_failed = true;
+                    kill_pid(pid);
+                }
                 saw_error = Some(line);
             }
             _ => {}
@@ -2632,6 +2701,13 @@ fn run_export(
     }
     watching.store(false, std::sync::atomic::Ordering::Relaxed);
     let _ = watchdog.join();
+    if device_failed {
+        log.line("encoder reported its device failed — stopped it so it can be re-attempted");
+        anyhow::bail!(
+            "{encoder} reported its device failed and was stopped: {}",
+            saw_error.unwrap_or_default()
+        );
+    }
     if stalled.load(std::sync::atomic::Ordering::Relaxed) {
         log.line("render stopped making progress — killed it so it can be re-attempted");
         anyhow::bail!(
@@ -3218,11 +3294,88 @@ mod tests {
         // xfade rejects an unknown frame rate, and setpts makes it unknown
         // (ffmpeg 7.1), so the window's rate has to be set after its last
         // timestamp rewrite. The reverse order broke every dissolve.
-        let chain = transition_window_chain(3, "xa", 1, 1920, 1080, 30);
+        let s = ExportSettings { width: 1920, height: 1080, fps: 30, ..Default::default() };
+        let graded = ClipFx { saturation: 1.4, scale: 0.8, ..Default::default() };
+        let chain = transition_window(3, "xa", 1, 1.0, 1920, 1080, 30, &graded, "", &s);
         let fps = chain.rfind("fps=30").expect("window sets its frame rate");
         let setpts = chain.rfind("setpts=").expect("window rebases its timestamps");
         assert!(fps > setpts, "fps must follow setpts: {chain}");
         assert!(chain.starts_with("[3:v]") && chain.ends_with("[xa1];"), "{chain}");
+        // and the window keeps its clip's look: it used to be fitted and no more
+        assert!(chain.contains("hue=h=0.00:s=1.4000") && chain.contains("scale=trunc(iw*0.80000"), "{chain}");
+    }
+
+    /// A clip stepped into pieces for a keyframed look fades in and out once,
+    /// as a clip. Each 0.2s piece used to carry the whole clip's fades, so it
+    /// flickered through black five times a second, sound too.
+    #[test]
+    fn a_stepped_clip_fades_once_not_every_step() {
+        let mut c = clip(0.0, 4.0, 0.0, 0.0);
+        c.fx.fade_in = 1.0;
+        c.fx.fade_out = 1.0;
+        c.kf.insert("brightness".into(), vec![(0.0, 0.0), (4.0, 0.3)]);
+        let segs = build_segments(vec![c]);
+        let fades: Vec<Option<String>> = segs
+            .iter()
+            .map(|s| match s {
+                Segment::Clip { fx, len, .. } => piece_fades(fx, *len, FadeKind::Picture),
+                _ => panic!("not a clip"),
+            })
+            .collect();
+        assert_eq!(fades.len(), 20);
+        assert!(fades[..5].iter().all(|f| f.as_deref().is_some_and(|f| f.contains("t=in"))), "{fades:?}");
+        assert!(fades[5..15].iter().all(|f| f.is_none()), "the middle doesn't fade: {:?}", &fades[5..15]);
+        assert!(fades[15..].iter().all(|f| f.as_deref().is_some_and(|f| f.contains("t=out"))), "{fades:?}");
+        // a piece 0.6s in is 60% faded in: its timestamps are the clip's for it
+        assert_eq!(
+            fades[3].as_deref(),
+            Some("setpts=PTS+0.6000/TB,fade=t=in:st=0:d=1.000,setpts=PTS-STARTPTS")
+        );
+        // and the same for the sound
+        let Segment::Clip { fx, len, .. } = &segs[10] else { panic!() };
+        assert!(piece_fades(fx, *len, FadeKind::Sound).is_none());
+    }
+
+    /// An overlay split across the parts of a long export fades in in the
+    /// first and out in the last. Each part used to fade it in and out again.
+    #[test]
+    fn an_overlay_split_across_parts_fades_once() {
+        let ov = Overlay {
+            start: 0.0,
+            len: 10.0,
+            fx: ClipFx { fade_in: 1.0, fade_out: 1.0, ..Default::default() },
+            ..Default::default()
+        };
+        let first = slice_overlay(&ov, 0.0, 5.0).unwrap();
+        let second = slice_overlay(&ov, 5.0, 10.0).unwrap();
+        let a = piece_fades(&first.fx, first.len, FadeKind::Alpha).unwrap();
+        assert!(a.contains("t=in") && !a.contains("t=out"), "{a}");
+        let b = piece_fades(&second.fx, second.len, FadeKind::Alpha).unwrap();
+        assert!(b.contains("t=out:st=9.000") && !b.contains("t=in"), "{b}");
+    }
+
+    /// The windows of a dissolve carry their clips' looks, set up for the
+    /// window: movement keyframes from the window's start (before the
+    /// incoming clip's in-point for its head), at normal speed, without the
+    /// clips' own fades.
+    #[test]
+    fn a_dissolve_keeps_both_clips_looks() {
+        let mut a = clip(0.0, 4.0, 0.0, 0.0);
+        a.fx.saturation = 0.2;
+        a.fx.fade_out = 0.5;
+        let mut b = clip(4.0, 4.0, 3.0, 1.0);
+        b.fx.contrast = 1.5;
+        b.kf.insert("pos_x".into(), vec![(0.0, 0.0), (2.0, 0.4)]);
+        let segs = build_segments(vec![a, b]);
+        match &segs[1] {
+            Segment::Transition { a_fx, b_fx, .. } => {
+                assert!((a_fx.saturation - 0.2).abs() < 1e-9 && a_fx.fade_out == 0.0, "A's look, not its fade");
+                assert!((b_fx.contrast - 1.5).abs() < 1e-9);
+                // B's head starts 1s before its in-point, so its keyframes 1s later
+                assert_eq!(b_fx.motion["pos_x"], vec![(1.0, 0.0), (3.0, 0.4)]);
+            }
+            _ => panic!("seg1 not a transition"),
+        }
     }
 
     #[test]
@@ -3250,6 +3403,37 @@ mod tests {
 /// transitions. A transition into a clip shortens the previous clip's
 /// tail by `dur` and inserts a Transition segment there, so the total
 /// timeline duration is preserved (handle-based; see Segment::Transition).
+type Keyframes = BTreeMap<String, Vec<(f64, f64)>>;
+
+/// A clip's keyframes, as (followed frame by frame, sampled into steps):
+/// see [`SMOOTH_KF`].
+fn split_kf(kf: &Keyframes) -> (Keyframes, Keyframes) {
+    kf.iter()
+        .filter(|(_, pts)| !pts.is_empty())
+        .map(|(p, pts)| (p.clone(), pts.clone()))
+        .partition(|(p, _)| SMOOTH_KF.contains(&p.as_str()))
+}
+
+/// A clip's look for a transition window starting `at` seconds into it
+/// (negative: the incoming clip's head, before its in-point), `dur` long:
+/// stepped keyframes as at the window's middle, movement from its start, at
+/// normal speed (the windows are read at it) and without the clip's own
+/// fades, which the dissolve stands in for.
+fn window_fx(c: &ExportClip, at: f64, dur: f64) -> ClipFx {
+    let (smooth, stepped) = split_kf(&c.kf);
+    let mut fx = c.fx.sampled_at(&stepped, at + dur / 2.0);
+    fx.motion = smooth
+        .into_iter()
+        .map(|(p, pts)| (p, pts.into_iter().map(|(t, v)| (t - at, v)).collect()))
+        .collect();
+    fx.speed = 1.0;
+    fx.fade_in = 0.0;
+    fx.fade_out = 0.0;
+    fx.fade_into = 0.0;
+    fx.fade_clip_len = 0.0;
+    fx
+}
+
 pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
     clips.sort_by(|a, b| {
         a.start
@@ -3290,6 +3474,10 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
                     b_src: (c.src_in - d).max(0.0),
                     dur: d,
                     dip: c.trans_dip,
+                    a_fx: window_fx(p, p.len - d, d),
+                    a_lut: p.lut.clone(),
+                    b_fx: window_fx(&c, -d, d),
+                    b_lut: c.lut.clone(),
                 });
             }
         }
@@ -3297,12 +3485,7 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
         // (fx.motion); the rest can only be sampled into steps. A clip with
         // only the first kind stays one segment, which also lets a
         // transition into the next clip shorten its tail.
-        let (smooth, stepped): (BTreeMap<_, _>, BTreeMap<_, _>) = c
-            .kf
-            .iter()
-            .filter(|(_, pts)| !pts.is_empty())
-            .map(|(p, pts)| (p.clone(), pts.clone()))
-            .partition(|(p, _)| SMOOTH_KF.contains(&p.as_str()));
+        let (smooth, stepped) = split_kf(&c.kf);
         if stepped.is_empty() {
             segs.push(Segment::Clip {
                 path: c.path.clone(),
@@ -3324,6 +3507,9 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
                     .iter()
                     .map(|(p, pts)| (p.clone(), pts.iter().map(|(t, v)| (t - rel, *v)).collect()))
                     .collect();
+                // the clip's fades, not one per piece
+                fx.fade_into = rel;
+                fx.fade_clip_len = c.len;
                 segs.push(Segment::Clip {
                     path: c.path.clone(),
                     src_in: c.src_in + rel * c.fx.speed, // source advances at speed

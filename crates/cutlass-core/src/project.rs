@@ -87,6 +87,40 @@ pub fn kf_points(kf: &BTreeMap<String, BTreeMap<String, f64>>, param: &str) -> V
     pts
 }
 
+/// A clip's keyframes for one that now starts `by` seconds later in its own
+/// footage (a left trim, a split's right half): every time moves `by`
+/// earlier. Points that fall before the new start are kept, so the value at
+/// the start is still interpolated from them and trimming back restores the
+/// animation as it was.
+pub fn kf_shifted(kf: &BTreeMap<String, BTreeMap<String, f64>>, by: f64) -> BTreeMap<String, BTreeMap<String, f64>> {
+    kf_retimed(kf, |t| t - by)
+}
+
+/// A clip's keyframes for one retimed to play `factor` times as long.
+pub fn kf_scaled(kf: &BTreeMap<String, BTreeMap<String, f64>>, factor: f64) -> BTreeMap<String, BTreeMap<String, f64>> {
+    kf_retimed(kf, |t| t * factor)
+}
+
+fn kf_retimed(
+    kf: &BTreeMap<String, BTreeMap<String, f64>>,
+    f: impl Fn(f64) -> f64,
+) -> BTreeMap<String, BTreeMap<String, f64>> {
+    kf.iter()
+        .map(|(param, pts)| {
+            let moved = pts
+                .iter()
+                .filter_map(|(k, v)| {
+                    let t = f(k.parse::<f64>().ok()?);
+                    // one key for a time, however it was reached: not "-0.000"
+                    let t = if t.abs() < 5e-4 { 0.0 } else { t };
+                    Some((format!("{t:.3}"), *v))
+                })
+                .collect();
+            (param.clone(), moved)
+        })
+        .collect()
+}
+
 /// Effect params parsed from a clip's `fx` map to identity-defaulted
 /// values. Shared vocabulary between preview, export, and playback.
 pub fn fx_from_json(clip: &serde_json::Value) -> BTreeMap<String, f64> {
@@ -503,6 +537,11 @@ impl Project {
 
     /// Trim = (start, len, src_in) written together so a trim merges as a
     /// unit. Left-edge trims change all three; right-edge trims only len.
+    ///
+    /// Keyframe times count from the clip's start, so a left-edge trim moves
+    /// them by as much the other way, to stay on the footage they were set
+    /// on. They used to stay put, so trimming the head off a clip slid its
+    /// whole animation later against the picture.
     pub fn trim_clip(
         &mut self,
         id: &str,
@@ -511,6 +550,7 @@ impl Project {
         src_in: f64,
     ) -> anyhow::Result<()> {
         let clips = self.clips_obj();
+        let was = self.read_clip(&clips, id);
         let (_, obj) = self
             .doc
             .get(&clips, id)?
@@ -518,6 +558,9 @@ impl Project {
         self.doc.put(&obj, "start", start)?;
         self.doc.put(&obj, "len", len)?;
         self.doc.put(&obj, "src_in", src_in)?;
+        if let Some(was) = was.filter(|c| !c.kf.is_empty() && (c.start - start).abs() > 1e-9) {
+            self.write_kf(&obj, &kf_shifted(&was.kf, start - was.start))?;
+        }
         Ok(())
     }
 
@@ -557,6 +600,7 @@ impl Project {
         let src_dur = len * was;
 
         let clips = self.clips_obj();
+        let kf = self.read_clip(&clips, id).map(|c| c.kf).unwrap_or_default();
         let (_, obj) = self
             .doc
             .get(&clips, id)?
@@ -567,6 +611,11 @@ impl Project {
         };
         self.doc.put(&fxobj, "speed", speed)?;
         self.doc.put(&obj, "len", src_dur / speed)?;
+        // the clip got shorter or longer, so its keyframes do too, to stay on
+        // the footage they were set on
+        if !kf.is_empty() {
+            self.write_kf(&obj, &kf_scaled(&kf, was / speed))?;
+        }
         Ok(())
     }
 
@@ -588,17 +637,23 @@ impl Project {
             clip["len"].as_f64().unwrap_or(0.0),
             clip["src_in"].as_f64().unwrap_or(0.0),
         );
-        let src_end = src_in + len;
+        // A retimed clip covers `len * speed` of its source. This used to
+        // take `len` as the source span, so deleting words from a clip at 2x
+        // cut the wrong footage and left its parts the wrong lengths. Source
+        // seconds here, timeline seconds once divided by speed.
+        let speed = clip["fx"]["speed"].as_f64().unwrap_or(1.0).clamp(0.1, 8.0);
+        let src_end = src_in + len * speed;
         let from = src_from.clamp(src_in, src_end);
         let to = src_to.clamp(src_in, src_end);
-        let removed = to - from;
-        if removed <= 1e-9 {
+        if to - from <= 1e-9 {
             return Ok(());
         }
-        let left_len = from - src_in;
-        let right_len = src_end - to;
+        let removed = (to - from) / speed;
+        let left_len = (from - src_in) / speed;
+        let right_len = (src_end - to) / speed;
 
         if right_len > 1e-9 {
+            let kf = self.read_clip(&self.clips_obj(), id).map(|c| c.kf).unwrap_or_default();
             self.add_clip(&Clip {
                 id: new_id.to_string(),
                 name: clip["name"].as_str().unwrap_or("").to_string(),
@@ -610,7 +665,8 @@ impl Project {
                 text: clip["text"].as_str().unwrap_or("").to_string(),
                 lut: clip["lut"].as_str().unwrap_or("").to_string(),
                 fx: fx_from_json(&clip), // split inherits the clip's effects
-                kf: Default::default(),  // keyframes drop on split (v1)
+                // and its animation, from the footage it now starts on
+                kf: kf_shifted(&kf, left_len + removed),
             })?;
         }
         if left_len > 1e-9 {
@@ -636,7 +692,10 @@ impl Project {
 
     /// Split a clip at timeline position `at` into two adjacent clips
     /// (the blade tool). No ripple — both halves stay in place. `new_id`
-    /// names the right half. Effects carry to both; keyframes drop (v1).
+    /// names the right half. Effects carry to both, and so does the
+    /// animation: the right half's keyframes move to its own start, so it
+    /// carries on from where the cut was. It used to get none, so a logo
+    /// split mid-slide jumped to where it rests.
     pub fn split_clip(&mut self, id: &str, at: f64, new_id: &str) -> anyhow::Result<()> {
         let clip = self
             .clips_state()
@@ -660,7 +719,7 @@ impl Project {
             text: clip.text.clone(),
             lut: clip.lut.clone(),
             fx: clip.fx.clone(),
-            kf: BTreeMap::new(),
+            kf: kf_shifted(&clip.kf, rel),
         })?;
         self.trim_clip(id, clip.start, rel, clip.src_in)?;
         Ok(())
@@ -873,11 +932,13 @@ impl Project {
         let mut cut = 0;
         for (i, (from, to)) in ranges.iter().enumerate() {
             let mid = (from + to) / 2.0;
+            // a retimed clip covers len * speed of its source
             let target = self.clips_state().into_iter().find(|c| {
+                let speed = c.fx.get("speed").copied().unwrap_or(1.0).clamp(0.1, 8.0);
                 c.track == "V1"
                     && c.media == media_id
                     && mid >= c.src_in
-                    && mid < c.src_in + c.len
+                    && mid < c.src_in + c.len * speed
             });
             if let Some(clip) = target {
                 self.razor_out(&clip.id, *from, *to, &format!("{id_seed}-{i}"))?;
@@ -940,6 +1001,85 @@ mod tests {
             fx: BTreeMap::new(),
             kf: BTreeMap::new(),
         }
+    }
+
+    // ── keyframes stay on the footage ────────────────────────────────
+
+    /// pos_x keyframed from 0 at the clip's start to 1 at 4s.
+    fn sliding(id: &str) -> Clip {
+        let mut c = demo_clip(id, "V1", 0.0);
+        c.kf.insert(
+            "pos_x".into(),
+            [("0.000".to_string(), 0.0), ("4.000".to_string(), 1.0)].into_iter().collect(),
+        );
+        c
+    }
+    fn pos_at(p: &Project, id: &str, t: f64) -> f64 {
+        let c = p.clips_state().into_iter().find(|c| c.id == id).expect("clip");
+        interp(&kf_points(&c.kf, "pos_x"), t).expect("keyframed")
+    }
+
+    /// Split mid-animation, the right half carries on from where the cut
+    /// was. It used to get no keyframes and jump to where the clip rests.
+    #[test]
+    fn a_split_clip_carries_its_animation_on_from_the_cut() {
+        let mut p = Project::new("t");
+        p.add_clip(&sliding("a")).unwrap();
+        p.split_clip("a", 1.0, "b").unwrap();
+        assert!((pos_at(&p, "b", 0.0) - 0.25).abs() < 1e-9, "right half starts where the cut was");
+        assert!((pos_at(&p, "b", 3.0) - 1.0).abs() < 1e-9, "and ends where the clip did");
+        assert!((pos_at(&p, "a", 1.0) - 0.25).abs() < 1e-9, "left half unchanged");
+    }
+
+    /// Trimming the head off moves the keyframes with it, so the animation
+    /// stays on the footage it was set on; trimming back restores it.
+    #[test]
+    fn trimming_the_head_keeps_the_animation_on_its_footage() {
+        let mut p = Project::new("t");
+        p.add_clip(&sliding("a")).unwrap();
+        p.trim_clip("a", 1.0, 3.0, 1.0).unwrap();
+        assert!((pos_at(&p, "a", 0.0) - 0.25).abs() < 1e-9, "the new start shows what was 1s in");
+        p.trim_clip("a", 0.0, 4.0, 0.0).unwrap();
+        assert!((pos_at(&p, "a", 0.0)).abs() < 1e-9, "trimmed back, as it was");
+        assert!((pos_at(&p, "a", 2.0) - 0.5).abs() < 1e-9);
+        p.trim_clip("a", 0.0, 2.0, 0.0).unwrap(); // the tail: nothing moves
+        assert!((pos_at(&p, "a", 2.0) - 0.5).abs() < 1e-9);
+    }
+
+    /// Retimed to 2x the clip lasts half as long, and its animation too.
+    #[test]
+    fn retiming_a_clip_retimes_its_animation() {
+        let mut p = Project::new("t");
+        p.add_clip(&sliding("a")).unwrap();
+        p.set_speed("a", 2.0).unwrap();
+        assert!((pos_at(&p, "a", 1.0) - 0.5).abs() < 1e-9, "halfway through the footage at 1s");
+        assert!((pos_at(&p, "a", 2.0) - 1.0).abs() < 1e-9);
+    }
+
+    /// A clip at 2x covers twice its length of source. Deleting words cut
+    /// the wrong footage when that was taken to be its length.
+    #[test]
+    fn deleting_words_from_a_retimed_clip_cuts_the_right_footage() {
+        let mut p = Project::new("t");
+        let mut c = demo_clip("a", "V1", 0.0);
+        c.len = 10.0;
+        c.fx.insert("speed".into(), 2.0); // 20s of source in 10s
+        p.add_clip(&c).unwrap();
+        p.add_clip(&demo_clip("z", "V1", 10.0)).unwrap();
+        // source 8..12 is the timeline's 4..6
+        p.razor_out("a", 8.0, 12.0, "b").unwrap();
+        let s = p.clips_state();
+        let get = |id: &str| s.iter().find(|c| c.id == id).expect(id).clone();
+        let (a, b, z) = (get("a"), get("b"), get("z"));
+        assert!((a.len - 4.0).abs() < 1e-9 && a.src_in == 0.0, "left: source 0..8 in 4s, got {}", a.len);
+        assert!((b.start - 4.0).abs() < 1e-9 && (b.len - 4.0).abs() < 1e-9 && (b.src_in - 12.0).abs() < 1e-9,
+            "right: source 12..20 in 4s from 4s, got start {} len {} src {}", b.start, b.len, b.src_in);
+        assert!((z.start - 8.0).abs() < 1e-9, "the next clip closes up by the 2s removed, got {}", z.start);
+
+        // and the filler remover finds the clip by its whole source span
+        let mut p = Project::new("t");
+        p.add_clip(&c).unwrap();
+        assert_eq!(p.razor_out_ranges("m-a", &[(15.0, 16.0)], "cut").unwrap(), 1, "source 15s is in a 2x 10s clip");
     }
 
     // ── file format ──────────────────────────────────────────────────
