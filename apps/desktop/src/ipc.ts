@@ -174,7 +174,11 @@ export const AUDIO_EXTS = [
   "mp3", "wav", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wma", "aif", "aiff",
   "ac3", "mka", "caf", "wv", "amr", "mp2",
 ];
-export const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"];
+export const IMAGE_EXTS = [
+  "png", "jpg", "jpeg", "jpe", "jfif", "webp", "bmp", "gif", "tif", "tiff", "heic", "heif",
+  "hif", "avif", "jxl", "jp2", "j2k", "psd", "tga", "ico", "qoi", "dds", "pcx", "ppm", "pgm",
+  "pbm", "pam", "sgi", "ras", "xbm", "xpm", "xwd",
+];
 
 const IMPORT_FILTERS = [
   { name: "Video, audio and pictures", extensions: [...VIDEO_EXTS, ...AUDIO_EXTS, ...IMAGE_EXTS] },

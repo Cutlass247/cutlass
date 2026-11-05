@@ -347,13 +347,48 @@ const STILL_SOURCE_S: f64 = 24.0 * 3600.0;
 /// card or a logo stays on screen.
 const STILL_CLIP_S: f64 = 5.0;
 
+/// The file a picture is read from: for one that needs converting (an
+/// iPhone's .heic, an icon, a one-frame GIF; see `media::needs_conversion`)
+/// the PNG made of it, a HEIF one's tiles assembled by the layout libav
+/// reads and turned as it asks; otherwise the picture itself. The project
+/// keeps the original's path, so a copy cleared from the cache is simply
+/// made again.
+fn picture_source(path: &Path) -> anyhow::Result<PathBuf> {
+    let s = path.to_string_lossy();
+    if !media::needs_conversion(&s) {
+        return Ok(path.to_path_buf());
+    }
+    let layout = cutlass_engine::tile_grid(&s)?.map(|g| media::TileLayout { tiles: g.tiles, crop: g.crop });
+    media::convert_picture(path, layout.as_ref())
+}
+
+/// The file export reads for a media path: pictures that need converting
+/// through their PNG (see `picture_source`), everything else as it is.
+fn export_source(path: String) -> String {
+    if !media::needs_conversion(&path) {
+        return path;
+    }
+    picture_source(Path::new(&path))
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or(path)
+}
+
 /// A still picture: its size and one preview PNG (transparency kept, at most
 /// 1920 on its long side). No sound, no frame rate, no background jobs.
 fn import_image(path: &Path) -> anyhow::Result<MediaInfo> {
     media::ensure_ffmpeg()?;
-    let (width, height) = media::probe_dimensions(path);
+    let src = picture_source(path)?;
+    let preview = media::still_preview(&src)?;
+    // The size as shown. ffmpeg turns a JPEG by its EXIF orientation wherever
+    // the picture is drawn, preview and export alike, but reports the size
+    // before turning, so a portrait phone photo was listed as landscape.
+    let (mut width, mut height) = media::probe_dimensions(&src);
     anyhow::ensure!(width > 0 && height > 0, "couldn't read this picture");
-    let preview = media::still_preview(path)?;
+    if let Some((pw, ph)) = media::png_size(&preview) {
+        if pw != ph && (pw > ph) != (width > height) {
+            std::mem::swap(&mut width, &mut height);
+        }
+    }
     Ok(MediaInfo {
         id: format!("m{:016x}", media::path_hash(path)),
         name: path
@@ -2561,7 +2596,7 @@ async fn export_project(
         let paths: HashMap<String, String> = project
             .media_entries()
             .into_iter()
-            .map(|(id, _, p, _)| (id, p))
+            .map(|(id, _, p, _)| (id, export_source(p)))
             .collect();
         let all = project.clips_state();
         use cutlass_core::export::{ClipFx, ExportClip, Title};
@@ -3715,8 +3750,45 @@ mod tests {
 
         // Every offered type has a sample, so adding one to the list without
         // proving it works fails here. Pictures are made further down.
-        let pictures = ["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"];
-        let tested: Vec<&str> = samples.iter().map(|s| s.0).chain(pictures).collect();
+        //
+        // Pictures are made from one red card (see below): each with the
+        // ffmpeg arguments that write it from the card's PNG, or "-" for the
+        // three ffmpeg can read but not write, written by hand. The HEIF ones
+        // come from a real iPhone photo, as ffmpeg can make none of them.
+        let pictures: &[(&str, &str)] = &[
+            ("png", ""),
+            ("jpg", ""),
+            ("jpeg", ""),
+            ("jpe", "-c:v mjpeg -f image2"),
+            ("jfif", "-c:v mjpeg -f image2"),
+            ("webp", ""),
+            ("bmp", ""),
+            ("gif", ""),
+            ("tif", ""),
+            ("tiff", ""),
+            ("avif", "-c:v libaom-av1 -still-picture 1 -pix_fmt yuv420p -f avif"),
+            ("jxl", "-c:v libjxl"),
+            ("jp2", "-c:v libopenjpeg -format jp2 -f image2"),
+            ("j2k", "-c:v jpeg2000"),
+            ("tga", ""),
+            ("ico", "-vf scale=256:192 -f ico"),
+            ("qoi", ""),
+            ("pcx", ""),
+            ("ppm", ""),
+            ("pgm", ""),
+            ("pbm", ""),
+            ("pam", ""),
+            ("sgi", ""),
+            ("ras", "-c:v sunrast -f image2"),
+            ("xbm", ""),
+            ("xwd", ""),
+            ("psd", "-"),
+            ("dds", "-"),
+            ("xpm", "-"),
+        ];
+        let heif_exts = ["heic", "heif", "hif"];
+        let tested: Vec<&str> =
+            samples.iter().map(|s| s.0).chain(pictures.iter().map(|p| p.0)).chain(heif_exts).collect();
         for ext in media::VIDEO_EXTS.iter().chain(media::AUDIO_EXTS).chain(media::IMAGE_EXTS) {
             assert!(tested.contains(ext), ".{ext} is offered but has no sample here");
         }
@@ -3902,58 +3974,6 @@ mod tests {
             }
         }
 
-        // Pictures: a red card with a transparent hole in the middle, like a
-        // logo, as a PNG and converted to every other picture type.
-        let card = dir.join("sample.png");
-        make(
-            &card,
-            "-f lavfi -i color=c=red:s=320x240,format=rgba,\
-             geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(hypot(X-160,Y-120),50),0,255)' -frames:v 1",
-        );
-        for ext in pictures.iter().filter(|e| **e != "png") {
-            let made = std::process::Command::new(&ff)
-                .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-i"])
-                .arg(&card)
-                .args(["-frames:v", "1"])
-                .arg(dir.join(format!("sample.{ext}")))
-                .status()
-                .is_ok_and(|s| s.success());
-            assert!(made, "ffmpeg could not make a .{ext}");
-        }
-        for ext in pictures {
-            let path = dir.join(format!("sample.{ext}"));
-            match import_any(&path) {
-                Err(e) => failures.push(format!(".{ext}: import failed: {e:#}")),
-                Ok(m) if m.kind != media::MediaKind::Image => failures.push(format!(".{ext}: imported as {:?}", m.kind)),
-                Ok(m) if (m.width, m.height) != (320, 240) => failures.push(format!(".{ext}: read as {}x{}", m.width, m.height)),
-                Ok(m) if !m.thumb_paths.first().is_some_and(|p| p.is_file()) => failures.push(format!(".{ext}: no preview picture")),
-                Ok(_) => {}
-            }
-            // The preview shows the picture, whatever time it's asked for.
-            match cutlass_engine::MediaEngine::open(&path.to_string_lossy()) {
-                Err(e) => failures.push(format!(".{ext}: preview can't open it: {e:#}")),
-                Ok(mut eng) => match (eng.frame_at(0.0, 0), eng.frame_at(7.5, 0)) {
-                    (Ok(a), Ok(b)) => {
-                        let d = mean_diff(&a.data, &ffmpeg_frame(&path, 0.0, a.width, a.height, false));
-                        if !eng.is_still() || a.data != b.data || d > 3.0 {
-                            failures.push(format!(".{ext}: preview isn't the picture (still {}, differs by {d:.1})", eng.is_still()));
-                        }
-                    }
-                    (Err(e), _) | (_, Err(e)) => failures.push(format!(".{ext}: no preview frame: {e:#}")),
-                },
-            }
-        }
-
-        // A GIF that moves is footage, and has to behave like it.
-        let anim = dir.join("animated.gif");
-        make(&anim, "-f lavfi -i testsrc2=size=320x240:rate=10 -t 3");
-        match import_any(&anim) {
-            Ok(m) if m.kind == media::MediaKind::Video && !m.thumb_paths.is_empty() => {}
-            Ok(m) => failures.push(format!("an animated .gif imported as {:?}", m.kind)),
-            Err(e) => failures.push(format!("an animated .gif failed to import: {e:#}")),
-        }
-        check_footage("an animated .gif", &anim, &mut failures);
-
         // Mean colour of the 8x8 block at (x, y) of an RGBA frame `w` wide.
         let colour = |f: &[u8], w: usize, x: usize, y: usize| -> [f64; 3] {
             let mut c = [0.0; 3];
@@ -3976,9 +3996,177 @@ mod tests {
             export(segs, ovs, &[], &out, &settings, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false)).map_err(err_str)?;
             Ok(ffmpeg_frame(&out, 1.5, 640, 360, false))
         };
+        let clip = |path: &str, len: f64| Segment::Clip { path: path.to_string(), src_in: 0.0, len, fx: ClipFx::default(), lut: String::new() };
+
+        // Pictures: a red card with a transparent hole in the middle, like a
+        // logo, as a PNG and made into every other picture type from it.
+        let card = dir.join("sample.png");
+        make(
+            &card,
+            "-f lavfi -i color=c=red:s=320x240,format=rgba,\
+             geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(hypot(X-160,Y-120),50),0,255)' -frames:v 1",
+        );
         let card_s = card.to_string_lossy().to_string();
         let footage = dir.join("sample.mp4").to_string_lossy().to_string();
-        let clip = |path: &str, len: f64| Segment::Clip { path: path.to_string(), src_in: 0.0, len, fx: ClipFx::default(), lut: String::new() };
+        // the three ffmpeg reads but can't write, in their simplest form: the
+        // card's left half red and right half blue, 320x240
+        let (w, h) = (320usize, 240usize);
+        let rgb = |x: usize| if x < w / 2 { [255u8, 0, 0] } else { [0u8, 0, 255] };
+        let psd = {
+            let mut f = b"8BPS".to_vec();
+            f.extend([0, 1, 0, 0, 0, 0, 0, 0, 0, 3]); // version 1, reserved, 3 channels
+            f.extend((h as u32).to_be_bytes());
+            f.extend((w as u32).to_be_bytes());
+            f.extend([0, 8, 0, 3]); // 8 bits, RGB
+            f.extend([0u8; 12]); // no colour table, resources or layers
+            f.extend([0, 0]); // uncompressed
+            for c in 0..3 {
+                for _y in 0..h {
+                    f.extend((0..w).map(|x| rgb(x)[c]));
+                }
+            }
+            f
+        };
+        let dds = {
+            let mut f = b"DDS ".to_vec();
+            let mut header = [0u32; 31];
+            header[0] = 124; // size
+            header[1] = 0x1 | 0x2 | 0x4 | 0x8 | 0x1000; // caps, height, width, pitch, pixel format
+            header[2] = h as u32;
+            header[3] = w as u32;
+            header[4] = (w * 4) as u32;
+            // pixel format at dword 18: 32 bytes, RGB + alpha, 32 bits, masks
+            header[18..26].copy_from_slice(&[32, 0x41, 0, 32, 0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0xff00_0000]);
+            header[26] = 0x1000; // a texture
+            f.extend(header.iter().flat_map(|d| d.to_le_bytes()));
+            for _y in 0..h {
+                f.extend((0..w).flat_map(|x| {
+                    let [r, g, b] = rgb(x);
+                    [b, g, r, 255]
+                }));
+            }
+            f
+        };
+        let xpm = {
+            let mut f = format!("/* XPM */\nstatic char *card[] = {{\n\"{w} {h} 2 1\",\n\"r c #FF0000\",\n\"b c #0000FF\",\n");
+            for _y in 0..h {
+                f.push('"');
+                f.extend((0..w).map(|x| if x < w / 2 { 'r' } else { 'b' }));
+                f.push_str("\",\n");
+            }
+            f.push_str("};\n");
+            f.into_bytes()
+        };
+        for (ext, args) in pictures.iter().filter(|p| p.0 != "png") {
+            let out = dir.join(format!("sample.{ext}"));
+            match *ext {
+                "psd" => std::fs::write(&out, &psd).unwrap(),
+                "dds" => std::fs::write(&out, &dds).unwrap(),
+                "xpm" => std::fs::write(&out, &xpm).unwrap(),
+                _ => {
+                    let made = std::process::Command::new(&ff)
+                        .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-i"])
+                        .arg(&card)
+                        .args(["-frames:v", "1"])
+                        .args(args.split_whitespace())
+                        .arg(&out)
+                        .status()
+                        .is_ok_and(|s| s.success());
+                    assert!(made, "ffmpeg could not make a .{ext}");
+                }
+            }
+        }
+        // The HEIF ones, from a real photo (git-ignored, as it's someone's):
+        // an iPhone stores it as a grid of tiles with its turn kept apart,
+        // and ffmpeg applies neither by itself.
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../vendor/test-media/iphone-portrait.heic");
+        let mut heif_samples = Vec::new();
+        if fixture.is_file() {
+            for ext in heif_exts {
+                let p = dir.join(format!("photo.{ext}"));
+                std::fs::copy(&fixture, &p).unwrap();
+                heif_samples.push((ext, p));
+            }
+        } else {
+            failures.push(format!(
+                "no HEIC to test: copy any iPhone photo to {} (git ignores it)",
+                fixture.display()
+            ));
+        }
+
+        // Each imports as a picture of its size, the right way up, and export
+        // renders the same frame as the preview picture the player shows.
+        let check_picture = |label: &str, path: &Path, want: (u32, u32), failures: &mut Vec<String>| {
+            let m = match import_any(path) {
+                Ok(m) => m,
+                Err(e) => return failures.push(format!("{label}: import failed: {e:#}")),
+            };
+            if m.kind != media::MediaKind::Image {
+                return failures.push(format!("{label}: imported as {:?}", m.kind));
+            }
+            if (m.width, m.height) != want {
+                failures.push(format!("{label}: read as {}x{}, not {}x{}", m.width, m.height, want.0, want.1));
+            }
+            let Some(preview) = m.thumb_paths.first().filter(|p| p.is_file()) else {
+                return failures.push(format!("{label}: no preview picture"));
+            };
+            let name = label.trim_start_matches('.').replace(' ', "_");
+            let exported = render(&[clip(&export_source(path.to_string_lossy().to_string()), 3.0)], &[], &format!("{name}-export.mp4"));
+            let shown = render(&[clip(&preview.to_string_lossy(), 3.0)], &[], &format!("{name}-preview.mp4"));
+            match (exported, shown) {
+                (Ok(a), Ok(b)) => {
+                    let d = mean_diff(&a, &b);
+                    if d > 4.0 {
+                        failures.push(format!("{label}: export isn't the picture the player shows (differs by {d:.1})"));
+                    }
+                }
+                (Err(e), _) | (_, Err(e)) => failures.push(format!("{label}: didn't export: {e}")),
+            }
+        };
+        for (ext, _) in pictures {
+            let want = if *ext == "ico" { (256, 192) } else { (320, 240) };
+            check_picture(&format!(".{ext}"), &dir.join(format!("sample.{ext}")), want, &mut failures);
+        }
+        // A phone photo taken upright: a landscape JPEG whose EXIF says to turn
+        // it a quarter (orientation 6). ffmpeg turns it wherever it's drawn
+        // but reports the size unturned, so it was listed as landscape.
+        let upright = dir.join("upright.jpg");
+        let jpg = std::fs::read(dir.join("sample.jpg")).unwrap();
+        let mut tiff = b"II*\0".to_vec();
+        tiff.extend(8u32.to_le_bytes());
+        tiff.extend(1u16.to_le_bytes()); // one entry:
+        tiff.extend([0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0]); // orientation = 6
+        tiff.extend(0u32.to_le_bytes());
+        let payload = [b"Exif\0\0".as_slice(), &tiff].concat();
+        let app1 = [[0xFF, 0xE1].as_slice(), &((payload.len() + 2) as u16).to_be_bytes(), &payload].concat();
+        std::fs::write(&upright, [&jpg[..2], &app1, &jpg[2..]].concat()).unwrap();
+        check_picture("a phone .jpg taken upright", &upright, (240, 320), &mut failures);
+
+        for (ext, path) in &heif_samples {
+            // the size the grid crops to, turned as the photo asks
+            let want = cutlass_engine::tile_grid(&path.to_string_lossy()).ok().flatten().map(|g| {
+                let (w, h) = (g.crop.2 as u32, g.crop.3 as u32);
+                let turns = media::heif_transform(&std::fs::read(path).unwrap_or_default())
+                    .iter()
+                    .filter(|s| matches!(s, media::HeifStep::TurnAnticlockwise(1 | 3)))
+                    .count();
+                if turns % 2 == 1 { (h, w) } else { (w, h) }
+            });
+            match want {
+                Some(want) => check_picture(&format!(".{ext} from an iPhone"), path, want, &mut failures),
+                None => failures.push(format!(".{ext}: the iPhone photo has no tile grid to check against")),
+            }
+        }
+
+        // A GIF that moves is footage, and has to behave like it.
+        let anim = dir.join("animated.gif");
+        make(&anim, "-f lavfi -i testsrc2=size=320x240:rate=10 -t 3");
+        match import_any(&anim) {
+            Ok(m) if m.kind == media::MediaKind::Video && !m.thumb_paths.is_empty() => {}
+            Ok(m) => failures.push(format!("an animated .gif imported as {:?}", m.kind)),
+            Err(e) => failures.push(format!("an animated .gif failed to import: {e:#}")),
+        }
+        check_footage("an animated .gif", &anim, &mut failures);
         // on screen from 0.5s for 2s
         let logo_like = |path: &str| Overlay {
             path: path.to_string(),
@@ -4052,18 +4240,31 @@ mod tests {
             return;
         }
         // thumbnails and working copies live in the shared cache, by path
-        for name in samples
+        let mut cached: Vec<PathBuf> = samples
             .iter()
             .map(|s| format!("sample.{}", s.0))
-            .chain(pictures.iter().map(|e| format!("sample.{e}")))
-            .chain(["animated.gif".to_string()])
-        {
-            if let Ok(c) = media::cache_dir(&dir.join(name)) {
+            .chain(pictures.iter().map(|p| format!("sample.{}", p.0)))
+            .chain(["animated.gif".to_string(), "upright.jpg".to_string()])
+            .map(|n| dir.join(n))
+            .collect();
+        for (_, photo) in &heif_samples {
+            // a HEIF photo's PNG has its own cache entry, for its preview
+            if let Ok(c) = media::cache_dir(photo) {
+                cached.push(c.join(media::CONVERTED_NAME));
+            }
+            cached.push(photo.clone());
+        }
+        // in order: a converted PNG's entry before the photo's, which holds it
+        for p in &cached {
+            if let Ok(c) = media::cache_dir(p) {
                 let _ = std::fs::remove_dir_all(c);
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
         assert!(failures.is_empty(), "{} of the offered file types don't work:\n  {}", failures.len(), failures.join("\n  "));
-        println!("PASS every offered file type imports ({} types)", samples.len());
+        println!(
+            "PASS every offered file type imports ({} types)",
+            media::VIDEO_EXTS.len() + media::AUDIO_EXTS.len() + media::IMAGE_EXTS.len()
+        );
     }
 }

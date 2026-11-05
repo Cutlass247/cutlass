@@ -52,8 +52,223 @@ pub enum MediaKind {
     Image,
 }
 
-/// File types that are always a single picture.
-const STILL_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
+/// File types that are always a single picture: every picture type but GIF.
+const STILL_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "jpe", "jfif", "webp", "bmp", "tif", "tiff", "heic", "heif", "hif",
+    "avif", "jxl", "jp2", "j2k", "psd", "tga", "ico", "qoi", "dds", "pcx", "ppm", "pgm", "pbm",
+    "pam", "sgi", "ras", "xbm", "xpm", "xwd",
+];
+
+/// Pictures stored the HEIF way: an iPhone's .heic, .heif, Canon's .hif,
+/// AVIF. The picture can be a grid of tiles (an iPhone's is 35 of them, each
+/// 512 square) and the turn it's shown at is a separate property; the shipped
+/// ffmpeg reads both but applies neither, so a photo came out as one corner
+/// tile, or whole but on its side. Each is made into a PNG once
+/// ([`convert_picture`]) and everything else reads that.
+const HEIF_EXTS: &[&str] = &["heic", "heif", "hif", "avif"];
+
+/// Whether `path` is a picture that has to be made into a PNG before use:
+/// the HEIF ones, and the two whose own readers don't loop, which is how
+/// export holds a picture on screen (an icon, a one-frame GIF; export's
+/// looping reader, image2, can open neither).
+pub fn needs_conversion(path: &str) -> bool {
+    let ext = Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    HEIF_EXTS.contains(&ext.as_str()) || ext == "ico" || (ext == "gif" && is_still(path))
+}
+
+/// One step of what a HEIF picture says to do to its image before showing
+/// it, in the order the file lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeifStep {
+    /// 'irot': this many quarter turns anticlockwise (1..=3).
+    TurnAnticlockwise(u8),
+    /// 'imir': 0 mirrors left to right, 1 top to bottom.
+    Mirror(u8),
+}
+
+/// The ISO boxes directly inside `data`: (type, contents).
+fn iso_boxes(data: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at + 8 <= data.len() {
+        let size32 = u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        let kind: [u8; 4] = data[at + 4..at + 8].try_into().unwrap();
+        let (header, size) = match size32 {
+            0 => (8, data.len() - at),
+            1 if at + 16 <= data.len() => {
+                (16, u64::from_be_bytes(data[at + 8..at + 16].try_into().unwrap()) as usize)
+            }
+            n => (8, n),
+        };
+        if size < header || at + size > data.len() {
+            break;
+        }
+        out.push((kind, &data[at + header..at + size]));
+        at += size;
+    }
+    out
+}
+
+/// The turn and mirror a HEIF file asks for its primary picture, read from
+/// its boxes: `pitm` names the picture, `ipma` lists the properties that
+/// apply to it, in order, and `ipco` holds them. Nothing (an empty list) for
+/// anything that isn't a HEIF file or doesn't say.
+pub fn heif_transform(file: &[u8]) -> Vec<HeifStep> {
+    let Some((_, meta)) = iso_boxes(file).into_iter().find(|(k, _)| k == b"meta") else {
+        return Vec::new();
+    };
+    // meta is a full box: four bytes of version and flags before its boxes
+    let Some(inner) = meta.get(4..) else { return Vec::new() };
+    let children = iso_boxes(inner);
+    let primary = children.iter().find(|(k, _)| k == b"pitm").and_then(|(_, b)| match b.first()? {
+        0 => Some(u16::from_be_bytes(b.get(4..6)?.try_into().ok()?) as u32),
+        _ => Some(u32::from_be_bytes(b.get(4..8)?.try_into().ok()?)),
+    });
+    let Some(primary) = primary else { return Vec::new() };
+    let Some((_, iprp)) = children.iter().find(|(k, _)| k == b"iprp") else { return Vec::new() };
+    let props = iso_boxes(iprp);
+    let ipco: Vec<([u8; 4], &[u8])> = props
+        .iter()
+        .find(|(k, _)| k == b"ipco")
+        .map(|(_, b)| iso_boxes(b))
+        .unwrap_or_default();
+    let Some((_, ipma)) = props.iter().find(|(k, _)| k == b"ipma") else { return Vec::new() };
+
+    // ipma: version and flags, an entry count, then per item its id (16 bits
+    // in version 0, else 32), a count, and that many property indices (7 bits,
+    // or 15 when flags bit 0 is set; the top bit marks "essential"), 1-based
+    // into ipco.
+    let (version, wide) = match (ipma.first(), ipma.get(3)) {
+        (Some(v), Some(f)) => (*v, f & 1 == 1),
+        _ => return Vec::new(),
+    };
+    let read = |at: &mut usize, n: usize| -> Option<u32> {
+        let v = ipma.get(*at..*at + n)?.iter().fold(0u32, |acc, b| (acc << 8) | *b as u32);
+        *at += n;
+        Some(v)
+    };
+    let mut at = 4usize;
+    let Some(entries) = read(&mut at, 4) else { return Vec::new() };
+    for _ in 0..entries {
+        let Some(item) = read(&mut at, if version < 1 { 2 } else { 4 }) else { break };
+        let Some(count) = read(&mut at, 1) else { break };
+        let mut indices = Vec::new();
+        for _ in 0..count {
+            let Some(raw) = read(&mut at, if wide { 2 } else { 1 }) else { break };
+            indices.push(raw & if wide { 0x7fff } else { 0x7f });
+        }
+        if item != primary {
+            continue;
+        }
+        return indices
+            .into_iter()
+            .filter_map(|i| ipco.get((i as usize).checked_sub(1)?))
+            .filter_map(|(kind, body)| match kind {
+                b"irot" => Some(HeifStep::TurnAnticlockwise(body.first()? & 0x03)),
+                b"imir" => Some(HeifStep::Mirror(body.first()? & 0x01)),
+                _ => None,
+            })
+            .filter(|s| *s != HeifStep::TurnAnticlockwise(0))
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Where each tile of a gridded picture goes: (stream index, x, y) for each
+/// tile, then the crop of the assembled grid that is the picture (x, y,
+/// width, height). Read by the engine, which links libav; see
+/// `cutlass_engine::tile_grid`.
+#[derive(Debug, Clone)]
+pub struct TileLayout {
+    pub tiles: Vec<(usize, i32, i32)>,
+    pub crop: (i32, i32, i32, i32),
+}
+
+/// A PNG's width and height, from its header.
+pub fn png_size(path: &Path) -> Option<(u32, u32)> {
+    use std::io::Read;
+    let mut head = [0u8; 24];
+    std::fs::File::open(path).ok()?.read_exact(&mut head).ok()?;
+    (head[..8] == *b"\x89PNG\r\n\x1a\n" && head[12..16] == *b"IHDR").then(|| {
+        (
+            u32::from_be_bytes(head[16..20].try_into().unwrap()),
+            u32::from_be_bytes(head[20..24].try_into().unwrap()),
+        )
+    })
+}
+
+/// What [`convert_picture`] names its copy.
+pub const CONVERTED_NAME: &str = "picture.png";
+
+/// Make a picture that needs it (see [`needs_conversion`]) into a PNG, once:
+/// a HEIF one's tiles assembled by `layout` and cropped, then turned and
+/// mirrored as the file asks, at most 3840 on its long side (4K's, never
+/// enlarged), transparency kept. A prior copy is reused.
+pub fn convert_picture(src: &Path, layout: Option<&TileLayout>) -> anyhow::Result<PathBuf> {
+    ensure_ffmpeg()?;
+    let out = cache_dir(src)?.join(CONVERTED_NAME);
+    if out.exists() {
+        return Ok(out);
+    }
+    // Tiles are named stream by stream; a picture that's one image is left to
+    // ffmpeg's own choice of stream, which is the largest: the full size of
+    // a multi-size icon, the photo rather than its thumbnail.
+    let (mut graph, picked) = match layout {
+        Some(l) if l.tiles.len() > 1 => {
+            let inputs: String = l.tiles.iter().map(|(i, ..)| format!("[0:{i}]")).collect();
+            let places: Vec<String> = l.tiles.iter().map(|(_, x, y)| format!("{x}_{y}")).collect();
+            let (cx, cy, cw, ch) = l.crop;
+            let g = format!(
+                "{inputs}xstack=inputs={}:layout={},crop={cw}:{ch}:{cx}:{cy}",
+                l.tiles.len(),
+                places.join("|")
+            );
+            (g, true)
+        }
+        Some(l) => {
+            let (cx, cy, cw, ch) = l.crop;
+            (format!("[0:{}]crop={cw}:{ch}:{cx}:{cy}", l.tiles.first().map_or(0, |t| t.0)), true)
+        }
+        None => ("null".to_string(), false),
+    };
+    for step in heif_transform(&std::fs::read(src)?) {
+        graph.push_str(match step {
+            HeifStep::TurnAnticlockwise(1) => ",transpose=cclock",
+            HeifStep::TurnAnticlockwise(2) => ",hflip,vflip",
+            HeifStep::TurnAnticlockwise(_) => ",transpose=clock",
+            HeifStep::Mirror(0) => ",hflip",
+            HeifStep::Mirror(_) => ",vflip",
+        });
+    }
+    graph.push_str(",scale='min(3840,iw)':'min(3840,ih)':force_original_aspect_ratio=decrease");
+    let tmp = out.with_extension("partial.png");
+    // -noautorotate: the turn is applied above, from the file's own property,
+    // and must not be applied twice should a later ffmpeg start reading it.
+    let mut cmd = FfmpegCommand::new();
+    cmd.args(["-noautorotate"]).input(src.to_string_lossy());
+    if picked {
+        cmd.args(["-filter_complex", &format!("{graph}[out]"), "-map", "[out]"]);
+    } else {
+        cmd.args(["-vf", &graph]);
+    }
+    let mut child = cmd
+        .args(["-frames:v", "1", "-update", "1", "-pix_fmt", "rgba", "-y"])
+        .output(tmp.to_string_lossy())
+        .spawn()?;
+    if let Ok(events) = child.iter() {
+        for _ in events {}
+    }
+    anyhow::ensure!(
+        child.wait().map(|s| s.success()).unwrap_or(false) && tmp.exists(),
+        "couldn't read the picture in {}",
+        src.display()
+    );
+    std::fs::rename(&tmp, &out)?;
+    Ok(out)
+}
 
 /// Whether `path` is a still picture rather than footage, the one test both
 /// import and export use. A GIF can be either: an animated one is a video.
@@ -125,9 +340,18 @@ pub const AUDIO_EXTS: &[&str] = &[
     "mp3", "wav", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wma", "aif", "aiff",
     "ac3", "mka", "caf", "wv", "amr", "mp2",
 ];
-/// Pictures. A GIF is imported as a picture or a video by whether it moves;
-/// see [`is_still`].
-pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"];
+/// Pictures: every still type the shipped ffmpeg decodes that looks right
+/// without colour management. A GIF is imported as a picture or a video by
+/// whether it moves; see [`is_still`].
+///
+/// Left out: OpenEXR, Radiance HDR and DPX store linear or film-log light,
+/// which would come out dark or flat without tone mapping; SVG and camera
+/// RAW, which this ffmpeg can't decode at all.
+pub const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "jpe", "jfif", "webp", "bmp", "gif", "tif", "tiff", "heic", "heif",
+    "hif", "avif", "jxl", "jp2", "j2k", "psd", "tga", "ico", "qoi", "dds", "pcx", "ppm", "pgm",
+    "pbm", "pam", "sgi", "ras", "xbm", "xpm", "xwd",
+];
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MediaInfo {
@@ -615,6 +839,71 @@ fn read_frames_named(dir: &Path, prefix: char) -> anyhow::Result<Vec<PathBuf>> {
         .collect();
     frames.sort();
     Ok(frames)
+}
+
+#[cfg(test)]
+mod heif_tests {
+    use super::*;
+
+    fn bx(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(kind);
+        v.extend_from_slice(body);
+        v
+    }
+
+    /// A HEIF file's boxes, enough to say what to do to the picture: item
+    /// `primary`, and properties ispe (1), irot 3 (2), imir 1 (3), with item 1
+    /// given all three and item 2 (its thumbnail) only the turn.
+    fn heif(primary: u16, wide: bool) -> Vec<u8> {
+        let ipco = [bx(b"ispe", &[0; 12]), bx(b"irot", &[3]), bx(b"imir", &[1])].concat();
+        let idx = |i: u8| if wide { vec![0x80, i] } else { vec![0x80 | i] };
+        let mut ipma = vec![0, 0, 0, wide as u8, 0, 0, 0, 2];
+        ipma.extend([0, 1, 3]);
+        ipma.extend([idx(1), idx(2), idx(3)].concat());
+        ipma.extend([0, 2, 1]);
+        ipma.extend(idx(2));
+        let iprp = bx(b"iprp", &[bx(b"ipco", &ipco), bx(b"ipma", &ipma)].concat());
+        let pitm = bx(b"pitm", &[0, 0, 0, 0, (primary >> 8) as u8, primary as u8]);
+        let meta = bx(b"meta", &[vec![0, 0, 0, 0], pitm, iprp].concat());
+        [bx(b"ftyp", b"heicmif1"), meta].concat()
+    }
+
+    /// An iPhone photo held upright is stored on its side with 'irot' 3:
+    /// three quarter turns anticlockwise. Shown without reading it, it was on
+    /// its side in Cutlass.
+    #[test]
+    fn a_heif_picture_is_turned_and_mirrored_as_it_asks_in_order() {
+        use HeifStep::*;
+        assert_eq!(heif_transform(&heif(1, false)), vec![TurnAnticlockwise(3), Mirror(1)]);
+        assert_eq!(heif_transform(&heif(1, true)), vec![TurnAnticlockwise(3), Mirror(1)], "16-bit indices");
+    }
+
+    /// Properties belong to items: the thumbnail's turn is not the photo's.
+    #[test]
+    fn only_the_primary_pictures_properties_count() {
+        assert_eq!(heif_transform(&heif(2, false)), vec![HeifStep::TurnAnticlockwise(3)]);
+        assert_eq!(heif_transform(&heif(9, false)), Vec::new(), "an item with nothing listed");
+    }
+
+    #[test]
+    fn anything_else_asks_for_nothing() {
+        assert_eq!(heif_transform(b"\x89PNG\r\n\x1a\n not heif"), Vec::new());
+        assert_eq!(heif_transform(&[]), Vec::new());
+        let truncated = heif(1, false);
+        assert_eq!(heif_transform(&truncated[..truncated.len() - 3]), Vec::new(), "cut short");
+    }
+
+    #[test]
+    fn heif_types_and_icons_are_the_ones_converted() {
+        for p in ["a.heic", "B.HEIC", "c.heif", "d.hif", "e.avif", "f.ico"] {
+            assert!(needs_conversion(p), "{p}");
+            assert!(is_still(p), "{p} is a still");
+        }
+        for p in ["a.png", "b.jpg", "c.mp4"] {
+            assert!(!needs_conversion(p), "{p}");
+        }
+    }
 }
 
 #[cfg(test)]

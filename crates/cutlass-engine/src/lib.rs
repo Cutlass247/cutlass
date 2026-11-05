@@ -63,6 +63,57 @@ pub fn probe_streams(path: &str) -> anyhow::Result<StreamProbe> {
     Ok(StreamProbe { has_video, has_audio, duration_s })
 }
 
+/// A picture stored as a grid of tiles, as libav reads it: for each tile its
+/// stream index and where its top-left corner goes, then the crop of the
+/// assembled grid that is the picture (x, y, width, height).
+#[derive(Debug, Clone)]
+pub struct TileGrid {
+    pub tiles: Vec<(usize, i32, i32)>,
+    pub crop: (i32, i32, i32, i32),
+}
+
+/// The tile grid of a HEIF picture (an iPhone's .heic is 35 tiles of 512),
+/// or None for a picture that isn't one. libav parses the grid into a stream
+/// group but neither it nor the ffmpeg command line assembles it, which is
+/// what `cutlass_core::media::convert_picture` does with this.
+pub fn tile_grid(path: &str) -> anyhow::Result<Option<TileGrid>> {
+    use ffmpeg::ffi::AVStreamGroupParamsType;
+    ffmpeg::init().context("ffmpeg init")?;
+    let ictx = ffmpeg::format::input(&path).with_context(|| format!("open {path}"))?;
+    // Safety: read-only walks of arrays libav sized itself (nb_stream_groups,
+    // nb_tiles, a group's nb_streams), kept alive by `ictx` for the duration.
+    unsafe {
+        let fc = ictx.as_ptr();
+        for g in 0..(*fc).nb_stream_groups as usize {
+            let group = *(*fc).stream_groups.add(g);
+            if group.is_null() || (*group).type_ != AVStreamGroupParamsType::TILE_GRID {
+                continue;
+            }
+            let grid = (*group).params.tile_grid;
+            if grid.is_null() {
+                continue;
+            }
+            let mut tiles = Vec::with_capacity((*grid).nb_tiles as usize);
+            for t in 0..(*grid).nb_tiles as usize {
+                let o = *(*grid).offsets.add(t);
+                anyhow::ensure!(o.idx < (*group).nb_streams, "tile {t} names a stream the group lacks");
+                let stream = *(*group).streams.add(o.idx as usize);
+                tiles.push(((*stream).index as usize, o.horizontal, o.vertical));
+            }
+            return Ok(Some(TileGrid {
+                tiles,
+                crop: (
+                    (*grid).horizontal_offset,
+                    (*grid).vertical_offset,
+                    (*grid).width,
+                    (*grid).height,
+                ),
+            }));
+        }
+    }
+    Ok(None)
+}
+
 /// Where a file's own timestamps start, in seconds.
 ///
 /// Every time this engine is given or returns counts from the start of the
