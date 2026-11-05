@@ -730,6 +730,94 @@ fn clip_video_chain(
     s
 }
 
+/// Open `len` seconds of `path` from `src_in` as the next input. A still
+/// picture (`still`, from [`crate::media::is_still`]) has no time to seek in,
+/// so it is looped at the export's frame rate for `len` instead, whatever
+/// `src_in` says.
+fn add_source(cmd: &mut FfmpegCommand, path: &str, still: bool, src_in: f64, len: f64, fps: u32) {
+    if still {
+        // image2 by name, as it is the demuxer that loops; `pattern_type
+        // none` stops a % in the file name being read as a numbered sequence.
+        cmd.args(["-f", "image2", "-pattern_type", "none", "-loop", "1"]);
+        cmd.args(["-framerate", &fps.to_string(), "-t", &format!("{len:.3}")]);
+    } else {
+        cmd.args(["-ss", &format!("{src_in:.3}"), "-t", &format!("{len:.3}")]);
+    }
+    cmd.input(path);
+}
+
+/// A still's video chain, with the picture composited over black first. A
+/// PNG keeps a colour for its transparent pixels, and the yuv420p the program
+/// is made of has nowhere to put the transparency, so that colour would show;
+/// `premultiply` blends the picture onto black, like the preview's stage.
+/// JPEGs have no transparency to lose.
+fn over_black(vi: u32, chain: String, path: &str) -> String {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        return chain;
+    }
+    format!(
+        "[{vi}:v]premultiply=inplace=1[pm{vi}];{}",
+        chain.replace(&format!("[{vi}:v]"), &format!("[pm{vi}]"))
+    )
+}
+
+/// An overlay clip's own look, as export draws it: `filters` (each ending in
+/// a comma) apply it to the clip's fitted frame, and `x`/`y` place the result
+/// over the program.
+struct Placement {
+    filters: String,
+    x: String,
+    y: String,
+}
+
+/// Mirrors the preview's CSS (`fxStyle` in ui.tsx), `translate(pos) scale()
+/// rotate()`: the clip scales and turns about its own centre, then moves by
+/// `pos_x`/`pos_y` of the frame. Flips, blur and fades come along too. Export
+/// used to apply none of this above the base track, so a logo shrunk into a
+/// corner came out filling the frame, as did any picture-in-picture.
+fn overlay_placement(fx: &ClipFx, len: f64, w: u32, h: u32) -> Placement {
+    let mut f = String::new();
+    if fx.flip_h > 0.5 {
+        f.push_str("hflip,");
+    }
+    if fx.flip_v > 0.5 {
+        f.push_str("vflip,");
+    }
+    if fx.blur > 0.01 {
+        f.push_str(&format!("gblur=sigma={:.2},", fx.blur));
+    }
+    if (fx.scale - 1.0).abs() > 1e-9 {
+        f.push_str(&format!(
+            "scale=trunc(iw*{sc:.5}/2)*2:trunc(ih*{sc:.5}/2)*2,",
+            sc = fx.scale.max(0.01)
+        ));
+    }
+    if fx.rot != 0.0 {
+        // about its own centre, onto a canvas grown to fit the corners, with
+        // the corners transparent rather than black
+        let a = fx.rot * std::f64::consts::PI / 180.0;
+        f.push_str(&format!("rotate={a:.5}:ow=rotw({a:.5}):oh=roth({a:.5}):fillcolor=none,"));
+    }
+    // fades take the transparency down, as the preview's opacity does
+    if fx.fade_in > 0.0 {
+        f.push_str(&format!("fade=t=in:st=0:d={:.3}:alpha=1,", fx.fade_in));
+    }
+    if fx.fade_out > 0.0 {
+        f.push_str(&format!(
+            "fade=t=out:st={:.3}:d={:.3}:alpha=1,",
+            (len - fx.fade_out).max(0.0),
+            fx.fade_out
+        ));
+    }
+    let (px, py) = (fx.pos_x * w as f64, fx.pos_y * h as f64);
+    Placement {
+        filters: f,
+        x: format!("(W-w)/2+({px:.1})"),
+        y: format!("(H-h)/2+({py:.1})"),
+    }
+}
+
 /// Build a clip's audio chain `[{vi}:a] → [a{k}]`: resample, gain, fades.
 fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
     let mut c = format!("[{vi}:a]aresample=48000,asetpts=PTS-STARTPTS");
@@ -2000,16 +2088,11 @@ fn run_export(
                 // With speed, consume `len*speed` of source (retimed to
                 // `len` on the timeline by setpts/atempo in the chains).
                 let src_dur = len * fx.speed;
-                cmd.args([
-                    "-ss",
-                    &format!("{src_in:.3}"),
-                    "-t",
-                    &format!("{src_dur:.3}"),
-                ]);
-                cmd.input(path.as_str());
+                let still = crate::media::is_still(path);
+                add_source(&mut cmd, path, still, *src_in, src_dur, fps);
                 let vi = input_idx;
                 input_idx += 1;
-                filters.push_str(&clip_video_chain(
+                let chain = clip_video_chain(
                     vi,
                     k,
                     *len,
@@ -2021,7 +2104,8 @@ fn run_export(
                     s.reframe,
                     s.reframe_x,
                     s.reframe_y,
-                ));
+                );
+                filters.push_str(&if still { over_black(vi, chain, path) } else { chain });
                 // "Remove music": when the flag is on and a separated vocals
                 // track exists for this source, take the clip's audio from that
                 // WAV (same timeline as the source) instead of the file's own
@@ -2080,17 +2164,16 @@ fn run_export(
                 let fit = |vi: u32, tag: &str| transition_window_chain(vi, tag, k, w, h, fps);
                 // A tail window (input `ai`) and B head window (input `bi`);
                 // each input carries both :v and :a.
-                cmd.args(["-ss", &format!("{a_src:.3}"), "-t", &format!("{dur:.3}")]);
-                cmd.input(a_path.as_str());
+                let (a_still, b_still) = (crate::media::is_still(a_path), crate::media::is_still(b_path));
+                add_source(&mut cmd, a_path, a_still, *a_src, *dur, fps);
                 let ai = input_idx;
                 input_idx += 1;
-                cmd.args(["-ss", &format!("{b_src:.3}"), "-t", &format!("{dur:.3}")]);
-                cmd.input(b_path.as_str());
+                add_source(&mut cmd, b_path, b_still, *b_src, *dur, fps);
                 let bi = input_idx;
                 input_idx += 1;
 
-                filters.push_str(&fit(ai, "xa"));
-                filters.push_str(&fit(bi, "xb"));
+                filters.push_str(&if a_still { over_black(ai, fit(ai, "xa"), a_path) } else { fit(ai, "xa") });
+                filters.push_str(&if b_still { over_black(bi, fit(bi, "xb"), b_path) } else { fit(bi, "xb") });
                 let kind = if *dip { "fadeblack" } else { "fade" };
                 filters.push_str(&format!(
                     "[xa{k}][xb{k}]xfade=transition={kind}:duration={dur:.3}:offset=0[v{k}];"
@@ -2130,30 +2213,22 @@ fn run_export(
     let mut base = "catv".to_string();
     let mut overlay_audio: Vec<String> = Vec::new();
     for (j, ov) in overlays.iter().enumerate() {
-        cmd.args([
-            "-ss",
-            &format!("{:.3}", ov.src_in),
-            "-t",
-            &format!("{:.3}", ov.len),
-        ]);
-        cmd.input(ov.path.as_str());
+        let still = !ov.audio_only && crate::media::is_still(&ov.path);
+        add_source(&mut cmd, &ov.path, still, ov.src_in, ov.len, fps);
         let vi = input_idx;
         input_idx += 1;
         let (t0, t1) = (ov.start, ov.start + ov.len);
         // audio beds carry no picture; only higher video tracks composite
         if !ov.audio_only {
-            // green-screen key: alpha format + colorkey so the base shows
-            // through the keyed pixels
-            let (pix, key) = if ov.fx.chroma > 0.5 {
-                (
-                    "yuva420p",
-                    format!(
-                        "colorkey=0x00D000:similarity={:.3}:blend=0.10,",
-                        ov.fx.chroma_sim.clamp(0.01, 1.0)
-                    ),
+            // green-screen key: colorkey so the base shows through the keyed
+            // pixels
+            let key = if ov.fx.chroma > 0.5 {
+                format!(
+                    "colorkey=0x00D000:similarity={:.3}:blend=0.10,",
+                    ov.fx.chroma_sim.clamp(0.01, 1.0)
                 )
             } else {
-                ("yuv420p", String::new())
+                String::new()
             };
             // grade the overlay with the SAME LGPL-safe filters as the main
             // program — `eq` is GPL-only and absent from the ffmpeg we ship,
@@ -2173,11 +2248,18 @@ fn run_export(
                     ov.fx.saturation.max(0.0)
                 ));
             }
+            let place = overlay_placement(&ov.fx, ov.len, w, h);
+            // Fitted to the frame the way the preview's layer is, with the
+            // spare room transparent: it used to be opaque black, so a logo
+            // or a 4:3 picture-in-picture covered the program in bars the
+            // preview didn't show. yuva420p carries that transparency, and a
+            // PNG's own, through to the overlay.
             filters.push_str(&format!(
-                "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
-                 pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},format={pix},\
-                 {grade}{key}setpts=PTS-STARTPTS+{t0:.3}/TB[ov{j}];\
-                 [{base}][ov{j}]overlay=eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
+                "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,format=yuva420p,\
+                 pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps={fps},setpts=PTS-STARTPTS,\
+                 {grade}{key}{}setpts=PTS+{t0:.3}/TB[ov{j}];\
+                 [{base}][ov{j}]overlay=x={}:y={}:eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
+                place.filters, place.x, place.y,
             ));
             base = format!("ovd{j}");
         }

@@ -976,16 +976,25 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clips, media, playhead, tracks, trackCtl, baseVideoTrack]);
 
-  // topmost layer drives transcript/caption context + the settled hq frame
+  // topmost layer drives transcript/caption context
   const underPlayhead = videoLayers.length ? videoLayers[videoLayers.length - 1] : null;
+  // The topmost layer that's footage gets the streamed frame while playing
+  // and the full-quality frame when the playhead settles; both are JPEG. A
+  // picture above it is always drawn from its own PNG, so a logo keeps its
+  // transparency instead of sitting in a black box.
+  const footageIdx = useMemo(() => {
+    for (let i = videoLayers.length - 1; i >= 0; i--) {
+      if (videoLayers[i].media.kind !== "image") return i;
+    }
+    return -1;
+  }, [videoLayers]);
+  const footage = footageIdx >= 0 ? videoLayers[footageIdx] : null;
 
   const [hq, setHq] = useState<{ key: string; src: string } | null>(null);
-  const hqKey = underPlayhead
-    ? `${underPlayhead.media.id}@${underPlayhead.srcT.toFixed(3)}`
-    : null;
+  const hqKey = footage ? `${footage.media.id}@${footage.srcT.toFixed(3)}` : null;
   useEffect(() => {
-    if (!hqKey || !underPlayhead || drag || playing) return;
-    const { media: m, srcT } = underPlayhead;
+    if (!hqKey || !footage || drag || playing) return;
+    const { media: m, srcT } = footage;
     const timer = setTimeout(async () => {
       try {
         const src = await exactFrame(m.path, srcT);
@@ -1024,11 +1033,11 @@ export default function App() {
   );
 
   // what the monitor renders, bottom→top. While playing, the real-time
-  // streamed frame stands in for the topmost layer; other layers hold
-  // their proxy frame beneath it.
+  // streamed frame stands in for the topmost footage layer; other layers
+  // hold their proxy frame (a picture, its PNG) around it.
   const monitorLayers = useMemo(() => {
     return videoLayers.map((l, i) => {
-      const top = i === videoLayers.length - 1;
+      const top = i === footageIdx;
       const live = playing && playFrame && top ? playFrame : null;
       const settled = top && hq && hq.key === hqKey ? hq.src : null;
       const draft = selectedIds.includes(l.clip.id) ? fxDraft : {};
@@ -1043,7 +1052,7 @@ export default function App() {
         lut: l.clip.lut ? lutCache[l.clip.lut] ?? null : null,
       };
     });
-  }, [videoLayers, playing, playFrame, hq, hqKey, layerStyle, selectedIds, fxDraft, lutCache]);
+  }, [videoLayers, footageIdx, playing, playFrame, hq, hqKey, layerStyle, selectedIds, fxDraft, lutCache]);
 
   // vignette is a monitor overlay (not a CSS filter) — driven by the
   // topmost clip, honouring the selected clip's live drag draft
@@ -1595,7 +1604,7 @@ export default function App() {
       if (!media.length && rejected.length) {
         const names = rejected.map((p) => p.split(/[\\/]/).pop()).slice(0, 3).join(", ");
         setError(
-          `Cutlass can't import ${names}${rejected.length > 3 ? ` and ${rejected.length - 3} more` : ""}. Drop a video or audio file.`
+          `Cutlass can't import ${names}${rejected.length > 3 ? ` and ${rejected.length - 3} more` : ""}. Drop a video, a sound file or a picture.`
         );
       }
     });
@@ -1608,10 +1617,19 @@ export default function App() {
   const onDropMedia = useCallback(
     async (mediaId: string, track: string, start: number) => {
       // Create shows only video tracks, so a sound file would land on a track
-      // it never draws: an invisible clip. Say where it does go instead.
-      if (modeRef.current === "create" && mediaRef.current[mediaId]?.kind === "audio") {
+      // it never draws: an invisible clip. And it makes its clip from the
+      // first one on the timeline, which a picture would become. Say where
+      // each does go instead.
+      const kind = mediaRef.current[mediaId]?.kind;
+      if (modeRef.current === "create" && kind === "audio") {
         setError(
           "Create makes clips from a video. To add music or a voiceover, switch to Studio and drop it on an audio track."
+        );
+        return;
+      }
+      if (modeRef.current === "create" && kind === "image") {
+        setError(
+          "Create makes clips from a video. To add a picture, like a logo or a title card, switch to Studio and drop it on a video track."
         );
         return;
       }
@@ -2358,10 +2376,14 @@ export default function App() {
           setDrag({ ...drag, start: drag.primaryStart + clampedDelta });
         } else {
           // A sound clip stays on the audio tracks: on a video track it would
-          // show nothing, and export would fail reading its picture.
-          const sound = clip ? media[clip.media]?.kind === "audio" : false;
+          // show nothing, and export would fail reading its picture. A
+          // picture stays on the video tracks, where it can be seen.
+          const kind = clip ? media[clip.media]?.kind : undefined;
           const target = tracks[lane];
-          setDrag({ ...drag, track: sound && trackKind(target) !== "audio" ? drag.track : target, start });
+          const wrong =
+            (kind === "audio" && trackKind(target) !== "audio") ||
+            (kind === "image" && trackKind(target) === "audio");
+          setDrag({ ...drag, track: wrong ? drag.track : target, start });
         }
         setPlayhead(start);
         return;

@@ -47,6 +47,62 @@ pub enum MediaKind {
     Video,
     /// Sound only: no thumbnails, no frame rate, never on a video track.
     Audio,
+    /// A still picture: no length of its own and no sound, so its clip can
+    /// be any length, and export loops it rather than seeking in it.
+    Image,
+}
+
+/// File types that are always a single picture.
+const STILL_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
+
+/// Whether `path` is a still picture rather than footage, the one test both
+/// import and export use. A GIF can be either: an animated one is a video.
+/// Measured on the shipped ffmpeg, a one-frame GIF reads as 0.04s of video.
+pub fn is_still(path: &str) -> bool {
+    let ext = Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if STILL_EXTS.contains(&ext.as_str()) {
+        return true;
+    }
+    ext == "gif" && probe_duration_s(Path::new(path)).map_or(true, |d| d <= 0.05)
+}
+
+/// The picture the preview shows for a still: a PNG, so transparency survives
+/// (a logo over footage), no bigger than 1920 on its long side and never
+/// enlarged. Made by the shipped ffmpeg, which reads every type in
+/// `IMAGE_EXTS`; the webview can't show TIFF at all. A prior one is reused.
+pub fn still_preview(src: &Path) -> anyhow::Result<PathBuf> {
+    ensure_ffmpeg()?;
+    let out = cache_dir(src)?.join("still.png");
+    if out.exists() {
+        return Ok(out);
+    }
+    let tmp = out.with_extension("partial.png");
+    let mut child = FfmpegCommand::new()
+        .input(src.to_string_lossy())
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease",
+            "-pix_fmt",
+            "rgba",
+            "-y",
+        ])
+        .output(tmp.to_string_lossy())
+        .spawn()?;
+    if let Ok(events) = child.iter() {
+        for _ in events {}
+    }
+    anyhow::ensure!(
+        child.wait().map(|s| s.success()).unwrap_or(false) && tmp.exists(),
+        "couldn't read the picture in {}",
+        src.display()
+    );
+    std::fs::rename(&tmp, &out)?;
+    Ok(out)
 }
 
 /// File extensions Cutlass imports, by kind. The Import dialog and a drop on
@@ -69,6 +125,9 @@ pub const AUDIO_EXTS: &[&str] = &[
     "mp3", "wav", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wma", "aif", "aiff",
     "ac3", "mka", "caf", "wv", "amr", "mp2",
 ];
+/// Pictures. A GIF is imported as a picture or a video by whether it moves;
+/// see [`is_still`].
+pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"];
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MediaInfo {

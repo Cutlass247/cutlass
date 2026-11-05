@@ -794,14 +794,23 @@ export function Inspector(p: {
                     <span>Media</span>
                     {clipMedia.name}
                   </div>
-                  <div>
-                    <span>Duration</span>
-                    {formatTC(clipMedia.duration_s)}
-                  </div>
-                  <div>
-                    <span>Audio</span>
-                    {clipMedia.waveform.length > 0 ? "yes" : "none"}
-                  </div>
+                  {clipMedia.kind === "image" ? (
+                    <div>
+                      <span>Picture</span>
+                      {clipMedia.width ?? 0} × {clipMedia.height ?? 0}
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <span>Duration</span>
+                        {formatTC(clipMedia.duration_s)}
+                      </div>
+                      <div>
+                        <span>Audio</span>
+                        {clipMedia.waveform.length > 0 ? "yes" : "none"}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
               {p.clip.text ? (
@@ -814,25 +823,30 @@ export function Inspector(p: {
                 />
               ) : (
                 <>
-                  <RetimeControl clip={p.clip} onPreview={p.onFxPreview} onCommit={p.onFxCommit} />
-                  <MusicRemovalControl
-                    removed={p.musicRemoved}
-                    strength={p.musicStrength}
-                    onStrength={p.onMusicStrength}
-                    pct={p.musicPct}
-                    eta={p.musicEta}
-                    clipLen={p.clip.len}
-                    // An empty waveform only means "no audio" for shorter media:
-                    // import skips waveform generation past 30 min to stay
-                    // responsive, so for long recordings we can't tell from it
-                    // and assume audio (otherwise this hides on exactly the
-                    // long captures that most need music removed).
-                    hasAudio={
-                      (clipMedia?.waveform.length ?? 0) > 0 ||
-                      (clipMedia?.duration_s ?? 0) > 1800
-                    }
-                    onToggle={p.onRemoveMusic}
-                  />
+                  {/* a still has no speed and no sound */}
+                  {clipMedia?.kind !== "image" && (
+                    <>
+                      <RetimeControl clip={p.clip} onPreview={p.onFxPreview} onCommit={p.onFxCommit} />
+                      <MusicRemovalControl
+                        removed={p.musicRemoved}
+                        strength={p.musicStrength}
+                        onStrength={p.onMusicStrength}
+                        pct={p.musicPct}
+                        eta={p.musicEta}
+                        clipLen={p.clip.len}
+                        // An empty waveform only means "no audio" for shorter media:
+                        // import skips waveform generation past 30 min to stay
+                        // responsive, so for long recordings we can't tell from it
+                        // and assume audio (otherwise this hides on exactly the
+                        // long captures that most need music removed).
+                        hasAudio={
+                          (clipMedia?.waveform.length ?? 0) > 0 ||
+                          (clipMedia?.duration_s ?? 0) > 1800
+                        }
+                        onToggle={p.onRemoveMusic}
+                      />
+                    </>
+                  )}
                   {p.hasLeftNeighbor && (
                     <TransitionControl clip={p.clip} onSet={p.onSetTransition} />
                   )}

@@ -584,6 +584,14 @@ button {
   display: block;
 }
 
+/* A picture keeps its shape inside the same box, so a tall one doesn't
+   stretch its row. */
+.bin-thumb img.bin-still {
+  height: 40px;
+  object-fit: contain;
+  background: var(--panel-3);
+}
+
 /* A sound file's waveform, in the audio tracks' green. Sized like a 16:9
    thumbnail so audio and video line up in the bin. */
 .bin-audio {
@@ -662,17 +670,35 @@ button {
   box-shadow: var(--shadow);
 }
 
-/* stacked video tracks: every layer centered in the frame so higher
-   tracks composite over lower ones (fxStyle transform/opacity per layer) */
+/* stacked video tracks: every layer fitted to the frame, as export fits it,
+   so higher tracks composite over lower ones (fxStyle transform/opacity per
+   layer). The box is the picture's (aspect-ratio set inline, sized like
+   .picture-stage), so a layer's translate % is a fraction of the frame, the
+   same as export's pos_x. Layers used to show at their pixel size, so a 480px
+   scrub frame sat small in a large monitor and a small logo previewed at its
+   own size while it exported fitted to the frame. Clipped at the frame edge,
+   as export is. */
 .monitor-layers {
   position: absolute;
   inset: 0;
+  margin: auto;
+  max-width: 94%;
+  max-height: 92%;
+  overflow: hidden;
+  border-radius: 4px;
+  box-shadow: var(--shadow);
 }
 .monitor-layers img,
 .monitor-layers canvas {
   position: absolute;
   inset: 0;
-  margin: auto;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .monitor-empty {

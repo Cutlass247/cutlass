@@ -300,7 +300,12 @@ export function MediaPanel(p: {
                   {m.kind === "audio" ? (
                     <AudioThumb peaks={m.waveform} />
                   ) : (
-                    <img src={m.thumbs[0]} alt="" draggable={false} />
+                    <img
+                      className={m.kind === "image" ? "bin-still" : undefined}
+                      src={m.thumbs[0]}
+                      alt=""
+                      draggable={false}
+                    />
                   )}
                 </div>
                 <div className="bin-meta-block">
@@ -308,9 +313,11 @@ export function MediaPanel(p: {
                   <div className="bin-meta">
                     {m.kind === "audio"
                       ? `${m.duration_s.toFixed(1)}s · audio file`
+                      : m.kind === "image"
+                      ? `picture · ${m.width ?? 0}×${m.height ?? 0}`
                       : `${m.duration_s.toFixed(1)}s · ${m.thumbs.length} frames${m.waveform.length > 0 ? " · audio" : ""}`}
                   </div>
-                  {p.transcripts[m.id] ? (
+                  {m.kind === "image" ? null : p.transcripts[m.id] ? (
                     <div className="bin-meta ok">📝 transcribed</div>
                   ) : (
                     <button

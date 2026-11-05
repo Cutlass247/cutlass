@@ -33,6 +33,7 @@ fn probe(path: &str) -> anyhow::Result<String> {
     }
     let mut eng = MediaEngine::open(path)?;
     let dur = eng.duration_s();
+    print!("[{}] ", eng.container());
     anyhow::ensure!(dur > 0.0, "non-positive duration");
     // keyframe sampling (import proxy build)
     let mut dims = (0u32, 0u32);

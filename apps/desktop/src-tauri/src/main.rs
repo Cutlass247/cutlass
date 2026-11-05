@@ -94,6 +94,10 @@ struct PlayClip {
     src_in: f64,
     speed: f64,
     track_pri: u8, // higher wins the monitor (Vn over ... over V1)
+    /// A picture: never streamed. The frontend draws it from its PNG, which
+    /// keeps its transparency; the stream is JPEG, which would put a logo in
+    /// a black box over the footage.
+    still: bool,
 }
 
 /// Track names are "V1".."Vn" (video, composited bottom→top) or
@@ -165,8 +169,11 @@ fn err_str(e: impl std::fmt::Display) -> String {
 
 fn data_url(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(err_str)?;
+    // scrub thumbnails are JPEG; a picture's preview is PNG, for its
+    // transparency
+    let mime = if path.extension().is_some_and(|e| e == "png") { "png" } else { "jpeg" };
     Ok(format!(
-        "data:image/jpeg;base64,{}",
+        "data:image/{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
 }
@@ -331,6 +338,39 @@ fn import_with_engine_pass(path: &Path, pass: Pass) -> anyhow::Result<MediaInfo>
     })
 }
 
+/// The longest a picture's clip can be. A still has no length of its own, so
+/// this stands in for one: the timeline won't let a clip run past its source,
+/// and a picture should stretch as far as anyone wants.
+const STILL_SOURCE_S: f64 = 24.0 * 3600.0;
+
+/// How long a picture's clip is when it's dropped: about as long as a title
+/// card or a logo stays on screen.
+const STILL_CLIP_S: f64 = 5.0;
+
+/// A still picture: its size and one preview PNG (transparency kept, at most
+/// 1920 on its long side). No sound, no frame rate, no background jobs.
+fn import_image(path: &Path) -> anyhow::Result<MediaInfo> {
+    media::ensure_ffmpeg()?;
+    let (width, height) = media::probe_dimensions(path);
+    anyhow::ensure!(width > 0 && height > 0, "couldn't read this picture");
+    let preview = media::still_preview(path)?;
+    Ok(MediaInfo {
+        id: format!("m{:016x}", media::path_hash(path)),
+        name: path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "picture".into()),
+        path: path.to_string_lossy().to_string(),
+        kind: media::MediaKind::Image,
+        duration_s: STILL_SOURCE_S,
+        width,
+        height,
+        scrub_fps: 0.0,
+        thumb_paths: vec![preview],
+        waveform: Vec::new(),
+    })
+}
+
 /// Longest sound file whose waveform is drawn at import. Longer than the
 /// 30 minutes allowed for video, because on an audio track the waveform is the
 /// only picture there is, and podcasts and voice memos run long. Decoding it
@@ -441,6 +481,11 @@ fn import_any(path: &Path) -> anyhow::Result<MediaInfo> {
             return import_audio(path, p.duration_s);
         }
     }
+    // A picture has no length, which the video path refuses ("no usable
+    // duration"). The same test export uses, so the two can't disagree.
+    if media::is_still(&path.to_string_lossy()) {
+        return import_image(path);
+    }
     // A conform done on a previous run is cached on disk; use it if it's
     // already there, since it costs nothing and is strictly more correct.
     let working = cached_conform(path);
@@ -550,6 +595,8 @@ fn add_clip_from_media(
         (info.name.clone(), info.duration_s, info.kind)
     };
     let track = track_for(kind, track);
+    // a picture's "duration" is only a ceiling (STILL_SOURCE_S)
+    let dur = if kind == media::MediaKind::Image { STILL_CLIP_S } else { dur };
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -575,13 +622,15 @@ fn add_clip_from_media(
 /// The track a clip of this kind actually goes on, given the one it was
 /// dropped on. A sound file on a video track would show nothing, and export
 /// reads the picture of every video-track clip, so it would fail; it goes to
-/// the first audio track instead. Video can go anywhere: on an audio track it
-/// contributes its sound, as a bed.
+/// the first audio track instead. A picture on an audio track would neither
+/// show nor sound; it goes to V2, above the footage, where a logo or a card
+/// usually goes. Video can go anywhere: on an audio track it contributes its
+/// sound, as a bed.
 fn track_for(kind: media::MediaKind, dropped_on: String) -> String {
-    if kind == media::MediaKind::Audio && !track_is_audio(&dropped_on) {
-        "A1".to_string()
-    } else {
-        dropped_on
+    match kind {
+        media::MediaKind::Audio if !track_is_audio(&dropped_on) => "A1".to_string(),
+        media::MediaKind::Image if track_is_audio(&dropped_on) => "V2".to_string(),
+        _ => dropped_on,
     }
 }
 
@@ -696,20 +745,19 @@ fn move_clip(
     start: f64,
     state: State<AppState>,
 ) -> Result<serde_json::Value, String> {
-    // The rule `track_for` applies when a sound file is placed holds when its
-    // clip is dragged, too: it stays where it was rather than going onto a
-    // video track.
+    // The rules `track_for` applies when a file is placed hold when its clip
+    // is dragged, too: a sound stays off the video tracks and a picture off
+    // the audio ones, by staying where it was.
     let track = {
         let project = state.project.lock_ok();
         let pool = state.media.lock_ok();
         match project.clips_state().into_iter().find(|c| c.id == id) {
-            Some(c)
-                if !track_is_audio(&track)
-                    && pool.get(&c.media).is_some_and(|m| m.kind == media::MediaKind::Audio) =>
-            {
-                c.track
-            }
-            _ => track,
+            Some(c) => match pool.get(&c.media).map(|m| m.kind) {
+                Some(media::MediaKind::Audio) if !track_is_audio(&track) => c.track,
+                Some(media::MediaKind::Image) if track_is_audio(&track) => c.track,
+                _ => track,
+            },
+            None => track,
         }
     };
     with_undo(&state, |p| p.move_clip(&id, &track, start).map_err(err_str))
@@ -2235,6 +2283,7 @@ fn play(
                             src_in: c["src_in"].as_f64()?,
                             speed: c["fx"]["speed"].as_f64().unwrap_or(1.0),
                             track_pri: track_video_pri(track),
+                            still: m.kind == media::MediaKind::Image,
                         })
                     })
                     .collect()
@@ -2267,6 +2316,9 @@ fn play(
                             .filter(|c| c["text"].as_str().unwrap_or("").is_empty()) // titles are silent
                             .filter_map(|c| {
                                 let m = media.get(c["media"].as_str()?)?;
+                                if m.kind == media::MediaKind::Image {
+                                    return None; // a picture has no sound
+                                }
                                 // "Remove music": play the separated vocals when
                                 // the flag is on and a cached separation covers
                                 // this clip's span; src_in shifts to the offset
@@ -2418,10 +2470,11 @@ fn start_video_thread(
                     Some(h) => h.clock(),
                     None => from_t + start.elapsed().as_secs_f64(),
                 };
-                // topmost visible clip under the playhead (V2 over V1)
+                // topmost visible video under the playhead (V2 over V1); a
+                // picture above it is drawn by the frontend, over this stream
                 let active = clips
                     .iter()
-                    .filter(|c| t >= c.start && t < c.start + c.len)
+                    .filter(|c| !c.still && t >= c.start && t < c.start + c.len)
                     .max_by_key(|c| c.track_pri);
                 if let Some(c) = active {
                     let src_t = c.src_in + (t - c.start) * c.speed;
@@ -3523,6 +3576,7 @@ mod tests {
         let ipc = include_str!("../../src/ipc.ts");
         assert_eq!(ts_string_array(ipc, "VIDEO_EXTS"), media::VIDEO_EXTS, "video types differ from media.rs");
         assert_eq!(ts_string_array(ipc, "AUDIO_EXTS"), media::AUDIO_EXTS, "audio types differ from media.rs");
+        assert_eq!(ts_string_array(ipc, "IMAGE_EXTS"), media::IMAGE_EXTS, "picture types differ from media.rs");
 
         let picker = &ipc[ipc.find("export async function pickVideos").expect("pickVideos")..];
         let picker = &picker[..picker.find("\n}").unwrap()];
@@ -3530,41 +3584,51 @@ mod tests {
         let filters = &ipc[ipc.find("const IMPORT_FILTERS").expect("IMPORT_FILTERS")..];
         let filters = &filters[..filters.find("];").unwrap()];
         assert!(
-            filters.contains("...VIDEO_EXTS, ...AUDIO_EXTS"),
-            "the dialog's default filter must offer audio as well as video: {filters}"
+            filters.contains("...VIDEO_EXTS, ...AUDIO_EXTS, ...IMAGE_EXTS"),
+            "the dialog's default filter must offer every kind: {filters}"
         );
         let drop = &ipc[ipc.find("export function isImportable").expect("isImportable")..];
         let drop = &drop[..drop.find("\n}").unwrap()];
         assert!(
-            drop.contains("VIDEO_EXTS.includes") && drop.contains("AUDIO_EXTS.includes"),
+            ["VIDEO_EXTS.includes", "AUDIO_EXTS.includes", "IMAGE_EXTS.includes"].iter().all(|l| drop.contains(l)),
             "a drop must accept exactly what the dialog offers: {drop}"
         );
     }
 
-    /// A sound file on a video track shows nothing, and export reads the
-    /// picture of every video-track clip, so it would fail. Placing one there
-    /// puts it on the first audio track; video goes wherever it's dropped.
+    /// Each kind of file goes on a track where it works. A sound file on a
+    /// video track shows nothing, and export reads the picture of every
+    /// video-track clip, so it would fail: it goes to the first audio track. A
+    /// picture on an audio track neither shows nor sounds: it goes to V2.
+    /// Video goes wherever it's dropped.
     #[test]
     fn sound_files_go_on_audio_tracks() {
-        use media::MediaKind::{Audio, Video};
+        use media::MediaKind::{Audio, Image, Video};
         assert_eq!(track_for(Audio, "V1".into()), "A1");
         assert_eq!(track_for(Audio, "V3".into()), "A1");
         assert_eq!(track_for(Audio, "A2".into()), "A2", "an audio track it was dropped on is kept");
         assert_eq!(track_for(Video, "V2".into()), "V2");
         assert_eq!(track_for(Video, "A1".into()), "A1", "video on an audio track plays as a bed");
+        assert_eq!(track_for(Image, "A1".into()), "V2");
+        assert_eq!(track_for(Image, "V1".into()), "V1", "a video track it was dropped on is kept");
 
-        // Dragging a placed clip follows the same rule, and Create, which
-        // shows no audio tracks, refuses a sound file rather than hiding it.
+        // Dragging a placed clip follows the same rules, and Create, which
+        // shows no audio tracks and makes its clip from the first one on the
+        // timeline, refuses sound files and pictures rather than misusing them.
         let code = include_str!("main.rs").split("#[cfg(test)]").next().unwrap();
         let mv = &code[code.find("fn move_clip(").expect("move_clip")..];
         let mv = &mv[..mv.find("\n}").unwrap()];
-        assert!(mv.contains("MediaKind::Audio") && mv.contains("c.track"), "move_clip must keep sound off video tracks");
+        assert!(
+            mv.contains("MediaKind::Audio") && mv.contains("MediaKind::Image") && mv.contains("c.track"),
+            "move_clip must keep sound off video tracks and pictures off audio ones"
+        );
         let app = include_str!("../../src/App.tsx");
         let drop = &app[app.find("const onDropMedia").expect("onDropMedia")..];
         let drop = &drop[..drop.find("try {").unwrap()];
         assert!(
-            drop.contains(r#"modeRef.current === "create""#) && drop.contains(r#"kind === "audio""#),
-            "Create must refuse a sound file"
+            drop.contains(r#"modeRef.current === "create""#)
+                && drop.contains(r#"kind === "audio""#)
+                && drop.contains(r#"kind === "image""#),
+            "Create must refuse sound files and pictures"
         );
     }
 
@@ -3650,9 +3714,10 @@ mod tests {
         };
 
         // Every offered type has a sample, so adding one to the list without
-        // proving it works fails here.
-        let tested: Vec<&str> = samples.iter().map(|s| s.0).collect();
-        for ext in media::VIDEO_EXTS.iter().chain(media::AUDIO_EXTS) {
+        // proving it works fails here. Pictures are made further down.
+        let pictures = ["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"];
+        let tested: Vec<&str> = samples.iter().map(|s| s.0).chain(pictures).collect();
+        for ext in media::VIDEO_EXTS.iter().chain(media::AUDIO_EXTS).chain(media::IMAGE_EXTS) {
             assert!(tested.contains(ext), ".{ext} is offered but has no sample here");
         }
 
@@ -3693,6 +3758,49 @@ mod tests {
             Ok((s.iter().map(|v| v * v).sum::<f32>() / s.len().max(1) as f32).sqrt())
         };
 
+        // Footage, in the copy the app edits (an MKV copy of a container with
+        // no seek index, or the original): at the start, middle and end of
+        // three seconds, both the preview and export's seek show the exact
+        // frame, and the preview plays through in order.
+        let check_footage = |label: &str, path: &Path, failures: &mut Vec<String>| {
+            let edit = make_working_copy(path).unwrap_or_else(|| path.to_path_buf());
+            let mut eng = match cutlass_engine::MediaEngine::open(&edit.to_string_lossy()) {
+                Ok(e) => e,
+                Err(e) => return failures.push(format!("{label}: preview can't open it: {e:#}")),
+            };
+            for t in [0.0, 1.0, 2.0, 2.8] {
+                match eng.frame_at(t, 0) {
+                    Err(e) => failures.push(format!("{label}: no preview frame at {t}s: {e:#}")),
+                    Ok(f) => {
+                        let exact = ffmpeg_frame(path, t, f.width, f.height, false);
+                        let d = mean_diff(&f.data, &exact);
+                        if d > 3.0 {
+                            failures.push(format!("{label}: preview at {t}s is the wrong frame (differs by {d:.1})"));
+                        }
+                        let d = mean_diff(&ffmpeg_frame(&edit, t, f.width, f.height, true), &exact);
+                        if d > 3.0 {
+                            failures.push(format!("{label}: export at {t}s is the wrong frame (differs by {d:.1})"));
+                        }
+                    }
+                }
+            }
+            let (mut t, mut last) = (0.0, f64::NEG_INFINITY);
+            while t < 2.9 {
+                match eng.stream_frame_at(t, 320) {
+                    Ok(f) if f.pts_s + 1e-6 >= last => last = f.pts_s,
+                    Ok(f) => {
+                        failures.push(format!("{label}: playback went backwards at {t:.2}s ({:.2}s)", f.pts_s));
+                        break;
+                    }
+                    Err(e) => {
+                        failures.push(format!("{label}: playback stopped at {t:.2}s: {e:#}"));
+                        break;
+                    }
+                }
+                t += 0.04;
+            }
+        };
+
         let mut failures = Vec::new();
         for (ext, input, codec) in samples {
             let path = dir.join(format!("sample.{ext}"));
@@ -3708,48 +3816,8 @@ mod tests {
                 (Err(e), _) | (_, Err(e)) => failures.push(format!(".{ext}: sound won't decode: {e}")),
             }
 
-            // Picture, in the copy the app edits (an MKV copy of a container
-            // with no seek index, or the original): at the start, middle and
-            // end, both the preview and export's seek show the exact frame,
-            // and the preview plays through in order.
             if want == media::MediaKind::Video {
-                let edit = make_working_copy(&path).unwrap_or_else(|| path.clone());
-                match cutlass_engine::MediaEngine::open(&edit.to_string_lossy()) {
-                    Err(e) => failures.push(format!(".{ext}: preview can't open it: {e:#}")),
-                    Ok(mut eng) => {
-                        for t in [0.0, 1.0, 2.0, 2.8] {
-                            match eng.frame_at(t, 0) {
-                                Err(e) => failures.push(format!(".{ext}: no preview frame at {t}s: {e:#}")),
-                                Ok(f) => {
-                                    let exact = ffmpeg_frame(&path, t, f.width, f.height, false);
-                                    let d = mean_diff(&f.data, &exact);
-                                    if d > 3.0 {
-                                        failures.push(format!(".{ext}: preview at {t}s is the wrong frame (differs by {d:.1})"));
-                                    }
-                                    let d = mean_diff(&ffmpeg_frame(&edit, t, f.width, f.height, true), &exact);
-                                    if d > 3.0 {
-                                        failures.push(format!(".{ext}: export at {t}s is the wrong frame (differs by {d:.1})"));
-                                    }
-                                }
-                            }
-                        }
-                        let (mut t, mut last) = (0.0, f64::NEG_INFINITY);
-                        while t < 2.9 {
-                            match eng.stream_frame_at(t, 320) {
-                                Ok(f) if f.pts_s + 1e-6 >= last => last = f.pts_s,
-                                Ok(f) => {
-                                    failures.push(format!(".{ext}: playback went backwards at {t:.2}s ({:.2}s)", f.pts_s));
-                                    break;
-                                }
-                                Err(e) => {
-                                    failures.push(format!(".{ext}: playback stopped at {t:.2}s: {e:#}"));
-                                    break;
-                                }
-                            }
-                            t += 0.04;
-                        }
-                    }
-                }
+                check_footage(&format!(".{ext}"), &path, &mut failures);
             }
 
             match import_any(&path) {
@@ -3834,9 +3902,163 @@ mod tests {
             }
         }
 
+        // Pictures: a red card with a transparent hole in the middle, like a
+        // logo, as a PNG and converted to every other picture type.
+        let card = dir.join("sample.png");
+        make(
+            &card,
+            "-f lavfi -i color=c=red:s=320x240,format=rgba,\
+             geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(hypot(X-160,Y-120),50),0,255)' -frames:v 1",
+        );
+        for ext in pictures.iter().filter(|e| **e != "png") {
+            let made = std::process::Command::new(&ff)
+                .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-i"])
+                .arg(&card)
+                .args(["-frames:v", "1"])
+                .arg(dir.join(format!("sample.{ext}")))
+                .status()
+                .is_ok_and(|s| s.success());
+            assert!(made, "ffmpeg could not make a .{ext}");
+        }
+        for ext in pictures {
+            let path = dir.join(format!("sample.{ext}"));
+            match import_any(&path) {
+                Err(e) => failures.push(format!(".{ext}: import failed: {e:#}")),
+                Ok(m) if m.kind != media::MediaKind::Image => failures.push(format!(".{ext}: imported as {:?}", m.kind)),
+                Ok(m) if (m.width, m.height) != (320, 240) => failures.push(format!(".{ext}: read as {}x{}", m.width, m.height)),
+                Ok(m) if !m.thumb_paths.first().is_some_and(|p| p.is_file()) => failures.push(format!(".{ext}: no preview picture")),
+                Ok(_) => {}
+            }
+            // The preview shows the picture, whatever time it's asked for.
+            match cutlass_engine::MediaEngine::open(&path.to_string_lossy()) {
+                Err(e) => failures.push(format!(".{ext}: preview can't open it: {e:#}")),
+                Ok(mut eng) => match (eng.frame_at(0.0, 0), eng.frame_at(7.5, 0)) {
+                    (Ok(a), Ok(b)) => {
+                        let d = mean_diff(&a.data, &ffmpeg_frame(&path, 0.0, a.width, a.height, false));
+                        if !eng.is_still() || a.data != b.data || d > 3.0 {
+                            failures.push(format!(".{ext}: preview isn't the picture (still {}, differs by {d:.1})", eng.is_still()));
+                        }
+                    }
+                    (Err(e), _) | (_, Err(e)) => failures.push(format!(".{ext}: no preview frame: {e:#}")),
+                },
+            }
+        }
+
+        // A GIF that moves is footage, and has to behave like it.
+        let anim = dir.join("animated.gif");
+        make(&anim, "-f lavfi -i testsrc2=size=320x240:rate=10 -t 3");
+        match import_any(&anim) {
+            Ok(m) if m.kind == media::MediaKind::Video && !m.thumb_paths.is_empty() => {}
+            Ok(m) => failures.push(format!("an animated .gif imported as {:?}", m.kind)),
+            Err(e) => failures.push(format!("an animated .gif failed to import: {e:#}")),
+        }
+        check_footage("an animated .gif", &anim, &mut failures);
+
+        // Mean colour of the 8x8 block at (x, y) of an RGBA frame `w` wide.
+        let colour = |f: &[u8], w: usize, x: usize, y: usize| -> [f64; 3] {
+            let mut c = [0.0; 3];
+            for yy in y..y + 8 {
+                for xx in x..x + 8 {
+                    let i = (yy * w + xx) * 4;
+                    for (k, v) in c.iter_mut().enumerate() {
+                        *v += f.get(i + k).copied().unwrap_or(0) as f64 / 64.0;
+                    }
+                }
+            }
+            c
+        };
+        let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 14.0);
+        let red = |c: [f64; 3]| c[0] > 170.0 && c[1] < 80.0 && c[2] < 80.0;
+        let dark = |c: [f64; 3]| c.iter().all(|v| *v < 30.0);
+        let settings = ExportSettings { width: 640, height: 360, fps: 25, ..Default::default() };
+        let render = |segs: &[Segment], ovs: &[Overlay], name: &str| -> Result<Vec<u8>, String> {
+            let out = dir.join(name);
+            export(segs, ovs, &[], &out, &settings, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false)).map_err(err_str)?;
+            Ok(ffmpeg_frame(&out, 1.5, 640, 360, false))
+        };
+        let card_s = card.to_string_lossy().to_string();
+        let footage = dir.join("sample.mp4").to_string_lossy().to_string();
+        let clip = |path: &str, len: f64| Segment::Clip { path: path.to_string(), src_in: 0.0, len, fx: ClipFx::default(), lut: String::new() };
+        // on screen from 0.5s for 2s
+        let logo_like = |path: &str| Overlay {
+            path: path.to_string(),
+            src_in: 0.0,
+            len: 2.0,
+            start: 0.5,
+            fx: ClipFx::default(),
+            audio_only: false,
+        };
+
+        // On the base track the picture is fitted and its hole is black, as on
+        // the preview's black stage, not the red a PNG keeps behind it.
+        match render(&[clip(&card_s, 3.0)], &[], "picture.mp4") {
+            Err(e) => failures.push(format!("a picture on its own didn't export: {e}")),
+            Ok(f) => {
+                if !red(colour(&f, 640, 200, 100)) || !dark(colour(&f, 640, 316, 176)) || !dark(colour(&f, 640, 30, 176)) {
+                    failures.push(format!(
+                        "a picture on its own exported wrong: card {:?}, hole {:?}, side {:?}",
+                        colour(&f, 640, 200, 100), colour(&f, 640, 316, 176), colour(&f, 640, 30, 176)
+                    ));
+                }
+            }
+        }
+
+        // Over footage, at half size and moved a quarter of the frame right
+        // and down: the card is drawn where the preview puts it, and its hole,
+        // its padding and the rest of the frame show the footage beneath.
+        let logo = Overlay {
+            fx: ClipFx { scale: 0.5, pos_x: 0.25, pos_y: 0.25, ..Default::default() },
+            ..logo_like(&card_s)
+        };
+        match (render(&[clip(&footage, 3.0)], &[], "footage.mp4"), render(&[clip(&footage, 3.0)], &[logo], "logo.mp4")) {
+            (Ok(base), Ok(f)) => {
+                // the fitted card is 480x360 at x 80; halved and moved, its box
+                // is x 320..640, y 180..360, the card x 360..600, the hole at
+                // (480, 270)
+                for (what, x, y) in [("away from it", 100, 100), ("in its hole", 476, 266), ("beside it", 330, 266)] {
+                    if !near(colour(&f, 640, x, y), colour(&base, 640, x, y)) {
+                        failures.push(format!("a logo over footage hides the footage {what}: {:?} vs {:?}", colour(&f, 640, x, y), colour(&base, 640, x, y)));
+                    }
+                }
+                if !red(colour(&f, 640, 372, 192)) {
+                    failures.push(format!("a logo over footage isn't drawn where the preview puts it: {:?}", colour(&f, 640, 372, 192)));
+                }
+            }
+            (Err(e), _) | (_, Err(e)) => failures.push(format!("a logo over footage didn't export: {e}")),
+        }
+
+        // Turned, flipped and faded, and footage as picture-in-picture: the
+        // filters run and the timing holds.
+        let turned = Overlay {
+            fx: ClipFx { scale: 0.6, rot: 15.0, flip_h: 1.0, fade_in: 0.4, fade_out: 0.4, ..Default::default() },
+            ..logo_like(&card_s)
+        };
+        let pip = Overlay {
+            path: footage.clone(),
+            fx: ClipFx { scale: 0.4, pos_x: -0.3, ..Default::default() },
+            ..logo_like(&footage)
+        };
+        let out = dir.join("turned.mp4");
+        match export(&[clip(&footage, 3.0)], &[turned, pip], &[], &out, &settings, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false)) {
+            Ok(_) if (media::probe_duration_s(&out).unwrap_or(0.0) - 3.0).abs() < 0.25 => {}
+            Ok(_) => failures.push("a turned, faded overlay changed the export's length".into()),
+            Err(e) => failures.push(format!("a turned, faded overlay or a picture-in-picture didn't export: {e:#}")),
+        }
+
+        // CUTLASS_KEEP_SAMPLES=1 leaves the samples and exports to look at.
+        if std::env::var_os("CUTLASS_KEEP_SAMPLES").is_some() {
+            println!("kept: {}", dir.display());
+            assert!(failures.is_empty(), "{} of the offered file types don't work:\n  {}", failures.len(), failures.join("\n  "));
+            return;
+        }
         // thumbnails and working copies live in the shared cache, by path
-        for (ext, ..) in samples {
-            if let Ok(c) = media::cache_dir(&dir.join(format!("sample.{ext}"))) {
+        for name in samples
+            .iter()
+            .map(|s| format!("sample.{}", s.0))
+            .chain(pictures.iter().map(|e| format!("sample.{e}")))
+            .chain(["animated.gif".to_string()])
+        {
+            if let Ok(c) = media::cache_dir(&dir.join(name)) {
                 let _ = std::fs::remove_dir_all(c);
             }
         }

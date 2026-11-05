@@ -100,6 +100,10 @@ pub struct MediaEngine {
     /// requested time passes it (avoids per-frame seeks during play).
     pending: Option<ffmpeg::frame::Video>,
     stream_pts: Option<f64>,
+    /// A still picture (see [`MediaEngine::is_still`]): its one frame, decoded
+    /// on first use and returned for any time.
+    still: bool,
+    still_frame: Option<ffmpeg::frame::Video>,
 }
 
 impl MediaEngine {
@@ -128,6 +132,13 @@ impl MediaEngine {
         let duration_s = ictx.duration() as f64 / AV_TIME_BASE as f64;
         let (width, height) = (decoder.width(), decoder.height());
         let start_s = file_start_s(&ictx);
+        // Single pictures come through an image demuxer ("image2" for JPEG,
+        // "png_pipe", "webp_pipe" and the like) with no length; a GIF of one
+        // frame reads as 0.04s of video.
+        let name = ictx.format().name();
+        let still = name == "image2"
+            || name.ends_with("_pipe")
+            || (name == "gif" && duration_s <= 0.05);
         Ok(Self {
             ictx,
             decoder,
@@ -141,7 +152,25 @@ impl MediaEngine {
             r_fps,
             pending: None,
             stream_pts: None,
+            still,
+            still_frame: None,
         })
+    }
+
+    /// True for a still picture. It has no time to seek in, so every frame
+    /// asked of it is its one frame. Seeking an image demuxer found nothing
+    /// at all: a JPEG returned no frame at 0.
+    pub fn is_still(&self) -> bool {
+        self.still
+    }
+
+    /// A still's frame, decoded once from the start (no seek).
+    fn still_rgba(&mut self, max_width: u32) -> anyhow::Result<RgbaFrame> {
+        if self.still_frame.is_none() {
+            self.still_frame = self.decode_next()?;
+        }
+        let frame = self.still_frame.as_ref().ok_or_else(|| anyhow!("no picture in this file"))?;
+        self.to_rgba(frame, max_width)
     }
 
     /// Average frames-per-second over the whole clip (0 when unknown).
@@ -294,6 +323,9 @@ impl MediaEngine {
     /// backward or large-forward jump. This is the fast path that makes
     /// real-time playback possible — the 261 fps decode headroom.
     pub fn stream_frame_at(&mut self, t: f64, max_width: u32) -> anyhow::Result<RgbaFrame> {
+        if self.still {
+            return self.still_rgba(max_width);
+        }
         let t = t.clamp(0.0, self.duration_s.max(0.0));
         let need_seek = match self.stream_pts {
             None => true,
@@ -336,6 +368,10 @@ impl MediaEngine {
         mut cb: impl FnMut(RgbaFrame) -> anyhow::Result<()>,
     ) -> anyhow::Result<u32> {
         anyhow::ensure!(every_s > 0.0, "every_s must be positive");
+        if self.still {
+            cb(self.still_rgba(max_width)?)?;
+            return Ok(1);
+        }
         self.seek_raw(0.0)?;
         let mut next_t = 0.0f64;
         let mut emitted = 0u32;
@@ -365,6 +401,9 @@ impl MediaEngine {
     }
 
     fn seek_frame(&mut self, t: f64, max_width: u32, exact: bool) -> anyhow::Result<RgbaFrame> {
+        if self.still {
+            return self.still_rgba(max_width);
+        }
         let t = t.clamp(0.0, self.duration_s.max(0.0));
         // av_seek_frame directly: Input::seek's avformat_seek_file form
         // fails with EPERM on some demuxers/states

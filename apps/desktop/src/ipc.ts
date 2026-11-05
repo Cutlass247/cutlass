@@ -134,8 +134,10 @@ export interface MediaItem {
   name: string;
   path: string;
   /// "audio" = sound only: no thumbnails, and only ever on an audio track.
+  /// "image" = a still: one PNG thumbnail (transparency kept), any clip
+  /// length, never on an audio track, never streamed in playback.
   /// Absent on media from before this existed, which was all video.
-  kind?: "video" | "audio";
+  kind?: "video" | "audio" | "image";
   duration_s: number;
   /// native source size; 0 when unknown. Used to warn about upscaling.
   width?: number;
@@ -161,8 +163,9 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
 /// The file types Cutlass imports. The Import dialog and a drop on the window
 /// both read these, so they can't disagree again: the dialog used to offer six
 /// video types while a drop took seventeen, so an MP3 could be dropped but
-/// never picked. A copy of `VIDEO_EXTS` / `AUDIO_EXTS` in cutlass-core's
-/// media.rs, held equal by a test that also imports a real file of each type.
+/// never picked. A copy of `VIDEO_EXTS` / `AUDIO_EXTS` / `IMAGE_EXTS` in
+/// cutlass-core's media.rs, held equal by a test that also imports a real file
+/// of each type.
 export const VIDEO_EXTS = [
   "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "asf", "flv", "f4v", "mpg", "mpeg",
   "vob", "ts", "mts", "m2ts", "3gp", "3g2", "ogv", "mxf", "dv",
@@ -171,11 +174,13 @@ export const AUDIO_EXTS = [
   "mp3", "wav", "m4a", "m4b", "aac", "flac", "ogg", "opus", "wma", "aif", "aiff",
   "ac3", "mka", "caf", "wv", "amr", "mp2",
 ];
+export const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"];
 
 const IMPORT_FILTERS = [
-  { name: "Video and audio", extensions: [...VIDEO_EXTS, ...AUDIO_EXTS] },
+  { name: "Video, audio and pictures", extensions: [...VIDEO_EXTS, ...AUDIO_EXTS, ...IMAGE_EXTS] },
   { name: "Video", extensions: VIDEO_EXTS },
   { name: "Audio", extensions: AUDIO_EXTS },
+  { name: "Pictures", extensions: IMAGE_EXTS },
 ];
 
 /// Pick one or more files. Returns [] if the dialog was cancelled.
@@ -889,7 +894,7 @@ export async function onMediaConformed(
 /// window should say so rather than handing it to the media engine to fail on.
 export function isImportable(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return VIDEO_EXTS.includes(ext) || AUDIO_EXTS.includes(ext);
+  return VIDEO_EXTS.includes(ext) || AUDIO_EXTS.includes(ext) || IMAGE_EXTS.includes(ext);
 }
 
 /// Fires when files are dropped onto the window from the desktop.

@@ -382,7 +382,7 @@ export function Monitor(p: {
               <div className="create-stage-titles">{p.titleOverlay}</div>
             </div>
           ) : (
-            <div className="monitor-layers">
+            <div className="monitor-layers" style={{ aspectRatio: `${p.resolution.w} / ${p.resolution.h}` }}>
               {p.layers.map((l) =>
                 l.lut ? (
                   <LutLayer key={l.key} src={l.src} lut={l.lut} style={l.style} />
