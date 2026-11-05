@@ -1,8 +1,14 @@
-# Cutlass 0.2.4
+# Cutlass 0.2.5
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
+
+## New in 0.2.5
+
+- **iPhone photos.** HEIC and HEIF pictures now import, whole and the right way up. An iPhone saves a photo as a grid of tiles with its rotation stored separately, so Cutlass puts the tiles together and turns the picture once, when you import it. Your original file isn't changed.
+- **Nearly every other kind of picture.** AVIF, JPEG XL, JPEG 2000, Photoshop (.psd), Targa (.tga), icons (.ico), QOI, DDS, PCX, Netpbm (.ppm, .pgm, .pbm, .pam), SGI, Sun raster, XBM, XPM and XWD join PNG, JPEG (including .jfif and .jpe), WebP, BMP, GIF and TIFF.
+- **Portrait phone photos are listed the right way round.** A JPEG taken upright showed and exported upright, but the media bin and the Inspector gave its size as landscape.
 
 ## New in 0.2.4
 
@@ -59,7 +65,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.2.4_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.2.5_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
@@ -105,6 +111,7 @@ Your video never leaves your machine. The AI features send only your audio or tr
 - SmartScreen reputation is still building, and so is the reputation the installer needs with antivirus software.
 - 4K exports are slow by nature. Export at 1080p for long videos.
 - Keyframed movement on tracks above V1 plays in the player but isn't exported yet. A clip there exports in place, but without the movement.
+- Not supported: SVG and camera RAW files (.cr2, .nef, .arw and the like); export them as PNG or JPEG first. OpenEXR and HDR pictures are left out too, because without tone mapping they'd look wrong.
 - Collaboration isn't available in this build.
 - The offline moment finder has no comprehension — it can't tell you *why* a moment works the way the AI can. A good fallback, not a replacement.
 
