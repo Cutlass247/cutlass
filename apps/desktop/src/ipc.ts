@@ -1366,13 +1366,15 @@ export async function pauseAudio(): Promise<number | null> {
 }
 
 /// Real-time video frames streamed from the playback thread during play.
+/// `b`: during a transition on the base track, the next clip's head, to draw
+/// over `src` at the transition's mix. Null otherwise.
 export async function onPlaybackFrame(
-  cb: (t: number, src: string) => void
+  cb: (t: number, src: string, b: string | null) => void
 ): Promise<() => void> {
   if (!inTauri) return () => {};
   const { listen } = await import("@tauri-apps/api/event");
-  return listen<{ t: number; src: string }>("playback-frame", (e) =>
-    cb(e.payload.t, e.payload.src)
+  return listen<{ t: number; src: string; b?: string | null }>("playback-frame", (e) =>
+    cb(e.payload.t, e.payload.src, e.payload.b ?? null)
   );
 }
 

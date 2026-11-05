@@ -621,8 +621,9 @@ export default function App() {
     me.current.color = `hsl(${((parseInt(me.current.id, 36) % 360) + 360) % 360}, 75%, 60%)`;
   }
 
-  // latest real-time frame streamed from the playback thread
-  const [playFrame, setPlayFrame] = useState<string | null>(null);
+  // latest real-time frame streamed from the playback thread, and in a
+  // transition the next clip's head that plays over it
+  const [playFrame, setPlayFrame] = useState<{ a: string; b: string | null } | null>(null);
 
   // ── mount: load project, subscribe to events ────────────────────────
   useEffect(() => {
@@ -691,7 +692,7 @@ export default function App() {
     const unMusic = onRemoveMusicProgress((clip, pct) =>
       setMusicPct((prev) => ({ ...prev, [clip]: pct }))
     );
-    const unFrame = onPlaybackFrame((_t, src) => setPlayFrame(src));
+    const unFrame = onPlaybackFrame((_t, src, b) => setPlayFrame({ a: src, b }));
     const unPresence = onPresence((p) =>
       setPeers((prev) => ({ ...prev, [p.id]: { ...p, ts: Date.now() } }))
     );
@@ -930,8 +931,9 @@ export default function App() {
   }, [clips]);
 
   const videoLayers = useMemo(() => {
-    // `mix` scales a layer's opacity — the two halves of a transition
-    const out: { clip: Clip; media: MediaItem; srcT: number; mix?: number }[] = [];
+    // `mix` scales a layer's opacity — the two halves of a transition, the
+    // clip it plays over the end of ("a") and the next clip's head ("b")
+    const out: { clip: Clip; media: MediaItem; srcT: number; mix?: number; role?: "a" | "b" }[] = [];
     const vtracks = tracks
       .filter((t) => trackKind(t) === "video")
       .sort((a, b) => trackIndex(a) - trackIndex(b)); // ascending = bottom→top
@@ -966,8 +968,8 @@ export default function App() {
         const p = into / d;
         const dip = (next.fx?.trans_dip ?? 0) > 0.5; // fadeblack: out, then in
         const bSrc = Math.max(0, next.src_in - d) + into;
-        out.push({ clip, media: m, srcT: Math.min(srcT, m.duration_s), mix: dip ? Math.max(0, 1 - 2 * p) : 1 });
-        out.push({ clip: next, media: mb, srcT: Math.min(bSrc, mb.duration_s), mix: dip ? Math.max(0, 2 * p - 1) : p });
+        out.push({ clip, media: m, srcT: Math.min(srcT, m.duration_s), mix: dip ? Math.max(0, 1 - 2 * p) : 1, role: "a" });
+        out.push({ clip: next, media: mb, srcT: Math.min(bSrc, mb.duration_s), mix: dip ? Math.max(0, 2 * p - 1) : p, role: "b" });
         continue;
       }
       out.push({ clip, media: m, srcT: Math.min(srcT, m.duration_s) });
@@ -1034,11 +1036,22 @@ export default function App() {
 
   // what the monitor renders, bottom→top. While playing, the real-time
   // streamed frame stands in for the topmost footage layer; other layers
-  // hold their proxy frame (a picture, its PNG) around it.
+  // hold their proxy frame (a picture, its PNG) around it. When that layer
+  // is a transition's incoming head, the stream is the outgoing clip and
+  // the head comes alongside it as `b`: each goes on its own layer.
   const monitorLayers = useMemo(() => {
+    const inTransition = footageIdx > 0 && videoLayers[footageIdx].role === "b";
+    const streamed = (i: number): string | null => {
+      if (!playing || !playFrame) return null;
+      if (inTransition) {
+        if (i === footageIdx) return playFrame.b;
+        return i === footageIdx - 1 ? playFrame.a : null;
+      }
+      return i === footageIdx ? playFrame.a : null;
+    };
     return videoLayers.map((l, i) => {
       const top = i === footageIdx;
-      const live = playing && playFrame && top ? playFrame : null;
+      const live = streamed(i);
       const settled = top && hq && hq.key === hqKey ? hq.src : null;
       const draft = selectedIds.includes(l.clip.id) ? fxDraft : {};
       const base = layerStyle(l.clip);

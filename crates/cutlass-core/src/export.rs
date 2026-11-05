@@ -101,7 +101,18 @@ pub struct ClipFx {
     // up to 3 censor regions. Each field is keyframeable (censor_x,
     // censor2_x, censor3_x …) so a box can follow a moving subject.
     pub censor: [CensorSlot; 3],
+    /// Keyframes the export follows frame by frame, param → (clip-relative
+    /// time, value): the [`SMOOTH_KF`] ones. Set by `build_segments`; the
+    /// rest of a clip's keyframes are sampled into steps instead.
+    pub motion: BTreeMap<String, Vec<(f64, f64)>>,
 }
+
+/// Keyframed params export follows frame by frame, as the player does:
+/// movement through per-frame expressions (see [`transform`]), hue and
+/// saturation through `hue`'s. The others (brightness, blur, a blur box's
+/// place, ...) have no per-frame form in this ffmpeg and are sampled every
+/// [`KF_STEP_S`] instead.
+pub const SMOOTH_KF: &[&str] = &["scale", "rot", "pos_x", "pos_y", "hue", "saturation"];
 
 impl Default for ClipFx {
     fn default() -> Self {
@@ -137,6 +148,7 @@ impl Default for ClipFx {
                 CensorSlot::default(),
                 CensorSlot::default(),
             ],
+            motion: BTreeMap::new(),
         }
     }
 }
@@ -265,6 +277,7 @@ impl ClipFx {
                 };
                 [slot("censor"), slot("censor2"), slot("censor3")]
             },
+            motion: BTreeMap::new(),
         }
     }
     fn has_transform(&self) -> bool {
@@ -643,8 +656,17 @@ fn clip_video_chain(
         // same path escaping drawtext uses for fontfile
         stylize.push_str(&format!("lut3d=file='{}',", ff_path(lut)));
     }
-    // saturation rides the (LGPL) hue filter's `s` param — eq's job again
-    if fx.hue != 0.0 || (fx.saturation - 1.0).abs() > 1e-9 {
+    // saturation rides the (LGPL) hue filter's `s` param — eq's job again;
+    // keyframed, through its per-frame expressions
+    let keyed = |p: &str| fx.motion.get(p).filter(|v| !v.is_empty());
+    if keyed("hue").is_some() || keyed("saturation").is_some() {
+        let pts = |p: &str, base: f64| keyed(p).cloned().unwrap_or_else(|| vec![(0.0, base)]);
+        stylize.push_str(&format!(
+            "hue=h='{}':s='max(0,{})',",
+            kf_expr(&pts("hue", fx.hue), "t", 1.0),
+            kf_expr(&pts("saturation", fx.saturation), "t", 1.0)
+        ));
+    } else if fx.hue != 0.0 || (fx.saturation - 1.0).abs() > 1e-9 {
         stylize.push_str(&format!(
             "hue=h={:.2}:s={:.4},",
             fx.hue,
@@ -676,24 +698,21 @@ fn clip_video_chain(
         s.push_str(&format!("[{cur}]{f}[st{k}];"));
         cur = format!("st{k}");
     }
-    if fx.has_transform() {
-        let (px, py) = (fx.pos_x * w as f64, fx.pos_y * h as f64);
-        s.push_str(&format!(
-            "[{cur}]scale=iw*{sc}:ih*{sc}[sc{k}];",
-            sc = fx.scale
-        ));
+    let moving = ["scale", "rot", "pos_x", "pos_y"]
+        .iter()
+        .any(|p| fx.motion.get(*p).is_some_and(|v| !v.is_empty()));
+    if fx.has_transform() || moving {
+        // the clip's frame times start at 0, so its own time is plain t
+        let (moved, x, y) = transform(fx, &fx.motion, w, h, "t");
+        let moved = moved.trim_end_matches(',');
+        s.push_str(&format!("[{cur}]{}[sc{k}];", if moved.is_empty() { "null" } else { moved }));
         s.push_str(&format!(
             "color=c=black:s={w}x{h}:r={fps}:d={len:.3},format=yuv420p[bg{k}];"
         ));
         s.push_str(&format!(
-            "[bg{k}][sc{k}]overlay=x=(W-w)/2+({px:.1}):y=(H-h)/2+({py:.1}):eof_action=pass[tf{k}];"
+            "[bg{k}][sc{k}]overlay=x={x}:y={y}:eof_action=pass,format=yuv420p[tf{k}];"
         ));
         cur = format!("tf{k}");
-        if fx.rot != 0.0 {
-            let rad = fx.rot * std::f64::consts::PI / 180.0;
-            s.push_str(&format!("[{cur}]rotate={rad:.5}:fillcolor=black[rt{k}];"));
-            cur = format!("rt{k}");
-        }
     }
     if fx.vignette > 0.01 {
         // ffmpeg's `angle` IS the strength: 0 = none, larger = darker corners
@@ -799,17 +818,79 @@ fn kf_expr(points: &[(f64, f64)], var: &str, mul: f64) -> String {
     format!("if(lt({var},{first_t:.6}),{:.6},{e})", first_v * mul)
 }
 
-/// Mirrors the preview's CSS (`fxStyle` in ui.tsx), `translate(pos) scale()
-/// rotate()`: the clip scales and turns about its own centre, then moves by
-/// `pos_x`/`pos_y` of the frame. Flips, blur and fades come along too. Export
-/// used to apply none of this above the base track, so a logo shrunk into a
-/// corner came out filling the frame, as did any picture-in-picture.
+/// A clip's own transform, as the preview's CSS draws it (`fxStyle` in
+/// ui.tsx), `translate(pos) scale() rotate()`: it scales and turns about its
+/// own centre, then moves by `pos_x`/`pos_y` of the frame. Returns the
+/// filters for its fitted frame (each ending in a comma) and the x and y to
+/// overlay the result at, centred on the frame. One function for the base
+/// track and the tracks above, so the two can't come to disagree: the base
+/// track used to turn the whole frame about the frame's centre, so a clip
+/// both moved and turned landed somewhere the player didn't put it.
 ///
-/// Keyframed movement follows `kf` frame by frame: position through the
+/// Keyframes in `kf` are followed frame by frame: position through the
 /// overlay's x/y, which ffmpeg evaluates per frame, and scale and rotation
 /// through per-frame expressions on a fixed square canvas big enough for the
 /// clip at its largest, at any angle, so the overlay's size, and with it the
-/// centring, never changes. `t0` is when the clip starts on the timeline.
+/// centring, never changes. `local` is the clip's own time as the overlay
+/// filter sees it: "t" where the timeline starts with the clip, "(t-2.500)"
+/// where the clip starts 2.5s in. A turn needs transparency for its corners,
+/// so the frame is made yuva420p first.
+fn transform(
+    fx: &ClipFx,
+    kf: &BTreeMap<String, Vec<(f64, f64)>>,
+    w: u32,
+    h: u32,
+    local: &str,
+) -> (String, String, String) {
+    let keyed = |p: &str| kf.get(p).filter(|v| !v.is_empty());
+    let points = |p: &str, base: f64| keyed(p).cloned().unwrap_or_else(|| vec![(0.0, base)]);
+    let mut f = String::new();
+    if keyed("scale").is_some() || keyed("rot").is_some() {
+        let scale = points("scale", fx.scale);
+        let biggest = scale.iter().map(|(_, s)| *s).fold(0.01, f64::max);
+        let diag = ((w as f64).powi(2) + (h as f64).powi(2)).sqrt();
+        let c = (((diag * biggest) / 2.0).ceil() as u32 * 2).max(2);
+        let s = format!("max({},0.01)", kf_expr(&scale, "t", 1.0));
+        f.push_str(&format!(
+            "format=yuva420p,\
+             scale=w='max(2,trunc(iw*{s}/2)*2)':h='max(2,trunc(ih*{s}/2)*2)':eval=frame,\
+             pad={c}:{c}:(ow-iw)/2:(oh-ih)/2:color=black@0:eval=frame,\
+             rotate=a='{}':ow={c}:oh={c}:fillcolor=none,",
+            kf_expr(&points("rot", fx.rot), "t", std::f64::consts::PI / 180.0)
+        ));
+    } else {
+        if (fx.scale - 1.0).abs() > 1e-9 {
+            f.push_str(&format!(
+                "scale=trunc(iw*{sc:.5}/2)*2:trunc(ih*{sc:.5}/2)*2,",
+                sc = fx.scale.max(0.01)
+            ));
+        }
+        if fx.rot != 0.0 {
+            // onto a canvas grown to fit the corners, which are transparent
+            let a = fx.rot * std::f64::consts::PI / 180.0;
+            f.push_str(&format!(
+                "format=yuva420p,rotate={a:.5}:ow=rotw({a:.5}):oh=roth({a:.5}):fillcolor=none,"
+            ));
+        }
+    }
+    let (x, y) = if keyed("pos_x").is_some() || keyed("pos_y").is_some() {
+        (
+            format!("'(W-w)/2+({})'", kf_expr(&points("pos_x", fx.pos_x), local, w as f64)),
+            format!("'(H-h)/2+({})'", kf_expr(&points("pos_y", fx.pos_y), local, h as f64)),
+        )
+    } else {
+        let (px, py) = (fx.pos_x * w as f64, fx.pos_y * h as f64);
+        (format!("(W-w)/2+({px:.1})"), format!("(H-h)/2+({py:.1})"))
+    };
+    (f, x, y)
+}
+
+/// Everything an overlay clip's own settings do to it, as export draws it:
+/// flips and blur, its [`transform`], and fades on its transparency. Export
+/// used to apply none of this above the base track, so a logo shrunk into a
+/// corner came out filling the frame, as did any picture-in-picture, and
+/// keyframed movement there played in the player and not in the export. `t0`
+/// is when the clip starts on the timeline.
 fn overlay_placement(
     fx: &ClipFx,
     kf: &BTreeMap<String, Vec<(f64, f64)>>,
@@ -818,35 +899,13 @@ fn overlay_placement(
     w: u32,
     h: u32,
 ) -> Placement {
-    let keyed = |p: &str| kf.get(p).filter(|v| !v.is_empty());
-    let points = |p: &str, base: f64| keyed(p).cloned().unwrap_or_else(|| vec![(0.0, base)]);
-    let grows = keyed("scale").is_some() || keyed("rot").is_some();
-    let moves = keyed("pos_x").is_some() || keyed("pos_y").is_some();
-    if !grows && !moves {
-        return still_placement(fx, len, w, h);
-    }
-    let mut p = still_placement(&ClipFx { pos_x: 0.0, pos_y: 0.0, ..fx.clone() }, len, w, h);
-    if grows {
-        // rebuilt: flips and blur, the per-frame scale and turn, then fades
-        p.filters = fx_flips_and_blur(fx);
-        let scale = points("scale", fx.scale);
-        let biggest = scale.iter().map(|(_, s)| *s).fold(0.01, f64::max);
-        let diag = ((w as f64).powi(2) + (h as f64).powi(2)).sqrt();
-        let c = (((diag * biggest) / 2.0).ceil() as u32 * 2).max(2);
-        let s = format!("max({},0.01)", kf_expr(&scale, "t", 1.0));
-        p.filters.push_str(&format!(
-            "scale=w='max(2,trunc(iw*{s}/2)*2)':h='max(2,trunc(ih*{s}/2)*2)':eval=frame,\
-             pad={c}:{c}:(ow-iw)/2:(oh-ih)/2:color=black@0:eval=frame,\
-             rotate=a='{}':ow={c}:oh={c}:fillcolor=none,",
-            kf_expr(&points("rot", fx.rot), "t", std::f64::consts::PI / 180.0)
-        ));
-        p.filters.push_str(&fade_alpha(fx, len));
-    }
     // overlay's x/y see the program's time; the keyframes are the clip's
-    let local = format!("(t-{t0:.3})");
-    p.x = format!("'(W-w)/2+({})'", kf_expr(&points("pos_x", fx.pos_x), &local, w as f64));
-    p.y = format!("'(H-h)/2+({})'", kf_expr(&points("pos_y", fx.pos_y), &local, h as f64));
-    p
+    let (moved, x, y) = transform(fx, kf, w, h, &format!("(t-{t0:.3})"));
+    Placement {
+        filters: format!("{}{moved}{}", fx_flips_and_blur(fx), fade_alpha(fx, len)),
+        x,
+        y,
+    }
 }
 
 fn fx_flips_and_blur(fx: &ClipFx) -> String {
@@ -879,29 +938,6 @@ fn fade_alpha(fx: &ClipFx, len: f64) -> String {
     f
 }
 
-/// [`overlay_placement`] for a clip with no keyframed movement.
-fn still_placement(fx: &ClipFx, len: f64, w: u32, h: u32) -> Placement {
-    let mut f = fx_flips_and_blur(fx);
-    if (fx.scale - 1.0).abs() > 1e-9 {
-        f.push_str(&format!(
-            "scale=trunc(iw*{sc:.5}/2)*2:trunc(ih*{sc:.5}/2)*2,",
-            sc = fx.scale.max(0.01)
-        ));
-    }
-    if fx.rot != 0.0 {
-        // about its own centre, onto a canvas grown to fit the corners, with
-        // the corners transparent rather than black
-        let a = fx.rot * std::f64::consts::PI / 180.0;
-        f.push_str(&format!("rotate={a:.5}:ow=rotw({a:.5}):oh=roth({a:.5}):fillcolor=none,"));
-    }
-    f.push_str(&fade_alpha(fx, len));
-    let (px, py) = (fx.pos_x * w as f64, fx.pos_y * h as f64);
-    Placement {
-        filters: f,
-        x: format!("(W-w)/2+({px:.1})"),
-        y: format!("(H-h)/2+({py:.1})"),
-    }
-}
 
 /// Build a clip's audio chain `[{vi}:a] → [a{k}]`: resample, gain, fades.
 fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
@@ -3062,28 +3098,47 @@ mod tests {
         assert!(!e.contains("/0.000000"), "a zero-length leg is skipped, not divided by: {e}");
     }
 
+    /// Movement is followed frame by frame, so a clip keyframed only to move
+    /// stays one segment with its keyframes on it. It used to be cut into
+    /// 0.2s steps, which the export showed as a jerky slide.
     #[test]
-    fn keyframed_clip_samples_into_subsegments() {
+    fn a_clip_keyframed_to_move_stays_one_smooth_segment() {
         let mut c = clip(0.0, 4.0, 0.0, 0.0);
         c.kf.insert("scale".into(), vec![(0.0, 1.0), (4.0, 2.0)]);
+        c.kf.insert("pos_x".into(), vec![(0.0, -0.2), (4.0, 0.2)]);
+        let segs = build_segments(vec![c]);
+        assert_eq!(segs.len(), 1);
+        match &segs[0] {
+            Segment::Clip { fx, len, .. } => {
+                assert!((len - 4.0).abs() < 1e-9);
+                assert_eq!(fx.motion["scale"], vec![(0.0, 1.0), (4.0, 2.0)]);
+                assert_eq!(fx.motion["pos_x"], vec![(0.0, -0.2), (4.0, 0.2)]);
+            }
+            _ => panic!("not a clip"),
+        }
+    }
+
+    /// A look with no per-frame form (brightness here) still steps: sampled
+    /// at each 0.2s step's middle. Movement on the same clip still runs
+    /// smooth, its keyframes moved to each step's own start.
+    #[test]
+    fn a_keyframed_look_samples_into_steps_and_movement_rides_along() {
+        let mut c = clip(0.0, 4.0, 0.0, 0.0);
+        c.kf.insert("brightness".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
+        c.kf.insert("pos_x".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
         let segs = build_segments(vec![c]);
         // 4s / 0.2 = 20 sub-segments
         assert_eq!(segs.len(), 20);
         let total: f64 = segs.iter().map(|s| s.len()).sum();
-        assert!(
-            (total - 4.0).abs() < 1e-6,
-            "duration preserved, got {total}"
-        );
-        // scale should rise across the sub-segments (animated)
-        let first = match &segs[0] {
-            Segment::Clip { fx, .. } => fx.scale,
+        assert!((total - 4.0).abs() < 1e-6, "duration preserved, got {total}");
+        let fx = |i: usize| match &segs[i] {
+            Segment::Clip { fx, .. } => fx.clone(),
             _ => panic!(),
         };
-        let last = match segs.last().unwrap() {
-            Segment::Clip { fx, .. } => fx.scale,
-            _ => panic!(),
-        };
-        assert!(last > first + 0.5, "scale animated {first} -> {last}");
+        assert!(fx(19).brightness > fx(0).brightness + 0.3, "brightness steps up");
+        // the tenth step starts 1.8s in, so its keyframes start 1.8s early
+        let pos = &fx(9).motion["pos_x"];
+        assert!((pos[0].0 + 1.8).abs() < 1e-9 && (pos[1].0 - 2.2).abs() < 1e-9, "{pos:?}");
     }
 
     #[test]
@@ -3238,22 +3293,37 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
                 });
             }
         }
-        if c.kf.is_empty() {
+        // Movement and hue/saturation keyframes are followed frame by frame
+        // (fx.motion); the rest can only be sampled into steps. A clip with
+        // only the first kind stays one segment, which also lets a
+        // transition into the next clip shorten its tail.
+        let (smooth, stepped): (BTreeMap<_, _>, BTreeMap<_, _>) = c
+            .kf
+            .iter()
+            .filter(|(_, pts)| !pts.is_empty())
+            .map(|(p, pts)| (p.clone(), pts.clone()))
+            .partition(|(p, _)| SMOOTH_KF.contains(&p.as_str()));
+        if stepped.is_empty() {
             segs.push(Segment::Clip {
                 path: c.path.clone(),
                 src_in: c.src_in,
                 len: c.len,
-                fx: c.fx.clone(),
+                fx: ClipFx { motion: smooth, ..c.fx.clone() },
                 lut: c.lut.clone(),
             });
         } else {
-            // sample the animation into piecewise-constant sub-segments
+            // sample the rest into piecewise-constant sub-segments, each
+            // carrying the smooth keyframes from its own start
             let n = ((c.len / KF_STEP_S).ceil() as usize).clamp(1, KF_MAX_SEGS);
             let step = c.len / n as f64;
             for i in 0..n {
                 let rel = i as f64 * step;
                 let sub_len = if i == n - 1 { c.len - rel } else { step };
-                let fx = c.fx.sampled_at(&c.kf, rel + sub_len / 2.0);
+                let mut fx = c.fx.sampled_at(&stepped, rel + sub_len / 2.0);
+                fx.motion = smooth
+                    .iter()
+                    .map(|(p, pts)| (p.clone(), pts.iter().map(|(t, v)| (t - rel, *v)).collect()))
+                    .collect();
                 segs.push(Segment::Clip {
                     path: c.path.clone(),
                     src_in: c.src_in + rel * c.fx.speed, // source advances at speed
@@ -3263,7 +3333,7 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
                 });
             }
         }
-        prev_keyframed = !c.kf.is_empty();
+        prev_keyframed = !stepped.is_empty();
         t = c.start + c.len;
         prev = Some(c);
     }

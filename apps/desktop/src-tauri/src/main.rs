@@ -100,6 +100,57 @@ struct PlayClip {
     still: bool,
 }
 
+/// A transition on the base track, as playback draws it: from `start` to
+/// `end` (the cut) the next clip's head, `b_path` from `b_src`, plays over
+/// this clip's tail, the way export renders it (`build_segments`).
+#[derive(Clone)]
+struct PlayTransition {
+    start: f64,
+    end: f64,
+    b_path: String,
+    b_src: f64,
+}
+
+/// The transitions on the base video track (the lowest one with clips): a
+/// clip that asks for one and starts where the one before it ends gets the
+/// last `d` seconds before the cut, with `d` its length capped by both
+/// clips, as in export's `build_segments` and the preview's `videoLayers`.
+fn play_transitions(snap: &serde_json::Value, media: &HashMap<String, MediaInfo>) -> Vec<PlayTransition> {
+    let Some(clips) = snap["clips"].as_array() else { return Vec::new() };
+    let video: Vec<&serde_json::Value> = clips
+        .iter()
+        .filter(|c| c["text"].as_str().unwrap_or("").is_empty())
+        .filter(|c| !track_is_audio(c["track"].as_str().unwrap_or("A")))
+        .collect();
+    let Some(base) = video.iter().map(|c| track_video_pri(c["track"].as_str().unwrap_or(""))).min() else {
+        return Vec::new();
+    };
+    let mut on_base: Vec<&serde_json::Value> = video
+        .into_iter()
+        .filter(|c| track_video_pri(c["track"].as_str().unwrap_or("")) == base)
+        .collect();
+    let num = |c: &serde_json::Value, k: &str| c[k].as_f64().unwrap_or(0.0);
+    on_base.sort_by(|a, b| num(a, "start").total_cmp(&num(b, "start")));
+    on_base
+        .windows(2)
+        .filter_map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let cut = num(b, "start");
+            if (num(a, "start") + num(a, "len") - cut).abs() > 1e-3 {
+                return None;
+            }
+            let d = b["fx"]["trans_dur"].as_f64().unwrap_or(0.0).min(num(a, "len") - 0.05).min(num(b, "len"));
+            let path = media.get(b["media"].as_str()?)?.path.clone();
+            (d > 0.05).then(|| PlayTransition {
+                start: cut - d,
+                end: cut,
+                b_path: path,
+                b_src: (num(b, "src_in") - d).max(0.0),
+            })
+        })
+        .collect()
+}
+
 /// Track names are "V1".."Vn" (video, composited bottom→top) or
 /// "A1".."An" (audio-only beds). These parse the kind and z-order.
 fn track_is_audio(t: &str) -> bool {
@@ -2416,9 +2467,14 @@ fn play(
             }
         };
     if !video_clips.is_empty() {
+        let transitions = {
+            let project = state.project.lock_ok();
+            let media = state.media.lock_ok();
+            play_transitions(&project.snapshot(), &media)
+        };
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         *state.video_stop.lock_ok() = Some(stop.clone());
-        start_video_thread(app, video_clips, from_t, stop, audio.clone());
+        start_video_thread(app, video_clips, transitions, from_t, stop, audio.clone());
     }
     audio.is_some()
 }
@@ -2480,9 +2536,17 @@ fn frame_to_data_url(frame: &cutlass_engine::RgbaFrame, quality: u8) -> anyhow::
 /// Real-time video playback: a dedicated thread decodes the visible clip
 /// under the moving playhead and streams JPEG frames to the UI at ~30fps.
 /// Paced by wall clock from `from_t` (matching the audio, also wall-paced).
+///
+/// In a transition on the base track it also decodes the next clip's head
+/// and sends that as `b`, which the frontend draws over this clip's frame
+/// at the transition's mix. It used to send this clip alone, which the
+/// frontend drew where the next clip belongs, so no transition was ever seen
+/// playing. The head gets its own decoder: a clip split in two is one file,
+/// and one decoder seeking between the two places every frame would stall.
 fn start_video_thread(
     app: tauri::AppHandle,
     clips: Vec<PlayClip>,
+    transitions: Vec<PlayTransition>,
     from_t: f64,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     audio: Option<cutlass_engine::player::PlaybackHandle>,
@@ -2494,6 +2558,8 @@ fn start_video_thread(
         .name("cutlass-video-playback".into())
         .spawn(move || {
             let mut engines: HashMap<String, cutlass_engine::MediaEngine> = HashMap::new();
+            let mut heads: HashMap<String, cutlass_engine::MediaEngine> = HashMap::new();
+            let base_pri = clips.iter().map(|c| c.track_pri).min().unwrap_or(0);
             let frame_dur = Duration::from_millis(33); // ~30 fps
             let start = Instant::now();
             let mut next = start + frame_dur;
@@ -2518,10 +2584,31 @@ fn start_video_thread(
                             engines.insert(c.path.clone(), e);
                         }
                     }
+                    // the next clip's head, when this is the base-track clip a
+                    // transition plays over the end of
+                    let head = transitions
+                        .iter()
+                        .find(|x| {
+                            c.track_pri == base_pri
+                                && t >= x.start
+                                && t < x.end
+                                && (c.start + c.len - x.end).abs() < 1e-3
+                        })
+                        .and_then(|x| {
+                            if !heads.contains_key(&x.b_path) {
+                                let e = cutlass_engine::MediaEngine::open(&x.b_path).ok()?;
+                                heads.insert(x.b_path.clone(), e);
+                            }
+                            let frame = heads.get_mut(&x.b_path)?.stream_frame_at(x.b_src + (t - x.start), 854).ok()?;
+                            frame_to_data_url(&frame, 72).ok()
+                        });
                     if let Some(eng) = engines.get_mut(&c.path) {
                         if let Ok(frame) = eng.stream_frame_at(src_t, 854) {
                             if let Ok(url) = frame_to_data_url(&frame, 72) {
-                                let _ = app.emit("playback-frame", json!({ "t": t, "src": url }));
+                                let _ = app.emit(
+                                    "playback-frame",
+                                    json!({ "t": t, "src": url, "b": head }),
+                                );
                             }
                         }
                     }
@@ -3600,6 +3687,43 @@ mod tests {
         );
     }
 
+    /// Playback draws a transition over the same window export renders it:
+    /// the last `d` seconds before the cut, `d` capped by both clips, with
+    /// the next clip's head from `d` before its in-point. Only on the base
+    /// track, and only where the clips meet.
+    #[test]
+    fn playback_finds_the_transitions_export_renders() {
+        let m = |id: &str, path: &str| MediaInfo {
+            id: id.into(),
+            name: id.into(),
+            path: path.into(),
+            kind: media::MediaKind::Video,
+            duration_s: 60.0,
+            width: 1920,
+            height: 1080,
+            scrub_fps: 1.0,
+            thumb_paths: Vec::new(),
+            waveform: Vec::new(),
+        };
+        let media: HashMap<String, MediaInfo> =
+            [("a".to_string(), m("a", "A.mp4")), ("b".to_string(), m("b", "B.mp4"))].into_iter().collect();
+        let clip = |track: &str, media: &str, start: f64, len: f64, src_in: f64, trans: f64| {
+            json!({ "track": track, "media": media, "start": start, "len": len, "src_in": src_in,
+                    "fx": { "trans_dur": trans } })
+        };
+        let snap = json!({ "clips": [
+            clip("V1", "a", 0.0, 4.0, 0.0, 0.0),
+            clip("V1", "b", 4.0, 3.0, 2.0, 1.0),   // dissolves in over A's last second
+            clip("V1", "a", 9.0, 2.0, 5.0, 1.5),   // after a gap: no transition
+            clip("V2", "b", 4.0, 1.0, 0.0, 0.5),   // on an upper track: none either
+            clip("V1", "b", 11.0, 0.5, 10.0, 2.0), // capped by its own length
+        ]});
+        let found = play_transitions(&snap, &media);
+        let got: Vec<(f64, f64, &str, f64)> =
+            found.iter().map(|x| (x.start, x.end, x.b_path.as_str(), x.b_src)).collect();
+        assert_eq!(got, vec![(3.0, 4.0, "B.mp4", 1.0), (10.5, 11.0, "B.mp4", 9.5)]);
+    }
+
     /// Pull the quoted strings out of `export const <name> = [ ... ];`.
     fn ts_string_array(src: &str, name: &str) -> Vec<String> {
         let start = src
@@ -4271,6 +4395,76 @@ mod tests {
                 }
             }
             (Err(e), _) | (_, Err(e)) => failures.push(format!("a keyframed logo didn't export: {e}")),
+        }
+
+        // The same on the base track, which used to step its keyframes every
+        // 0.2s and turn the whole frame about the frame's centre: the card
+        // alone on V1, over black, keyframed to slide and grow as above; and
+        // a still turned a quarter and moved a quarter right, which must turn
+        // about its own centre, as the player turns it. Through
+        // build_segments, as export_project does.
+        use cutlass_core::export::{build_segments, ExportClip};
+        let on_v1 = |fx: ClipFx, kf: &[(&str, Vec<(f64, f64)>)]| {
+            build_segments(vec![ExportClip {
+                start: 0.0,
+                len: 3.0,
+                src_in: 0.0,
+                path: card_s.clone(),
+                fx,
+                lut: String::new(),
+                trans_dur: 0.0,
+                trans_dip: false,
+                kf: kf.iter().map(|(p, v)| (p.to_string(), v.clone())).collect(),
+            }])
+        };
+        let program_at = |segs: &[Segment], name: &str, times: &[f64]| -> Result<Vec<Vec<u8>>, String> {
+            let out = dir.join(name);
+            export(segs, &[], &[], &out, &settings, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false))
+                .map_err(err_str)?;
+            Ok(times.iter().map(|t| ffmpeg_frame(&out, *t, 640, 360, false)).collect())
+        };
+        let slid = on_v1(
+            ClipFx::default(),
+            &[("pos_x", vec![(0.0, -0.25), (2.0, 0.25)]), ("scale", vec![(0.0, 0.3), (2.0, 0.6)])],
+        );
+        if slid.len() != 1 {
+            failures.push(format!("a clip keyframed only to move was cut into {} pieces", slid.len()));
+        }
+        match program_at(&slid, "v1-slide.mp4", &[0.5, 1.5]) {
+            Ok(f) => {
+                for (i, into) in [0.5, 1.5].iter().enumerate() {
+                    let cx = (320.0 + (-0.25 + 0.25 * into) * 640.0) as usize;
+                    let half = (240.0 * (0.3 + 0.15 * into)) as usize;
+                    for (what, x, want_card) in [
+                        ("its hole", cx, false),
+                        ("inside its left edge", cx - half + 14, true),
+                        ("inside its right edge", cx + half - 14, true),
+                        ("outside its left edge", cx - half - 18, false),
+                        ("outside its right edge", cx + half + 18, false),
+                    ] {
+                        let got = colour(&f[i], 640, x - 4, 176);
+                        if (want_card && !red(got)) || (!want_card && !dark(got)) {
+                            failures.push(format!("a keyframed clip on V1 {into}s in: wrong at {what} (x {x}): {got:?}"));
+                        }
+                    }
+                }
+            }
+            Err(e) => failures.push(format!("a keyframed clip on V1 didn't export: {e}")),
+        }
+        // turned 90 about its own centre (480, 180): 360 wide, 300..660
+        let turned_v1 = on_v1(ClipFx { rot: 90.0, pos_x: 0.25, ..Default::default() }, &[]);
+        match program_at(&turned_v1, "v1-turned.mp4", &[1.0]) {
+            Ok(f) => {
+                for (what, x, want_card) in
+                    [("its hole", 480, false), ("its left side", 330, true), ("its right side", 628, true), ("left of it", 280, false)]
+                {
+                    let got = colour(&f[0], 640, x - 4, 176);
+                    if (want_card && !red(got)) || (!want_card && !dark(got)) {
+                        failures.push(format!("a turned, moved clip on V1 isn't where the player puts it, at {what} (x {x}): {got:?}"));
+                    }
+                }
+            }
+            Err(e) => failures.push(format!("a turned clip on V1 didn't export: {e}")),
         }
 
         // Turned, flipped and faded, and footage as picture-in-picture: the
