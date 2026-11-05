@@ -1,8 +1,14 @@
-# Cutlass 0.2.3
+# Cutlass 0.2.4
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
+
+## New in 0.2.4
+
+- **Pictures.** PNG, JPEG, WebP, BMP, TIFF and GIF files now import alongside your video. A picture can be on screen for as long as you like: it starts at five seconds, and you drag its edge to change that. Transparency is kept, so a logo or a watermark on V2 shows your footage around it and through any holes, in the player and in the export. An animated GIF comes in as a video. Create makes clips from a video, so add pictures in Studio.
+- **Clips above V1 export the way you placed them.** Scale, position, rotation, flips, blur and fades on V2 and higher tracks showed in the player but were left out of the export, so a picture-in-picture or a logo moved into a corner came out filling the frame. They now export as you see them, and the space around a smaller clip shows the track beneath instead of black bars.
+- **The Studio player fills its frame.** While you scrubbed or played, the picture could sit at its own small size in the middle of a large player, then jump to full size when you stopped.
 
 ## New in 0.2.3
 
@@ -53,7 +59,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.2.3_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.2.4_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
@@ -98,6 +104,7 @@ Your video never leaves your machine. The AI features send only your audio or tr
 - Windows only. macOS and Linux are on the roadmap.
 - SmartScreen reputation is still building, and so is the reputation the installer needs with antivirus software.
 - 4K exports are slow by nature. Export at 1080p for long videos.
+- Keyframed movement on tracks above V1 plays in the player but isn't exported yet. A clip there exports in place, but without the movement.
 - Collaboration isn't available in this build.
 - The offline moment finder has no comprehension — it can't tell you *why* a moment works the way the AI can. A good fallback, not a replacement.
 
