@@ -635,11 +635,16 @@ fn clip_video_chain(
     rx: f64,
     ry: f64,
 ) -> String {
-    // retime: source span was len*speed; /speed compresses it to len
+    // retime: source span was len*speed; /speed compresses it to len. Then
+    // back to the export's rate: a 2x clip leaves setpts at twice it, and the
+    // output's constant-rate conversion only drops frames once it is more
+    // than a frame behind, so the picture of everything after a fast clip ran
+    // about two frames late of its sound (measured). `fps` picks the nearest
+    // frame for every tick instead.
     let setpts = if (fx.speed - 1.0).abs() < 1e-9 {
         "setpts=PTS-STARTPTS".to_string()
     } else {
-        format!("setpts=(PTS-STARTPTS)/{:.5}", fx.speed)
+        format!("setpts=(PTS-STARTPTS)/{:.5},fps={fps}", fx.speed)
     };
     // Temperature/tint as a midtone colour-balance shift (warm = +red/-blue).
     //
@@ -2346,12 +2351,15 @@ fn run_export(
                     transition_window(vi, tag, k, *dur, w, h, fps, fx, lut, s)
                 };
                 // A tail window (input `ai`) and B head window (input `bi`);
-                // each input carries both :v and :a.
+                // each input carries both :v and :a. A retimed clip's window
+                // takes `dur * speed` of its source, as the clip itself does,
+                // and the chains retime it back to `dur`.
                 let (a_still, b_still) = (crate::media::is_still(a_path), crate::media::is_still(b_path));
-                add_source(&mut cmd, a_path, a_still, *a_src, *dur, fps);
+                let (a_span, b_span) = (dur * a_fx.speed, dur * b_fx.speed);
+                add_source(&mut cmd, a_path, a_still, *a_src, a_span, fps);
                 let ai = input_idx;
                 input_idx += 1;
-                add_source(&mut cmd, b_path, b_still, *b_src, *dur, fps);
+                add_source(&mut cmd, b_path, b_still, *b_src, b_span, fps);
                 let bi = input_idx;
                 input_idx += 1;
 
@@ -2362,29 +2370,33 @@ fn run_export(
                     "[xa{k}][xb{k}]xfade=transition={kind}:duration={dur:.3}:offset=0[v{k}];"
                 ));
 
-                // audio: crossfade both windows' audio, each at its clip's
-                // volume, silence where absent
-                let vol = |fx: &ClipFx| {
-                    if (fx.volume - 1.0).abs() > 1e-9 { format!(",volume={:.4}", fx.volume) } else { String::new() }
+                // audio: crossfade both windows' sound, each through its
+                // clip's own audio chain (speed, denoise, volume, sync offset,
+                // music removal), silence where a side has none
+                let mut window_audio = |vi: u32, path: &str, src: f64, span: f64, fx: &ClipFx, own: usize| {
+                    let vocals = if fx.music_removed > 0.5 {
+                        crate::media::vocals_covering(std::path::Path::new(path), src, src + span)
+                    } else {
+                        None
+                    };
+                    if let Some((vp, file_start)) = vocals {
+                        let off = (src - file_start).max(0.0);
+                        cmd.args(["-ss", &format!("{off:.3}"), "-t", &format!("{span:.3}")]);
+                        cmd.input(vp.to_string_lossy());
+                        filters.push_str(&clip_audio_chain(input_idx, own, *dur, fx));
+                        input_idx += 1;
+                    } else if has_audio(path) {
+                        filters.push_str(&clip_audio_chain(vi, own, *dur, fx));
+                    } else {
+                        cmd.args(["-f", "lavfi", "-t", &format!("{dur:.3}")]);
+                        cmd.input("anullsrc=r=48000:cl=stereo");
+                        filters.push_str(&format!("[{input_idx}:a]acopy[a{own}];"));
+                        input_idx += 1;
+                    }
+                    format!("[a{own}]")
                 };
-                let a_audio = if has_audio(a_path) {
-                    filters.push_str(&format!("[{ai}:a]aresample=48000{}[xaa{k}];", vol(a_fx)));
-                    format!("[xaa{k}]")
-                } else {
-                    cmd.args(["-f", "lavfi", "-t", &format!("{dur:.3}")]);
-                    cmd.input("anullsrc=r=48000:cl=stereo");
-                    input_idx += 1;
-                    format!("[{}:a]", input_idx - 1)
-                };
-                let b_audio = if has_audio(b_path) {
-                    filters.push_str(&format!("[{bi}:a]aresample=48000{}[xba{k}];", vol(b_fx)));
-                    format!("[xba{k}]")
-                } else {
-                    cmd.args(["-f", "lavfi", "-t", &format!("{dur:.3}")]);
-                    cmd.input("anullsrc=r=48000:cl=stereo");
-                    input_idx += 1;
-                    format!("[{}:a]", input_idx - 1)
-                };
+                let a_audio = window_audio(ai, a_path, *a_src, a_span, a_fx, 1_000_000 + k * 2);
+                let b_audio = window_audio(bi, b_path, *b_src, b_span, b_fx, 1_000_000 + k * 2 + 1);
                 filters.push_str(&format!("{a_audio}{b_audio}acrossfade=d={dur:.3}[a{k}];"));
             }
         }
@@ -3356,8 +3368,8 @@ mod tests {
 
     /// The windows of a dissolve carry their clips' looks, set up for the
     /// window: movement keyframes from the window's start (before the
-    /// incoming clip's in-point for its head), at normal speed, without the
-    /// clips' own fades.
+    /// incoming clip's in-point for its head), at their own speed, without
+    /// the clips' own fades.
     #[test]
     fn a_dissolve_keeps_both_clips_looks() {
         let mut a = clip(0.0, 4.0, 0.0, 0.0);
@@ -3376,6 +3388,31 @@ mod tests {
             }
             _ => panic!("seg1 not a transition"),
         }
+    }
+
+    /// A retimed clip keeps its speed through a dissolve. The windows used to
+    /// be read at normal speed from source positions that ignored it: a 2x
+    /// clip slowed to 1x for the dissolve, and the incoming head started
+    /// half as far before its in-point as it plays.
+    #[test]
+    fn a_dissolve_plays_both_clips_at_their_own_speed() {
+        let mut a = clip(0.0, 4.0, 10.0, 0.0);
+        a.fx.speed = 2.0; // 8s of source from 10s
+        let mut b = clip(4.0, 4.0, 6.0, 1.0);
+        b.fx.speed = 0.5;
+        let segs = build_segments(vec![a, b]);
+        let Segment::Transition { a_src, b_src, a_fx, b_fx, dur, .. } = &segs[1] else {
+            panic!("seg1 not a transition")
+        };
+        assert!((dur - 1.0).abs() < 1e-9);
+        // A's last second of timeline is its last 2s of source: 16..18
+        assert!((a_src - 16.0).abs() < 1e-9, "{a_src}");
+        // B's head is the half second of source before its in-point
+        assert!((b_src - 5.5).abs() < 1e-9, "{b_src}");
+        assert_eq!((a_fx.speed, b_fx.speed), (2.0, 0.5));
+        // the body before it still ends where the window starts
+        let Segment::Clip { src_in, len, fx, .. } = &segs[0] else { panic!() };
+        assert!((src_in + len * fx.speed - a_src).abs() < 1e-9);
     }
 
     #[test]
@@ -3417,8 +3454,8 @@ fn split_kf(kf: &Keyframes) -> (Keyframes, Keyframes) {
 /// A clip's look for a transition window starting `at` seconds into it
 /// (negative: the incoming clip's head, before its in-point), `dur` long:
 /// stepped keyframes as at the window's middle, movement from its start, at
-/// normal speed (the windows are read at it) and without the clip's own
-/// fades, which the dissolve stands in for.
+/// the clip's own speed (the window reads `dur * speed` of source) and
+/// without the clip's own fades, which the dissolve stands in for.
 fn window_fx(c: &ExportClip, at: f64, dur: f64) -> ClipFx {
     let (smooth, stepped) = split_kf(&c.kf);
     let mut fx = c.fx.sampled_at(&stepped, at + dur / 2.0);
@@ -3426,7 +3463,6 @@ fn window_fx(c: &ExportClip, at: f64, dur: f64) -> ClipFx {
         .into_iter()
         .map(|(p, pts)| (p, pts.into_iter().map(|(t, v)| (t - at, v)).collect()))
         .collect();
-    fx.speed = 1.0;
     fx.fade_in = 0.0;
     fx.fade_out = 0.0;
     fx.fade_into = 0.0;
@@ -3467,11 +3503,13 @@ pub fn build_segments(mut clips: Vec<ExportClip>) -> Vec<Segment> {
                 if let Some(Segment::Clip { len, .. }) = segs.last_mut() {
                     *len -= d;
                 }
+                // source runs at each clip's speed: A's tail is its last
+                // `d * speed` of source, B's head the `d * speed` before its in
                 segs.push(Segment::Transition {
                     a_path: p.path.clone(),
-                    a_src: p.src_in + p.len - d,
+                    a_src: p.src_in + (p.len - d) * p.fx.speed,
                     b_path: c.path.clone(),
-                    b_src: (c.src_in - d).max(0.0),
+                    b_src: (c.src_in - d * c.fx.speed).max(0.0),
                     dur: d,
                     dip: c.trans_dip,
                     a_fx: window_fx(p, p.len - d, d),

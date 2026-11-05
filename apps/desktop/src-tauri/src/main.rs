@@ -101,14 +101,16 @@ struct PlayClip {
 }
 
 /// A transition on the base track, as playback draws it: from `start` to
-/// `end` (the cut) the next clip's head, `b_path` from `b_src`, plays over
-/// this clip's tail, the way export renders it (`build_segments`).
+/// `end` (the cut) the next clip's head, `b_path` from `b_src` at the clip's
+/// own `b_speed`, plays over this clip's tail, the way export renders it
+/// (`build_segments`).
 #[derive(Clone)]
 struct PlayTransition {
     start: f64,
     end: f64,
     b_path: String,
     b_src: f64,
+    b_speed: f64,
 }
 
 /// The transitions on the base video track (the lowest one with clips): a
@@ -141,11 +143,13 @@ fn play_transitions(snap: &serde_json::Value, media: &HashMap<String, MediaInfo>
             }
             let d = b["fx"]["trans_dur"].as_f64().unwrap_or(0.0).min(num(a, "len") - 0.05).min(num(b, "len"));
             let path = media.get(b["media"].as_str()?)?.path.clone();
+            let speed = b["fx"]["speed"].as_f64().unwrap_or(1.0);
             (d > 0.05).then(|| PlayTransition {
                 start: cut - d,
                 end: cut,
                 b_path: path,
-                b_src: (num(b, "src_in") - d).max(0.0),
+                b_src: (num(b, "src_in") - d * speed).max(0.0),
+                b_speed: speed,
             })
         })
         .collect()
@@ -2626,7 +2630,7 @@ fn start_video_thread(
                                 let e = cutlass_engine::MediaEngine::open(&x.b_path).ok()?;
                                 heads.insert(x.b_path.clone(), e);
                             }
-                            let frame = heads.get_mut(&x.b_path)?.stream_frame_at(x.b_src + (t - x.start), 854).ok()?;
+                            let frame = heads.get_mut(&x.b_path)?.stream_frame_at(x.b_src + (t - x.start) * x.b_speed, 854).ok()?;
                             frame_to_data_url(&frame, 72).ok()
                         });
                     if let Some(eng) = engines.get_mut(&c.path) {
@@ -3724,7 +3728,8 @@ mod tests {
 
     /// Playback draws a transition over the same window export renders it:
     /// the last `d` seconds before the cut, `d` capped by both clips, with
-    /// the next clip's head from `d` before its in-point. Only on the base
+    /// the next clip's head from `d` (times its speed) of source before its
+    /// in-point, at that speed. Only on the base
     /// track, and only where the clips meet.
     #[test]
     fn playback_finds_the_transitions_export_renders() {
@@ -3746,17 +3751,19 @@ mod tests {
             json!({ "track": track, "media": media, "start": start, "len": len, "src_in": src_in,
                     "fx": { "trans_dur": trans } })
         };
+        let mut fast = clip("V1", "b", 11.0, 0.5, 10.0, 2.0); // capped by its own length
+        fast["fx"]["speed"] = json!(2.0); // and its head runs at 2x: 1s of source
         let snap = json!({ "clips": [
             clip("V1", "a", 0.0, 4.0, 0.0, 0.0),
             clip("V1", "b", 4.0, 3.0, 2.0, 1.0),   // dissolves in over A's last second
             clip("V1", "a", 9.0, 2.0, 5.0, 1.5),   // after a gap: no transition
             clip("V2", "b", 4.0, 1.0, 0.0, 0.5),   // on an upper track: none either
-            clip("V1", "b", 11.0, 0.5, 10.0, 2.0), // capped by its own length
+            fast,
         ]});
         let found = play_transitions(&snap, &media);
-        let got: Vec<(f64, f64, &str, f64)> =
-            found.iter().map(|x| (x.start, x.end, x.b_path.as_str(), x.b_src)).collect();
-        assert_eq!(got, vec![(3.0, 4.0, "B.mp4", 1.0), (10.5, 11.0, "B.mp4", 9.5)]);
+        let got: Vec<(f64, f64, &str, f64, f64)> =
+            found.iter().map(|x| (x.start, x.end, x.b_path.as_str(), x.b_src, x.b_speed)).collect();
+        assert_eq!(got, vec![(3.0, 4.0, "B.mp4", 1.0, 1.0), (10.5, 11.0, "B.mp4", 9.0, 2.0)]);
     }
 
     /// Pull the quoted strings out of `export const <name> = [ ... ];`.

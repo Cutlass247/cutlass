@@ -967,7 +967,9 @@ export default function App() {
         const into = playhead - (next.start - d);
         const p = into / d;
         const dip = (next.fx?.trans_dip ?? 0) > 0.5; // fadeblack: out, then in
-        const bSrc = Math.max(0, next.src_in - d) + into;
+        // the head runs at the next clip's own speed, as export reads it
+        const bSpeed = next.fx?.speed ?? 1;
+        const bSrc = Math.max(0, next.src_in - d * bSpeed) + into * bSpeed;
         out.push({ clip, media: m, srcT: Math.min(srcT, m.duration_s), mix: dip ? Math.max(0, 1 - 2 * p) : 1, role: "a" });
         out.push({ clip: next, media: mb, srcT: Math.min(bSrc, mb.duration_s), mix: dip ? Math.max(0, 2 * p - 1) : p, role: "b" });
         continue;
