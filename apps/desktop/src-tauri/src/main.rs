@@ -2667,6 +2667,13 @@ async fn export_project(
                     start: c.start,
                     fx: ClipFx::from_map(&c.fx),
                     audio_only: false,
+                    // left out, keyframed movement above the base track
+                    // played in the player and was dropped from the export
+                    kf: c
+                        .kf
+                        .keys()
+                        .map(|p| (p.clone(), cutlass_core::project::kf_points(&c.kf, p)))
+                        .collect(),
                 })
             })
             .collect();
@@ -2682,6 +2689,7 @@ async fn export_project(
                     start: c.start,
                     fx: ClipFx::from_map(&c.fx),
                     audio_only: true,
+                    kf: Default::default(),
                 });
             }
         }
@@ -3957,6 +3965,7 @@ mod tests {
                 start: 0.0,
                 fx: ClipFx::default(),
                 audio_only: true,
+                kf: Default::default(),
             }],
             &[],
             &out,
@@ -4175,6 +4184,7 @@ mod tests {
             start: 0.5,
             fx: ClipFx::default(),
             audio_only: false,
+            kf: Default::default(),
         };
 
         // On the base track the picture is fitted and its hole is black, as on
@@ -4215,10 +4225,65 @@ mod tests {
             (Err(e), _) | (_, Err(e)) => failures.push(format!("a logo over footage didn't export: {e}")),
         }
 
+        // Keyframed movement, which the player showed and export dropped: the
+        // card slides from a quarter of the frame left to a quarter right
+        // while growing from 30% to 60%, over its first 2s. At 0.5s and 1.5s
+        // into it (1.0s and 2.0s of the program) its centre and edges are
+        // where linear interpolation puts them, frame by frame.
+        let slide = Overlay {
+            kf: [
+                ("pos_x".to_string(), vec![(0.0, -0.25), (2.0, 0.25)]),
+                ("scale".to_string(), vec![(0.0, 0.3), (2.0, 0.6)]),
+            ]
+            .into_iter()
+            .collect(),
+            ..logo_like(&card_s)
+        };
+        let frames_at = |ovs: &[Overlay], name: &str| -> Result<Vec<Vec<u8>>, String> {
+            let out = dir.join(name);
+            export(&[clip(&footage, 3.0)], ovs, &[], &out, &settings, &mut |_| {}, &std::sync::atomic::AtomicBool::new(false))
+                .map_err(err_str)?;
+            Ok([1.0, 2.0].iter().map(|t| ffmpeg_frame(&out, *t, 640, 360, false)).collect())
+        };
+        match (frames_at(&[], "slide-base.mp4"), frames_at(&[slide], "slide.mp4")) {
+            (Ok(base), Ok(f)) => {
+                for (i, into) in [0.5, 1.5].iter().enumerate() {
+                    let pos = -0.25 + 0.25 * into;
+                    let scale = 0.3 + 0.15 * into;
+                    let cx = (320.0 + pos * 640.0) as usize;
+                    let half = (240.0 * scale) as usize; // the fitted card is 480 wide
+                    let at = |x: usize| (colour(&f[i], 640, x - 4, 176), colour(&base[i], 640, x - 4, 176));
+                    for (what, x, want_card) in [
+                        ("its hole", cx, false),
+                        ("inside its left edge", cx - half + 14, true),
+                        ("inside its right edge", cx + half - 14, true),
+                        ("outside its left edge", cx - half - 18, false),
+                        ("outside its right edge", cx + half + 18, false),
+                    ] {
+                        let (got, under) = at(x);
+                        let ok = if want_card { red(got) } else { near(got, under) };
+                        if !ok {
+                            failures.push(format!(
+                                "a keyframed logo {into}s in: wrong at {what} (x {x}): {got:?}, footage there {under:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+            (Err(e), _) | (_, Err(e)) => failures.push(format!("a keyframed logo didn't export: {e}")),
+        }
+
         // Turned, flipped and faded, and footage as picture-in-picture: the
-        // filters run and the timing holds.
+        // filters run and the timing holds. Keyframed turning and colour too.
         let turned = Overlay {
             fx: ClipFx { scale: 0.6, rot: 15.0, flip_h: 1.0, fade_in: 0.4, fade_out: 0.4, ..Default::default() },
+            kf: [
+                ("rot".to_string(), vec![(0.0, 0.0), (2.0, 90.0)]),
+                ("hue".to_string(), vec![(0.0, 0.0), (1.0, 120.0)]),
+                ("saturation".to_string(), vec![(0.0, 1.0), (2.0, 0.2)]),
+            ]
+            .into_iter()
+            .collect(),
             ..logo_like(&card_s)
         };
         let pip = Overlay {

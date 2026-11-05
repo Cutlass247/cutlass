@@ -43,6 +43,7 @@ fn main() -> anyhow::Result<()> {
         start: 0.0,
         fx: ClipFx::default(),
         audio_only: true,
+        kf: Default::default(),
     }];
 
     for (label, master) in [("plain", false), ("mastered", true)] {

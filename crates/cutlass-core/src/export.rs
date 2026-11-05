@@ -329,7 +329,7 @@ const KF_MAX_SEGS: usize = 80;
 /// A clip from a track above the base, composited over the program at its
 /// timeline position. Higher video tracks stack in order; `audio_only`
 /// beds (from A-tracks) contribute their audio to the mix but no picture.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Overlay {
     pub path: String,
     pub src_in: f64,
@@ -337,6 +337,10 @@ pub struct Overlay {
     pub start: f64,
     pub fx: ClipFx,
     pub audio_only: bool,
+    /// Keyframes, param → (clip-relative time, value), as on [`ExportClip`].
+    /// Movement (position, scale, rotation) and hue/saturation follow them
+    /// frame by frame; see [`overlay_placement`].
+    pub kf: BTreeMap<String, Vec<(f64, f64)>>,
 }
 
 /// A generated text title drawn over the program during its window.
@@ -771,12 +775,81 @@ struct Placement {
     y: String,
 }
 
+/// A keyframed value as an ffmpeg expression of `var`, times `mul`:
+/// interpolated as `project::interp` does (and the preview's `interp`),
+/// linearly between points and held before the first and after the last.
+/// Evaluated per frame, so movement is as smooth in the export as in the
+/// player.
+fn kf_expr(points: &[(f64, f64)], var: &str, mul: f64) -> String {
+    let Some(&(_, last)) = points.last() else { return "0".into() };
+    let mut e = format!("{:.6}", last * mul);
+    for w in points.windows(2).rev() {
+        let ((ta, va), (tb, vb)) = (w[0], w[1]);
+        if tb - ta < 1e-9 {
+            continue;
+        }
+        e = format!(
+            "if(lt({var},{tb:.6}),{:.6}+({:.6})*({var}-({ta:.6}))/{:.6},{e})",
+            va * mul,
+            (vb - va) * mul,
+            tb - ta
+        );
+    }
+    let (first_t, first_v) = points[0];
+    format!("if(lt({var},{first_t:.6}),{:.6},{e})", first_v * mul)
+}
+
 /// Mirrors the preview's CSS (`fxStyle` in ui.tsx), `translate(pos) scale()
 /// rotate()`: the clip scales and turns about its own centre, then moves by
 /// `pos_x`/`pos_y` of the frame. Flips, blur and fades come along too. Export
 /// used to apply none of this above the base track, so a logo shrunk into a
 /// corner came out filling the frame, as did any picture-in-picture.
-fn overlay_placement(fx: &ClipFx, len: f64, w: u32, h: u32) -> Placement {
+///
+/// Keyframed movement follows `kf` frame by frame: position through the
+/// overlay's x/y, which ffmpeg evaluates per frame, and scale and rotation
+/// through per-frame expressions on a fixed square canvas big enough for the
+/// clip at its largest, at any angle, so the overlay's size, and with it the
+/// centring, never changes. `t0` is when the clip starts on the timeline.
+fn overlay_placement(
+    fx: &ClipFx,
+    kf: &BTreeMap<String, Vec<(f64, f64)>>,
+    len: f64,
+    t0: f64,
+    w: u32,
+    h: u32,
+) -> Placement {
+    let keyed = |p: &str| kf.get(p).filter(|v| !v.is_empty());
+    let points = |p: &str, base: f64| keyed(p).cloned().unwrap_or_else(|| vec![(0.0, base)]);
+    let grows = keyed("scale").is_some() || keyed("rot").is_some();
+    let moves = keyed("pos_x").is_some() || keyed("pos_y").is_some();
+    if !grows && !moves {
+        return still_placement(fx, len, w, h);
+    }
+    let mut p = still_placement(&ClipFx { pos_x: 0.0, pos_y: 0.0, ..fx.clone() }, len, w, h);
+    if grows {
+        // rebuilt: flips and blur, the per-frame scale and turn, then fades
+        p.filters = fx_flips_and_blur(fx);
+        let scale = points("scale", fx.scale);
+        let biggest = scale.iter().map(|(_, s)| *s).fold(0.01, f64::max);
+        let diag = ((w as f64).powi(2) + (h as f64).powi(2)).sqrt();
+        let c = (((diag * biggest) / 2.0).ceil() as u32 * 2).max(2);
+        let s = format!("max({},0.01)", kf_expr(&scale, "t", 1.0));
+        p.filters.push_str(&format!(
+            "scale=w='max(2,trunc(iw*{s}/2)*2)':h='max(2,trunc(ih*{s}/2)*2)':eval=frame,\
+             pad={c}:{c}:(ow-iw)/2:(oh-ih)/2:color=black@0:eval=frame,\
+             rotate=a='{}':ow={c}:oh={c}:fillcolor=none,",
+            kf_expr(&points("rot", fx.rot), "t", std::f64::consts::PI / 180.0)
+        ));
+        p.filters.push_str(&fade_alpha(fx, len));
+    }
+    // overlay's x/y see the program's time; the keyframes are the clip's
+    let local = format!("(t-{t0:.3})");
+    p.x = format!("'(W-w)/2+({})'", kf_expr(&points("pos_x", fx.pos_x), &local, w as f64));
+    p.y = format!("'(H-h)/2+({})'", kf_expr(&points("pos_y", fx.pos_y), &local, h as f64));
+    p
+}
+
+fn fx_flips_and_blur(fx: &ClipFx) -> String {
     let mut f = String::new();
     if fx.flip_h > 0.5 {
         f.push_str("hflip,");
@@ -787,6 +860,28 @@ fn overlay_placement(fx: &ClipFx, len: f64, w: u32, h: u32) -> Placement {
     if fx.blur > 0.01 {
         f.push_str(&format!("gblur=sigma={:.2},", fx.blur));
     }
+    f
+}
+
+/// Fades take the transparency down, as the preview's opacity does.
+fn fade_alpha(fx: &ClipFx, len: f64) -> String {
+    let mut f = String::new();
+    if fx.fade_in > 0.0 {
+        f.push_str(&format!("fade=t=in:st=0:d={:.3}:alpha=1,", fx.fade_in));
+    }
+    if fx.fade_out > 0.0 {
+        f.push_str(&format!(
+            "fade=t=out:st={:.3}:d={:.3}:alpha=1,",
+            (len - fx.fade_out).max(0.0),
+            fx.fade_out
+        ));
+    }
+    f
+}
+
+/// [`overlay_placement`] for a clip with no keyframed movement.
+fn still_placement(fx: &ClipFx, len: f64, w: u32, h: u32) -> Placement {
+    let mut f = fx_flips_and_blur(fx);
     if (fx.scale - 1.0).abs() > 1e-9 {
         f.push_str(&format!(
             "scale=trunc(iw*{sc:.5}/2)*2:trunc(ih*{sc:.5}/2)*2,",
@@ -799,17 +894,7 @@ fn overlay_placement(fx: &ClipFx, len: f64, w: u32, h: u32) -> Placement {
         let a = fx.rot * std::f64::consts::PI / 180.0;
         f.push_str(&format!("rotate={a:.5}:ow=rotw({a:.5}):oh=roth({a:.5}):fillcolor=none,"));
     }
-    // fades take the transparency down, as the preview's opacity does
-    if fx.fade_in > 0.0 {
-        f.push_str(&format!("fade=t=in:st=0:d={:.3}:alpha=1,", fx.fade_in));
-    }
-    if fx.fade_out > 0.0 {
-        f.push_str(&format!(
-            "fade=t=out:st={:.3}:d={:.3}:alpha=1,",
-            (len - fx.fade_out).max(0.0),
-            fx.fade_out
-        ));
-    }
+    f.push_str(&fade_alpha(fx, len));
     let (px, py) = (fx.pos_x * w as f64, fx.pos_y * h as f64);
     Placement {
         filters: f,
@@ -1633,14 +1718,21 @@ fn slice_overlay(ov: &Overlay, t0: f64, t1: f64) -> Option<Overlay> {
     if end - start <= 1e-6 {
         return None;
     }
+    // if the overlay began before this chunk, it's that far into itself
+    let into = start - ov.start;
     Some(Overlay {
         path: ov.path.clone(),
-        // if the overlay began before this chunk, enter its source that far in
-        src_in: ov.src_in + (start - ov.start),
+        src_in: ov.src_in + into,
         len: end - start,
         start: start - t0,
         fx: ov.fx.clone(),
         audio_only: ov.audio_only,
+        // keyframe times are the clip's own, so they move back by as much
+        kf: ov
+            .kf
+            .iter()
+            .map(|(p, pts)| (p.clone(), pts.iter().map(|(t, v)| (t - into, *v)).collect()))
+            .collect(),
     })
 }
 
@@ -2241,14 +2333,23 @@ fn run_export(
                     b = ov.fx.brightness
                 ));
             }
-            if (ov.fx.saturation - 1.0).abs() > 1e-9 || ov.fx.hue != 0.0 {
+            let keyed = |p: &str| ov.kf.get(p).filter(|v| !v.is_empty());
+            if keyed("hue").is_some() || keyed("saturation").is_some() {
+                // keyframed: per frame, as the player shows it
+                let pts = |p: &str, base: f64| keyed(p).cloned().unwrap_or_else(|| vec![(0.0, base)]);
+                grade.push_str(&format!(
+                    "hue=h='{}':s='max(0,{})',",
+                    kf_expr(&pts("hue", ov.fx.hue), "t", 1.0),
+                    kf_expr(&pts("saturation", ov.fx.saturation), "t", 1.0)
+                ));
+            } else if (ov.fx.saturation - 1.0).abs() > 1e-9 || ov.fx.hue != 0.0 {
                 grade.push_str(&format!(
                     "hue=h={:.2}:s={:.4},",
                     ov.fx.hue,
                     ov.fx.saturation.max(0.0)
                 ));
             }
-            let place = overlay_placement(&ov.fx, ov.len, w, h);
+            let place = overlay_placement(&ov.fx, &ov.kf, ov.len, t0, w, h);
             // Fitted to the frame the way the preview's layer is, with the
             // spare room transparent: it used to be opaque black, so a logo
             // or a 4:3 picture-in-picture covered the program in bars the
@@ -2928,6 +3029,37 @@ mod tests {
         let fx2 = ClipFx::from_map(&m);
         assert_eq!(fx2.censor[1].style, 3.0);
         assert!((fx2.censor[1].x - 0.8).abs() < 1e-9);
+    }
+
+    /// Keyframe times are the clip's own, so a chunk of a long export that
+    /// starts partway into an overlay moves them back by as much, or its
+    /// movement plays late in every chunk after the first.
+    #[test]
+    fn a_sliced_overlay_keeps_its_keyframes_in_step() {
+        let ov = Overlay {
+            start: 2.0,
+            len: 4.0,
+            kf: [("pos_x".to_string(), vec![(0.0, 0.0), (4.0, 1.0)])].into_iter().collect(),
+            ..Default::default()
+        };
+        let s = slice_overlay(&ov, 3.0, 10.0).expect("overlaps the chunk");
+        assert_eq!(s.kf["pos_x"], vec![(-1.0, 0.0), (3.0, 1.0)]);
+        assert!((s.src_in - 1.0).abs() < 1e-9, "enters its source 1s in");
+        assert!(s.start.abs() < 1e-9, "starts at the chunk's start");
+    }
+
+    /// Built like `project::interp`: held before the first point and after
+    /// the last, linear between. The numbers are checked against real ffmpeg
+    /// in the app's every_offered_file_type_imports.
+    #[test]
+    fn a_keyframe_expression_holds_its_ends_and_runs_straight_between() {
+        assert_eq!(kf_expr(&[], "t", 1.0), "0");
+        assert_eq!(kf_expr(&[(1.0, 5.0)], "t", 1.0), "if(lt(t,1.000000),5.000000,5.000000)");
+        let e = kf_expr(&[(0.0, 0.0), (2.0, 10.0), (2.0, 99.0), (4.0, 4.0)], "t", 2.0);
+        assert!(e.starts_with("if(lt(t,0.000000),0.000000,"), "held before: {e}");
+        assert!(e.contains("if(lt(t,2.000000),0.000000+(20.000000)*(t-(0.000000))/2.000000"), "first leg: {e}");
+        assert!(e.ends_with(",8.000000)))"), "held after, at the last value: {e}");
+        assert!(!e.contains("/0.000000"), "a zero-length leg is skipped, not divided by: {e}");
     }
 
     #[test]
