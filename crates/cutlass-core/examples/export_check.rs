@@ -130,7 +130,8 @@ fn main() -> anyhow::Result<()> {
     let dissolve = dissolve_keeps_speed(&probe)?;
     let overlays = overlays_keep_their_settings(&probe)?;
     let finish = boxes_and_finish_follow(&probe)?;
-    anyhow::ensure!(dissolve && overlays && finish, "see the FAIL lines above");
+    let glide = strengths_glide(&probe)?;
+    anyhow::ensure!(dissolve && overlays && finish && glide, "see the FAIL lines above");
 
     println!("OK");
     Ok(())
@@ -514,3 +515,120 @@ fn boxes_and_finish_follow(probe: &Probe) -> anyhow::Result<bool> {
     Ok(ok)
 }
 
+
+/// Grain, sharpen and a blur box's size follow their keyframes every frame,
+/// on V1 and above it. Their filters can't change once running, so they used
+/// to be sampled into 0.2s steps: a fade-up of grain or a growing box moved
+/// five times a second.
+///
+/// The source is flat grey above (grain shows as spread, a box as its own
+/// colour) and a fine texture below (sharpen raises its contrast, blur
+/// flattens it). A value that glides changes at nearly every frame of its
+/// ramp; a stepped one sits still for six frames at a time.
+fn strengths_glide(probe: &Probe) -> anyhow::Result<bool> {
+    use cutlass_core::export::{build_segments, CensorSlot, ClipFx, ExportClip};
+    use std::collections::BTreeMap;
+    let ff = &probe.ff;
+    let dir = std::env::temp_dir();
+    let (w, h) = (640usize, 360usize);
+    let src = dir.join("cutlass_export_texture.mkv");
+    let made = std::process::Command::new(ff)
+        .args(["-y", "-v", "error", "-f", "lavfi", "-i"])
+        .arg("color=c=black:s=640x360:r=30:d=10,format=yuv420p,geq=lum='if(lt(Y,180),110,110+60*sin(X*1.7)*sin(Y*1.3))':cb=128:cr=128")
+        .args(["-c:v", "ffv1"])
+        .arg(&src)
+        .status()?;
+    anyhow::ensure!(made.success(), "could not make the texture");
+    let src_s = src.to_string_lossy().into_owned();
+    let kf = |p: &str, pts: &[(f64, f64)]| -> BTreeMap<String, Vec<(f64, f64)>> {
+        [(p.to_string(), pts.to_vec())].into_iter().collect()
+    };
+    let clip = |start: f64, fx: ClipFx, kf: BTreeMap<String, Vec<(f64, f64)>>| ExportClip {
+        start,
+        len: 2.0,
+        src_in: start,
+        path: src_s.clone(),
+        fx,
+        lut: String::new(),
+        trans_dur: 0.0,
+        trans_dip: false,
+        kf,
+    };
+    // 4..6s: a solid red box up top and a blur box below, both growing from
+    // 0.1 to 0.5 of the width
+    let mut boxes = ClipFx::default();
+    boxes.censor[0] = CensorSlot { style: 3.0, y: 0.25, h: 0.2, color: 0xFF0000 as f64, ..Default::default() };
+    boxes.censor[1] = CensorSlot { style: 1.0, y: 0.75, h: 0.2, strength: 0.5, ..Default::default() };
+    let mut box_kf = kf("censor_w", &[(0.0, 0.1), (2.0, 0.5)]);
+    box_kf.insert("censor2_w".into(), vec![(0.0, 0.1), (2.0, 0.5)]);
+    let segs = build_segments(vec![
+        clip(0.0, ClipFx::default(), kf("grain", &[(0.0, 0.0), (2.0, 0.6)])),
+        clip(2.0, ClipFx::default(), kf("sharpen", &[(0.0, 0.0), (2.0, 1.0)])),
+        clip(4.0, boxes, box_kf),
+        clip(6.0, ClipFx::default(), Default::default()),
+        clip(8.0, ClipFx::default(), Default::default()),
+    ]);
+    // on V2 over the same picture: 6..8s grain ramping (and sharpen, which
+    // only has to render here), 8..10s a blur box growing
+    let mut okf = kf("grain", &[(0.0, 0.0), (2.0, 0.6)]);
+    okf.insert("sharpen".into(), vec![(0.0, 0.0), (2.0, 0.5)]);
+    let mut bfx = ClipFx::default();
+    bfx.censor[0] = CensorSlot { style: 1.0, y: 0.75, h: 0.2, strength: 0.5, ..Default::default() };
+    let upper = |start: f64, fx: ClipFx, kf: BTreeMap<String, Vec<(f64, f64)>>| Overlay {
+        path: src_s.clone(),
+        src_in: start,
+        len: 2.0,
+        start,
+        fx,
+        audio_only: false,
+        lut: String::new(),
+        kf,
+    };
+    let ovs = [upper(6.0, ClipFx::default(), okf), upper(8.0, bfx, kf("censor_w", &[(0.0, 0.1), (2.0, 0.5)]))];
+    let out = dir.join("cutlass_export_glide.mov");
+    export(&segs, &ovs, &[], &out, &Probe::settings(), &mut |_| {}, &std::sync::atomic::AtomicBool::new(false))?;
+
+    let raw = std::process::Command::new(ff)
+        .args(["-v", "error", "-i"])
+        .arg(&out)
+        .args(["-vf", "scale=in_color_matrix=bt709:in_range=tv,format=rgb24", "-f", "rawvideo", "-"])
+        .output()?
+        .stdout;
+    let frames: Vec<&[u8]> = raw.chunks_exact(w * h * 3).collect();
+    anyhow::ensure!(frames.len() >= 299, "the render has {} frames", frames.len());
+    let g = |f: &[u8], x: usize, y: usize| f[(y * w + x) * 3 + 1] as f64;
+    // spread of the flat grey (grain), and of the texture (sharpen)
+    let spread = |f: &[u8], y0: usize| {
+        let v: Vec<f64> = (0..120 * 60).map(|i| g(f, 40 + i % 120, y0 + i / 120)).collect();
+        let m = v.iter().sum::<f64>() / v.len() as f64;
+        (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64).sqrt()
+    };
+    // a box's width on row y: the run of red, or of flattened texture
+    let red_width = |f: &[u8], y: usize| (0..w).filter(|&x| f[(y * w + x) * 3] > 150 && g(f, x, y) < 80.0).count() as f64;
+    let blurred_width = |f: &[u8], y: usize| {
+        // where the texture's pixel-to-pixel change is gone
+        (2..w - 2).filter(|&x| (g(f, x + 1, y) - g(f, x, y)).abs() + (g(f, x, y + 1) - g(f, x, y)).abs() < 3.0).count() as f64
+    };
+    let mut ok = true;
+    let mut ramp = |what: &str, from: usize, measure: &dyn Fn(&[u8]) -> f64, want: (f64, f64)| {
+        let v: Vec<f64> = (from + 2..from + 58).map(|n| measure(frames[n])).collect();
+        // moves at (nearly) every frame of the ramp, and from where to where
+        let moves = v.windows(2).filter(|p| p[1] > p[0] + 0.01).count();
+        let (a, b) = (v[0], v[v.len() - 1]);
+        let pass = moves >= v.len() * 3 / 4 && a < want.0 && b > want.1;
+        println!(
+            "{} {what} glides: rises at {moves} of {} frames, {a:.1} to {b:.1}",
+            if pass { "PASS" } else { "FAIL" },
+            v.len() - 1
+        );
+        ok &= pass;
+    };
+    // (where it starts below, where it ends above)
+    ramp("V1 grain", 0, &|f| spread(f, 40), (1.5, 4.0));
+    ramp("V1 sharpen", 60, &|f| spread(f, 240), (40.0, 60.0));
+    ramp("V1 solid box width", 120, &|f| red_width(f, h / 4), (90.0, 290.0));
+    ramp("V1 blur box width", 120, &|f| blurred_width(f, h * 3 / 4), (90.0, 290.0));
+    ramp("V2 grain", 180, &|f| spread(f, 40), (1.5, 4.0));
+    ramp("V2 blur box width", 240, &|f| blurred_width(f, h * 3 / 4), (90.0, 290.0));
+    Ok(ok)
+}

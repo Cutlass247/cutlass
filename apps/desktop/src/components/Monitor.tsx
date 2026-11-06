@@ -282,6 +282,8 @@ export function Monitor(p: {
     chroma?: boolean;
     chromaSim?: number;
     lut?: CubeLut | null;
+    /// sharpen, 0..1, as the Inspector sets it
+    sharpen?: number;
   }[];
   vignette?: number;
   grain?: number;
@@ -348,9 +350,43 @@ export function Monitor(p: {
   );
   const inStage = !!(p.format && p.layers.length);
 
+  // Sharpen, which CSS has no filter for, as an SVG one: the picture plus
+  // some of its difference from a blurred copy, which is what export's
+  // unsharp does (amount 2.5 × the setting, over a 5×5 blur, about 1.2 of the
+  // export's pixels). The blur is scaled to the monitor, so it sharpens as
+  // much of the picture as export does. It used to show only in the export.
+  const shown = (() => {
+    const a = p.resolution.w / p.resolution.h;
+    const w = Math.min(frameSize.w, frameSize.h * a);
+    return w > 0 ? w / p.resolution.w : 0.5;
+  })();
+  const sharpenId = (i: number) => `cutlass-sharpen-${i}`;
+  const sharpens = p.layers.some((l) => (l.sharpen ?? 0) > 0.01);
+  const sharpenDefs = sharpens ? (
+    <svg className="sharpen-defs" width="0" height="0" aria-hidden="true">
+      {p.layers.map((l, i) => {
+        const amount = (l.sharpen ?? 0) * 2.5;
+        if (amount <= 0.025) return null;
+        return (
+          <filter key={i} id={sharpenId(i)} x="0" y="0" width="100%" height="100%" colorInterpolationFilters="sRGB">
+            <feGaussianBlur in="SourceGraphic" stdDeviation={Math.max(0.3, 1.2 * shown)} result="soft" />
+            <feComposite in="SourceGraphic" in2="soft" operator="arithmetic" k1={0} k2={1 + amount} k3={-amount} k4={0} />
+          </filter>
+        );
+      })}
+    </svg>
+  ) : null;
+  const styleOf = (i: number): React.CSSProperties | undefined => {
+    const l = p.layers[i];
+    if ((l.sharpen ?? 0) <= 0.01) return l.style;
+    // after the clip's own filters, as export sharpens after its grade
+    return { ...l.style, filter: `${l.style?.filter ?? ""} url(#${sharpenId(i)})`.trim() };
+  };
+
   return (
     <section className="monitor">
       <div className="monitor-frame" ref={frameRef}>
+        {sharpenDefs}
         {p.layers.length ? (
           p.format ? (
             <div
@@ -375,7 +411,7 @@ export function Monitor(p: {
                   // carry the clip's grade (Looks/effects: filter, transform,
                   // opacity) onto the Create preview, then pin the reframe fit —
                   // otherwise colour grades never show in the Create tab.
-                  ...(p.layers[p.layers.length - 1].style ?? {}),
+                  ...(styleOf(p.layers.length - 1) ?? {}),
                   objectFit: p.format.reframe === "fill" ? "cover" : "contain",
                   objectPosition:
                     (p.format.panX ?? true)
@@ -391,13 +427,13 @@ export function Monitor(p: {
             </div>
           ) : (
             <div className="monitor-layers" style={{ aspectRatio: `${p.resolution.w} / ${p.resolution.h}` }}>
-              {p.layers.map((l) =>
+              {p.layers.map((l, i) =>
                 l.lut ? (
-                  <LutLayer key={l.key} src={l.src} lut={l.lut} style={l.style} />
+                  <LutLayer key={l.key} src={l.src} lut={l.lut} style={styleOf(i)} />
                 ) : l.chroma ? (
-                  <KeyedLayer key={l.key} src={l.src} sim={l.chromaSim ?? 0.3} style={l.style} />
+                  <KeyedLayer key={l.key} src={l.src} sim={l.chromaSim ?? 0.3} style={styleOf(i)} />
                 ) : (
-                  <img key={l.key} src={l.src} alt="" draggable={false} style={l.style} />
+                  <img key={l.key} src={l.src} alt="" draggable={false} style={styleOf(i)} />
                 )
               )}
             </div>

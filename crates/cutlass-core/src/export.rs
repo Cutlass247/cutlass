@@ -161,14 +161,16 @@ fn piece_fades(fx: &ClipFx, len: f64, kind: FadeKind) -> Option<String> {
 /// movement through per-frame expressions (see [`transform`]), the look
 /// through `hue`'s and a command list for the rest (see [`look_filters`]),
 /// volume through `volume`'s (see [`clip_audio_chain`]), vignette through its
-/// own, a blur box's place through crop's and overlay's (see
-/// [`censor_chain`]). The others, whose filters can't change once running
-/// (grain, sharpen, a blur box's size or strength), are sampled every
-/// [`KF_STEP_S`] instead.
+/// own, grain and sharpen by mixing (see [`mixed_strength`]), a blur box's
+/// place through crop's and overlay's and its size and strength through a
+/// moving mask (see [`censor_chain`]). What's left, sampled every
+/// [`KF_STEP_S`], is what no one animates: the key's similarity, fade
+/// lengths, the sync offset, voice cleanup's strength.
 pub const SMOOTH_KF: &[&str] = &[
     "scale", "rot", "pos_x", "pos_y", "hue", "saturation", "brightness", "contrast",
-    "temperature", "tint", "blur", "volume", "vignette", "censor_x", "censor_y", "censor2_x",
-    "censor2_y", "censor3_x", "censor3_y",
+    "temperature", "tint", "blur", "volume", "vignette", "grain", "sharpen", "censor_x",
+    "censor_y", "censor_w", "censor_h", "censor_str", "censor2_x", "censor2_y", "censor2_w",
+    "censor2_h", "censor2_str", "censor3_x", "censor3_y", "censor3_w", "censor3_h", "censor3_str",
 ];
 
 impl Default for ClipFx {
@@ -612,6 +614,9 @@ fn censor_chain(
     let enable = on.window.map(|(a, b)| format!(":enable='between(t,{a:.3},{b:.3})'")).unwrap_or_default();
     let st = c.strength.clamp(0.0, 1.0);
     let out = format!("cs{k}_{slot}");
+    if keyed("w").is_some() || keyed("h").is_some() || keyed("str").is_some() {
+        return Some((censor_masked(&format!("{k}_{slot}"), cen, c, &keyed, w, h, fps, on, &enable, cur, &out), out));
+    }
     let f = match cen {
         3 => {
             let rgb = (c.color.round() as i64).clamp(0, 0xFF_FFFF);
@@ -647,6 +652,83 @@ fn censor_chain(
     Some((f, out))
 }
 
+/// A blur box whose size or strength is keyframed, over `[cur]` → `[out]`,
+/// every frame: crop's size is fixed once it runs, so the picture is blurred
+/// (or pixelated) whole and shown through a mask, a white box on black that
+/// commands move and size each frame, and the blur's (or the blocks') size
+/// is set by command too. A solid box is drawn straight on, moved the same
+/// way. `keyed(axis)` gives the box's keyframes for "x", "y", "w", "h",
+/// "str"; the rest are `c`'s.
+#[allow(clippy::too_many_arguments)]
+fn censor_masked<'k>(
+    tag: &str,
+    style: i32,
+    c: &CensorSlot,
+    keyed: &dyn Fn(&str) -> Option<&'k Vec<(f64, f64)>>,
+    w: u32,
+    h: u32,
+    fps: u32,
+    on: &BoxOn,
+    enable: &str,
+    cur: &str,
+    out: &str,
+) -> String {
+    let (iw, ih) = (w as i64, h as i64);
+    // the clip's own stretch: from 0 on its own picture, `window` on the program's
+    let (t0, len) = on.window.map(|(a, b)| (a, b - a)).unwrap_or((0.0, on.span));
+    let frames = ((len * fps as f64).ceil() as usize).max(1);
+    let at = |axis: &str, base: f64, i: usize| {
+        keyed(axis).and_then(|p| crate::project::interp(p, i as f64 / fps as f64)).unwrap_or(base)
+    };
+    // the box at frame i: left, top, width, height, each even and in the frame
+    let geom = |i: usize| {
+        let bw = ((at("w", c.w, i).clamp(0.02, 1.0) * w as f64) as i64 & !1).clamp(2, iw);
+        let bh = ((at("h", c.h, i).clamp(0.02, 1.0) * h as f64) as i64 & !1).clamp(2, ih);
+        let bx = (((at("x", c.x, i).clamp(0.0, 1.0) * w as f64 - bw as f64 / 2.0) as i64).clamp(0, iw - bw)) & !1;
+        let by = (((at("y", c.y, i).clamp(0.0, 1.0) * h as f64 - bh as f64 / 2.0) as i64).clamp(0, ih - bh)) & !1;
+        [bx, by, bw, bh]
+    };
+    let boxed = format!("drawbox@db{tag}");
+    let mut box_cmds = Vec::new();
+    for (n, cmd) in ["x", "y", "w", "h"].into_iter().enumerate() {
+        follow_frames(&mut box_cmds, &boxed, cmd, frames, fps, t0, |i| geom(i)[n].to_string());
+    }
+    let with = |cmds: Vec<(f64, String)>| if cmds.is_empty() { String::new() } else { format!("{},", sendcmd(cmds)) };
+    let [x0, y0, w0, h0] = geom(0);
+    let strength = |i: usize| at("str", c.strength, i).clamp(0.0, 1.0);
+    if style == 3 {
+        let rgb = (c.color.round() as i64).clamp(0, 0xFF_FFFF);
+        return format!(
+            "[{cur}]{}{boxed}=x={x0}:y={y0}:w={w0}:h={h0}:color=0x{rgb:06X}:t=fill{enable}[{out}];",
+            with(box_cmds)
+        );
+    }
+    let mut fx_cmds = Vec::new();
+    let effect = if style == 2 {
+        let block = |i: usize| ((4.0 + strength(i) * 36.0) as i64).to_string();
+        let name = format!("pixelize@px{tag}");
+        for cmd in ["w", "h"] {
+            follow_frames(&mut fx_cmds, &name, cmd, frames, fps, t0, block);
+        }
+        format!("{name}=w={}:h={}", block(0), block(0))
+    } else {
+        let sigma = |i: usize| format!("{:.1}", 6.0 + strength(i) * 54.0);
+        let name = format!("gblur@gs{tag}");
+        follow_frames(&mut fx_cmds, &name, "sigma", frames, fps, t0, sigma);
+        format!("{name}=sigma={}", sigma(0))
+    };
+    format!(
+        "[{cur}]split=2[cb{tag}][cc{tag}];\
+         [cc{tag}]{}{effect}{enable}[cg{tag}];\
+         color=c=black:s={w}x{h}:r={fps}:d={:.3},format=gray,{}{boxed}=x={x0}:y={y0}:w={w0}:h={h0}:color=white:t=fill{enable}[cm{tag}];\
+         [cg{tag}][cm{tag}]alphamerge[ca{tag}];\
+         [cb{tag}][ca{tag}]overlay=0:0{enable}[{out}];",
+        with(fx_cmds),
+        on.span + 1.0 / fps as f64,
+        with(box_cmds),
+    )
+}
+
 /// Vignette over the picture, as a filter ending in a comma, or empty.
 /// ffmpeg's `angle` IS the strength: 0 = none, larger = darker corners (its
 /// default PI/5 ≈ 0.63 is already pronounced). This used to be inverted — 0.2
@@ -659,33 +741,6 @@ fn vignette_filter(fx: &ClipFx, kf: &Keyframes, local: &str, enable: &str) -> St
         None if fx.vignette > 0.01 => format!("vignette=angle={:.3}{enable},", fx.vignette.clamp(0.0, 1.0) * 0.9),
         None => String::new(),
     }
-}
-
-/// `filter(value)` for a setting whose filter can't change while it runs
-/// (grain's `noise`, sharpen's `unsharp`): as given, or keyframed, once per
-/// [`KF_STEP_S`] step of the clip's `len`, each switched on for its own step
-/// (`enable`, in the picture's time from `t0`). Each ends in a comma. `on`
-/// says whether a value draws anything.
-fn stepped(
-    base: f64,
-    pts: Option<&Vec<(f64, f64)>>,
-    len: f64,
-    t0: f64,
-    on: impl Fn(f64) -> bool,
-    filter: impl Fn(f64) -> String,
-) -> String {
-    let Some(pts) = pts.filter(|p| !p.is_empty()) else {
-        return if on(base) { format!("{},", filter(base)) } else { String::new() };
-    };
-    let n = ((len / KF_STEP_S).ceil() as usize).clamp(1, KF_MAX_SEGS);
-    let step = len / n as f64;
-    (0..n)
-        .filter_map(|i| {
-            let v = crate::project::interp(pts, (i as f64 + 0.5) * step).unwrap_or(base);
-            let (a, b) = (t0 + i as f64 * step, t0 + (i + 1) as f64 * step);
-            on(v).then(|| format!("{}:enable='gte(t,{a:.4})*lt(t,{b:.4})',", filter(v)))
-        })
-        .collect()
 }
 
 /// Film grain: temporal noise, so it moves.
@@ -857,7 +912,7 @@ fn look_filters(fx: &ClipFx, kf: &Keyframes, len: f64, fps: u32, tag: &str) -> S
             let t = i as f64 / fps as f64;
             let v = value(t);
             if v != last {
-                cmds.push((t, format!("{target} {cmd} '{v}'")));
+                cmds.push((cue(t, fps), format!("{target} {cmd} '{v}'")));
                 last = v;
             }
         }
@@ -909,9 +964,100 @@ fn look_filters(fx: &ClipFx, kf: &Keyframes, len: f64, fps: u32, tag: &str) -> S
     }
     // ahead of the filters it drives: a command reaches its filter before
     // the frame it is timed for does
+    format!("{},{f}", sendcmd(cmds))
+}
+
+/// When to send a command meant for the frame at `t`: half a frame early.
+/// sendcmd fires on the first frame at or after a command's time, and the
+/// times are written to four places, so one timed at the frame itself
+/// (0.0667 for the frame at 0.06667) waited for the next frame a third of
+/// the time: every value then stood still one frame in three (measured).
+fn cue(t: f64, fps: u32) -> f64 {
+    (t - 0.5 / fps as f64).max(0.0)
+}
+
+/// A `sendcmd` filter (no trailing comma) running `cmds`, each (time,
+/// "target command 'value'"). It must come ahead of the filters it drives in
+/// the same chain: a command then reaches its filter before the frame it's
+/// timed for does. Placed after, every change lands a frame late (measured).
+fn sendcmd(mut cmds: Vec<(f64, String)>) -> String {
     cmds.sort_by(|a, b| a.0.total_cmp(&b.0));
     let list: Vec<String> = cmds.iter().map(|(t, c)| format!("{t:.4} {c}")).collect();
-    format!("sendcmd=c={},{f}", ff_value(&list.join(";")))
+    format!("sendcmd=c={}", ff_value(&list.join(";")))
+}
+
+/// Commands setting `target`'s `cmd` to `value(i)` at frame `i` (of
+/// `frames`, at `fps`, from `t0`) wherever it changes from the frame before;
+/// frame 0's is the filter's own setting.
+fn follow_frames(
+    cmds: &mut Vec<(f64, String)>,
+    target: &str,
+    cmd: &str,
+    frames: usize,
+    fps: u32,
+    t0: f64,
+    value: impl Fn(usize) -> String,
+) {
+    let mut last = value(0);
+    for i in 1..frames {
+        let v = value(i);
+        if v != last {
+            cmds.push((cue(t0 + i as f64 / fps as f64, fps), format!("{target} {cmd} '{v}'")));
+            last = v;
+        }
+    }
+}
+
+/// A filter whose strength can't change while it runs (grain's `noise`,
+/// sharpen's `unsharp`: `filter(v)`), following keyframes `pts` every frame
+/// over `[cur]` → `[out]`. It's drawn once at the strongest keyframed value
+/// and mixed with the untouched picture by `blend`, whose weight a command
+/// list sets each frame: exact for both, as each adds to the picture in
+/// proportion to its strength (noise, or the picture's own detail). It used
+/// to be sampled into 0.2s steps. `t0` is when the clip starts in the
+/// picture's time; `window` keeps it to the clip's stretch of a picture that
+/// outlasts it (an overlay's grain, on the program). `len` is the clip's.
+#[allow(clippy::too_many_arguments)]
+fn mixed_strength(
+    tag: &str,
+    cur: &str,
+    out: &str,
+    pts: &[(f64, f64)],
+    len: f64,
+    fps: u32,
+    t0: f64,
+    window: bool,
+    filter: impl Fn(f64) -> String,
+) -> String {
+    let top = pts.iter().map(|p| p.1).fold(0.0f64, f64::max);
+    if top <= 0.01 {
+        return format!("[{cur}]null[{out}];");
+    }
+    let frames = ((len * fps as f64).ceil() as usize).max(1);
+    // blend leaves its planes as they were when told exactly 1 (it only
+    // overrides them below 1, measured), so 0.9999, which 8 bits can't tell
+    // from it
+    let weight = |i: usize| {
+        let v = crate::project::interp(pts, i as f64 / fps as f64).unwrap_or(0.0);
+        format!("{:.4}", (v / top).clamp(0.0, 0.9999))
+    };
+    let name = format!("blend@mx{tag}");
+    let mut cmds = Vec::new();
+    follow_frames(&mut cmds, &name, "all_opacity", frames, fps, t0, &weight);
+    let (first, enable) = if window {
+        // nothing before the clip, its first value as it starts, nothing after
+        cmds.push((cue(t0, fps), format!("{name} all_opacity '{}'", weight(0))));
+        cmds.push((cue(t0 + len, fps), format!("{name} all_opacity '0'")));
+        ("0".to_string(), format!(":enable='between(t,{t0:.3},{:.3})'", t0 + len))
+    } else {
+        (weight(0), String::new())
+    };
+    let cmds = if cmds.is_empty() { String::new() } else { format!(",{}", sendcmd(cmds)) };
+    format!(
+        "[{cur}]split=2[{tag}ma][{tag}mb];[{tag}mb]{}{enable}{cmds}[{tag}mf];\
+         [{tag}mf][{tag}ma]{name}=all_mode=normal:all_opacity={first}[{out}];",
+        filter(top),
+    )
 }
 
 fn clip_video_chain(
@@ -963,11 +1109,27 @@ fn clip_video_chain(
     let mut cur = format!("cf{k}");
     // stylize: the look (grade, blur), sharpen, grain, mirror flips
     let mut stylize = look_filters(fx, &fx.motion, len, fps, &format!("c{k}"));
-    if fx.sharpen > 0.01 {
-        stylize.push_str(&format!("{},", sharpen_filter(fx.sharpen)));
-    }
-    if fx.grain > 0.01 {
-        stylize.push_str(&format!("{},", grain_filter(fx.grain)));
+    // A keyframed sharpen or grain is a stretch of graph of its own
+    // ([`mixed_strength`]), so the chain is cut around it.
+    for (param, short, filter) in [
+        ("sharpen", "s", sharpen_filter as fn(f64) -> String),
+        ("grain", "g", grain_filter as fn(f64) -> String),
+    ] {
+        let base = if param == "sharpen" { fx.sharpen } else { fx.grain };
+        match fx.motion.get(param).filter(|p| !p.is_empty()) {
+            Some(pts) => {
+                if !stylize.is_empty() {
+                    s.push_str(&format!("[{cur}]{}[{short}i{k}];", stylize.trim_end_matches(',')));
+                    cur = format!("{short}i{k}");
+                    stylize.clear();
+                }
+                let out = format!("{short}o{k}");
+                s.push_str(&mixed_strength(&format!("{short}{k}"), &cur, &out, pts, len, fps, 0.0, false, filter));
+                cur = out;
+            }
+            None if base > 0.01 => stylize.push_str(&format!("{},", filter(base))),
+            None => {}
+        }
     }
     if fx.flip_h > 0.5 {
         stylize.push_str("hflip,");
@@ -2625,6 +2787,20 @@ fn run_export(
     // V2 overlays: video switches in over the program at its timeline
     // position; overlay audio is delayed to that position and mixed in
     let mut base = "catv".to_string();
+    // A box above V1 whose size or strength is keyframed is drawn through a
+    // mask made on the exact frame grid (censor_masked), and alphamerge pairs
+    // frames by time. The joined program's times are a hair off the grid
+    // (every third frame early, measured), so they took the mask before
+    // theirs and the box jumped back a frame. On the grid, they meet.
+    let masked = overlays.iter().any(|ov| {
+        ov.kf.iter().any(|(p, pts)| {
+            !pts.is_empty() && p.starts_with("censor") && (p.ends_with("_w") || p.ends_with("_h") || p.ends_with("_str"))
+        })
+    });
+    if masked {
+        filters.push_str(&format!("[catv]fps={fps}[catg];"));
+        base = "catg".to_string();
+    }
     let mut overlay_audio: Vec<String> = Vec::new();
     for (j, ov) in overlays.iter().enumerate() {
         let still = !ov.audio_only && crate::media::is_still(&ov.path);
@@ -2652,9 +2828,21 @@ fn run_export(
                 String::new()
             };
             let mut look = look_filters(&fx, &ov.kf, ov.len, fps, &format!("o{j}"));
-            // sharpen is the clip's own picture's; keyframed, it steps
-            look.push_str(&stepped(ov.fx.sharpen, ov.kf.get("sharpen"), ov.len, 0.0, |v| v > 0.01, sharpen_filter));
+            // sharpen is the clip's own picture's; keyframed, a stretch of
+            // graph of its own (mixed_strength), so the chain is cut there
+            let sharpen_kf = ov.kf.get("sharpen").filter(|p| !p.is_empty());
+            if sharpen_kf.is_none() && ov.fx.sharpen > 0.01 {
+                look.push_str(&format!("{},", sharpen_filter(ov.fx.sharpen)));
+            }
             let place = overlay_placement(&ov.fx, &ov.kf, ov.len, t0, w, h);
+            // the chain closed at [op], the mixed sharpen to [oq], and on
+            let cut = match sharpen_kf {
+                Some(pts) => format!(
+                    "null[op{j}];{}[oq{j}]",
+                    mixed_strength(&format!("os{j}"), &format!("op{j}"), &format!("oq{j}"), pts, ov.len, fps, 0.0, false, sharpen_filter)
+                ),
+                None => String::new(),
+            };
             // Fitted to the frame the way the preview's layer is, with the
             // spare room transparent: it used to be opaque black, so a logo
             // or a 4:3 picture-in-picture covered the program in bars the
@@ -2663,7 +2851,7 @@ fn run_export(
             filters.push_str(&format!(
                 "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,{}format=yuva420p,\
                  pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps={fps},{},\
-                 {key}{look}{}setpts=PTS+{t0:.3}/TB[ov{j}];\
+                 {key}{look}{cut}{}setpts=PTS+{t0:.3}/TB[ov{j}];\
                  [{base}][ov{j}]overlay=x={}:y={}:eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
                 // keyed after the LUT: on flat log footage the screen isn't
                 // the green the key looks for until the LUT has made it so
@@ -2681,20 +2869,22 @@ fn run_export(
             let local = format!("(t-{t0:.3})");
             let during = format!(":enable='between(t,{t0:.3},{t1:.3})'");
             let mut finish = vignette_filter(&ov.fx, &ov.kf, &local, &during);
-            finish.push_str(&match ov.kf.get("grain").filter(|p| !p.is_empty()) {
-                Some(pts) => stepped(ov.fx.grain, Some(pts), ov.len, t0, |v| v > 0.01, grain_filter),
-                None if ov.fx.grain > 0.01 => format!("{}{during},", grain_filter(ov.fx.grain)),
-                None => String::new(),
-            });
+            let grain_kf = ov.kf.get("grain").filter(|p| !p.is_empty());
+            if grain_kf.is_none() && ov.fx.grain > 0.01 {
+                finish.push_str(&format!("{}{during},", grain_filter(ov.fx.grain)));
+            }
             if !finish.is_empty() {
                 filters.push_str(&format!("[{base}]{}[ovf{j}];", finish.trim_end_matches(',')));
                 base = format!("ovf{j}");
             }
-            // a box's size and strength as they are midway (keyframed, they
-            // would step; nothing writes them but a hand on the slider)
-            let mid = ov.fx.sampled_at(&ov.kf, ov.len / 2.0);
+            if let Some(pts) = grain_kf {
+                let out = format!("ovg{j}");
+                filters.push_str(&mixed_strength(&format!("og{j}"), &base, &out, pts, ov.len, fps, t0, true, grain_filter));
+                base = out;
+            }
+            // keyframed size and strength come from `ov.kf`, as position does
             let on = BoxOn { local: &local, window: Some((t0, t1)), span: total };
-            for (slot, c) in mid.censor.iter().enumerate() {
+            for (slot, c) in ov.fx.censor.iter().enumerate() {
                 if let Some((f, out)) = censor_chain(&format!("o{j}"), slot, c, &ov.kf, w, h, fps, &on, &base) {
                     filters.push_str(&f);
                     base = out;
@@ -3523,13 +3713,13 @@ mod tests {
         assert!(f.contains("lt((t-2.000),1.000000)") && f.contains(":enable='between(t,2.000,3.000)'[cso1_0];"), "{f}");
     }
 
-    /// A setting with no per-frame form (grain here) still steps: sampled
+    /// A setting with no per-frame form (the key's similarity here) still steps: sampled
     /// at each 0.2s step's middle. Movement on the same clip still runs
     /// smooth, its keyframes moved to each step's own start.
     #[test]
     fn a_keyframed_look_samples_into_steps_and_movement_rides_along() {
         let mut c = clip(0.0, 4.0, 0.0, 0.0);
-        c.kf.insert("grain".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
+        c.kf.insert("chroma_sim".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
         c.kf.insert("pos_x".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
         let segs = build_segments(vec![c]);
         // 4s / 0.2 = 20 sub-segments
@@ -3540,7 +3730,7 @@ mod tests {
             Segment::Clip { fx, .. } => fx.clone(),
             _ => panic!(),
         };
-        assert!(fx(19).grain > fx(0).grain + 0.3, "grain steps up");
+        assert!(fx(19).chroma_sim > fx(0).chroma_sim + 0.3, "similarity steps up");
         // the tenth step starts 1.8s in, so its keyframes start 1.8s early
         let pos = &fx(9).motion["pos_x"];
         assert!((pos[0].0 + 1.8).abs() < 1e-9 && (pos[1].0 - 2.2).abs() < 1e-9, "{pos:?}");
@@ -3642,7 +3832,7 @@ mod tests {
         let mut c = clip(0.0, 4.0, 0.0, 0.0);
         c.fx.fade_in = 1.0;
         c.fx.fade_out = 1.0;
-        c.kf.insert("grain".into(), vec![(0.0, 0.0), (4.0, 0.3)]);
+        c.kf.insert("chroma_sim".into(), vec![(0.0, 0.0), (4.0, 0.3)]);
         let segs = build_segments(vec![c]);
         let fades: Vec<Option<String>> = segs
             .iter()

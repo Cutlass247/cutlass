@@ -2405,6 +2405,14 @@ button {
   cursor: move;
   pointer-events: auto;
 }
+/* the sharpen filters the layers use; holds no picture of its own */
+.sharpen-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
 /* another clip's box: what it hides, without the editing frame */
 .censor-box.locked {
   border: none;

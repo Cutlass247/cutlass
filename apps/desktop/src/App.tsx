@@ -1065,9 +1065,10 @@ export default function App() {
         chroma: (draft.chroma ?? l.clip.fx?.chroma ?? 0) > 0.5,
         chromaSim: draft.chroma_sim ?? l.clip.fx?.chroma_sim ?? 0.3,
         lut: l.clip.lut ? lutCache[l.clip.lut] ?? null : null,
+        sharpen: draft.sharpen ?? fxValueAt(l.clip, "sharpen", playhead - l.clip.start),
       };
     });
-  }, [videoLayers, footageIdx, playing, playFrame, hq, hqKey, layerStyle, selectedIds, fxDraft, lutCache]);
+  }, [videoLayers, footageIdx, playing, playFrame, hq, hqKey, layerStyle, selectedIds, fxDraft, lutCache, playhead]);
 
   // Vignette and grain are drawn over the whole picture (not CSS filters), as
   // export lays them on the frame, from every clip on screen: vignettes
