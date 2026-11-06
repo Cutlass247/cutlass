@@ -177,7 +177,11 @@ export const AUDIO_EXTS = [
 export const IMAGE_EXTS = [
   "png", "jpg", "jpeg", "jpe", "jfif", "webp", "bmp", "gif", "tif", "tiff", "heic", "heif",
   "hif", "avif", "jxl", "jp2", "j2k", "psd", "tga", "ico", "qoi", "dds", "pcx", "ppm", "pgm",
-  "pbm", "pam", "sgi", "ras", "xbm", "xpm", "xwd",
+  "pbm", "pam", "sgi", "ras", "xbm", "xpm", "xwd", "svg",
+  // camera RAW, developed by Windows
+  "3fr", "ari", "arw", "bay", "cap", "cr2", "cr3", "crw", "dcr", "dcs", "dng", "drf", "eip",
+  "erf", "fff", "iiq", "k25", "kdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "ori", "pef", "ptx",
+  "pxn", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f",
 ];
 
 const IMPORT_FILTERS = [
@@ -222,8 +226,28 @@ export async function importMediaMany(
     );
     un = stop;
   }
+  // SVGs are drawn here, by the window, before the backend imports them:
+  // ffmpeg can't read one. One that can't be drawn is reported as failed
+  // with its reason and left out, like any file that can't be read.
+  const drawFailed: { name: string; why: string }[] = [];
+  const toImport: string[] = [];
+  for (const p of paths) {
+    if (!/\.svg$/i.test(p)) {
+      toImport.push(p);
+      continue;
+    }
+    try {
+      const { drawSvg, base64Of } = await import("./svg");
+      const png = await drawSvg(await readTextFile(p));
+      await invoke("store_drawn_picture", { path: p, png: await base64Of(png) });
+      toImport.push(p);
+    } catch (e) {
+      drawFailed.push({ name: p.split(/[\\/]/).pop() || p, why: e instanceof Error ? e.message : String(e) });
+    }
+  }
   try {
-    return await invoke<ImportManyResult>("import_media_many", { paths });
+    const r = await invoke<ImportManyResult>("import_media_many", { paths: toImport });
+    return { ...r, failed: [...drawFailed, ...r.failed] };
   } finally {
     un?.();
   }

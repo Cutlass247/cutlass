@@ -6,6 +6,9 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## New in 0.2.6
 
+- **SVG pictures import.** A logo saved as SVG comes in sharp at any size, styles, gradients and text included.
+- **Camera RAW photos import.** Canon, Nikon, Sony, Fujifilm, Olympus, Panasonic, Pentax, Leica and DNG raw files are developed by Windows' own raw decoder, the one the Photos app uses, and turned the way the camera was held.
+- **Apple Log footage through a LUT exports cleanly.** The LUT used to be applied after the picture was cut down to 8 bits, which doubled its error and could band smooth skies and walls. It now runs on the footage's full 10 bits. The export was also labelled as wide-gamut BT.2020 when its colours were standard Rec.709, so QuickTime, Safari and other colour-managed players showed it oversaturated. It's now labelled what it is.
 - **Clips above V1 export with everything you gave them.** Keyframed movement, scale and rotation now export there, and so do speed, a LUT, temperature and tint, which were left out, and brightness, contrast and blur keyframes, which used to stay at their first value.
 - **Keyframes glide in the export, as they do in the player.** Movement, colour, blur and volume keyframes used to export in fifth-of-a-second steps, so a slide came out jerky and a fade-up on a logo stepped. They now change on every frame.
 - **Music on an audio track exports with its settings.** Fade in and out, speed, volume keyframes, voice cleanup, audio sync and music removal were all ignored on audio tracks, so a music bed you faded out played to the end at full volume. Only its volume came through before.
@@ -127,7 +130,9 @@ Your video never leaves your machine. The AI features send only your audio or tr
 - 4K exports are slow by nature. Export at 1080p for long videos.
 - Vignette, film grain, sharpen and blur-box keyframes export in fifth-of-a-second steps rather than gliding. On tracks above V1, those four aren't exported yet at all.
 - Volume keyframes and audio fades are heard in the export but not yet while playing in the player.
-- Not supported: SVG and camera RAW files (.cr2, .nef, .arw and the like); export them as PNG or JPEG first. OpenEXR and HDR pictures are left out too, because without tone mapping they'd look wrong.
+- Camera RAW photos need Microsoft's free Raw Image Extension from the Microsoft Store; Cutlass tells you if it's missing. They're developed with Windows' default look, like a camera's own JPEG; for your own edit, develop them in a photo editor first.
+- With Apple Log footage and a LUT, the player's preview is a few shades off the export (the export is the accurate one).
+- Not supported: OpenEXR and HDR pictures, because without tone mapping they'd look wrong.
 - Collaboration isn't available in this build.
 - The offline moment finder has no comprehension — it can't tell you *why* a moment works the way the AI can. A good fallback, not a replacement.
 

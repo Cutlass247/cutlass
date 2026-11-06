@@ -56,8 +56,28 @@ pub enum MediaKind {
 const STILL_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "jpe", "jfif", "webp", "bmp", "tif", "tiff", "heic", "heif", "hif",
     "avif", "jxl", "jp2", "j2k", "psd", "tga", "ico", "qoi", "dds", "pcx", "ppm", "pgm", "pbm",
-    "pam", "sgi", "ras", "xbm", "xpm", "xwd",
+    "pam", "sgi", "ras", "xbm", "xpm", "xwd", "svg",
+    // camera RAW, see RAW_EXTS
+    "3fr", "ari", "arw", "bay", "cap", "cr2", "cr3", "crw", "dcr", "dcs", "dng", "drf", "eip",
+    "erf", "fff", "iiq", "k25", "kdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "ori", "pef", "ptx",
+    "pxn", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f",
 ];
+
+/// Camera RAW photos: every type Windows' own raw decoder (Microsoft's Raw
+/// Image Extension) registers, read through it ([`is_camera_raw`]), as
+/// ffmpeg reads none. Also in `STILL_EXTS` and `IMAGE_EXTS`.
+pub const RAW_EXTS: &[&str] = &[
+    "3fr", "ari", "arw", "bay", "cap", "cr2", "cr3", "crw", "dcr", "dcs", "dng", "drf", "eip",
+    "erf", "fff", "iiq", "k25", "kdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "ori", "pef", "ptx",
+    "pxn", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f",
+];
+
+/// Whether `path` is a camera RAW photo, developed by Windows (see
+/// [`convert_picture`]).
+pub fn is_camera_raw(path: &str) -> bool {
+    let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    RAW_EXTS.contains(&ext.as_str())
+}
 
 /// Pictures stored the HEIF way: an iPhone's .heic, .heif, Canon's .hif,
 /// AVIF. The picture can be a grid of tiles (an iPhone's is 35 of them, each
@@ -68,15 +88,36 @@ const STILL_EXTS: &[&str] = &[
 const HEIF_EXTS: &[&str] = &["heic", "heif", "hif", "avif"];
 
 /// Whether `path` is a picture that has to be made into a PNG before use:
-/// the HEIF ones, and the two whose own readers don't loop, which is how
-/// export holds a picture on screen (an icon, a one-frame GIF; export's
-/// looping reader, image2, can open neither).
+/// the HEIF ones, the two whose own readers don't loop, which is how export
+/// holds a picture on screen (an icon, a one-frame GIF; export's looping
+/// reader, image2, can open neither), and SVG, which this ffmpeg can't read
+/// at all (see [`is_drawn`]).
 pub fn needs_conversion(path: &str) -> bool {
     let ext = Path::new(path)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    HEIF_EXTS.contains(&ext.as_str()) || ext == "ico" || (ext == "gif" && is_still(path))
+    HEIF_EXTS.contains(&ext.as_str())
+        || ext == "ico"
+        || ext == "svg"
+        || RAW_EXTS.contains(&ext.as_str())
+        || (ext == "gif" && is_still(path))
+}
+
+/// Whether `path` is a picture the app's window draws (an SVG), not ffmpeg.
+/// The browser engine draws SVG faithfully, styles and all, where Windows'
+/// own reader takes a subset that gets many logos wrong; the PNG it makes is
+/// kept at [`drawn_picture`]. Only the window can make it, so it's kept with
+/// the app's data rather than in the temporary cache, which Windows may
+/// clear and the backend could not refill.
+pub fn is_drawn(path: &str) -> bool {
+    Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+}
+
+/// Where the drawing of `src` (see [`is_drawn`]) is kept.
+pub fn drawn_picture(src: &Path) -> PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    base.join("Cutlass").join("pictures").join(format!("{:016x}.png", path_hash(src)))
 }
 
 /// One step of what a HEIF picture says to do to its image before showing
@@ -213,6 +254,10 @@ pub fn convert_picture(src: &Path, layout: Option<&TileLayout>) -> anyhow::Resul
     if out.exists() {
         return Ok(out);
     }
+    if is_camera_raw(&src.to_string_lossy()) {
+        develop_raw(src, &out)?;
+        return Ok(out);
+    }
     // Tiles are named stream by stream; a picture that's one image is left to
     // ffmpeg's own choice of stream, which is the largest: the full size of
     // a multi-size icon, the photo rather than its thumbnail.
@@ -268,6 +313,133 @@ pub fn convert_picture(src: &Path, layout: Option<&TileLayout>) -> anyhow::Resul
     );
     std::fs::rename(&tmp, &out)?;
     Ok(out)
+}
+
+/// Develop a camera RAW photo into `out` (a PNG) as Windows does: its own
+/// raw decoder, the one Photos uses, turned the way the photo says, at most
+/// 3840 on its long side. The decoder leaves the turn to the app (measured:
+/// a DNG marked to be turned a quarter came back as it lies).
+fn develop_raw(src: &Path, out: &Path) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        let (w, h, bgra) = wic::develop(src, 3840)?;
+        let raw = out.with_extension("bgra");
+        std::fs::write(&raw, &bgra)?;
+        let tmp = out.with_extension("partial.png");
+        let mut child = FfmpegCommand::new()
+            .args(["-f", "rawvideo", "-pix_fmt", "bgra", "-s", &format!("{w}x{h}")])
+            .input(raw.to_string_lossy())
+            .args(["-frames:v", "1", "-update", "1", "-pix_fmt", "rgb24", "-y"])
+            .output(tmp.to_string_lossy())
+            .spawn()?;
+        if let Ok(events) = child.iter() {
+            for _ in events {}
+        }
+        let made = child.wait().map(|s| s.success()).unwrap_or(false) && tmp.exists();
+        let _ = std::fs::remove_file(&raw);
+        anyhow::ensure!(made, "couldn't save the developed photo {}", src.display());
+        std::fs::rename(&tmp, out)?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = out;
+        anyhow::bail!("camera RAW photos are read through Windows: {}", src.display())
+    }
+}
+
+/// Windows' image decoders (WIC), for camera RAW.
+#[cfg(windows)]
+mod wic {
+    use std::path::Path;
+    use windows::core::{w, Interface, HSTRING};
+    use windows::Win32::Foundation::GENERIC_READ;
+    use windows::Win32::Graphics::Imaging::*;
+    use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToUInt16, PROPVARIANT};
+    use windows::Win32::System::Com::*;
+
+    /// COM on this thread for as long as it's held, undone only if this
+    /// started it (the thread may have it already, in another mode).
+    struct Com(bool);
+    impl Drop for Com {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe { CoUninitialize() }
+            }
+        }
+    }
+
+    /// How to turn a picture for its EXIF orientation (1-8). WIC turns
+    /// before it mirrors.
+    pub fn transform(orientation: u16) -> WICBitmapTransformOptions {
+        let both = |a: WICBitmapTransformOptions, b: WICBitmapTransformOptions| WICBitmapTransformOptions(a.0 | b.0);
+        match orientation {
+            2 => WICBitmapTransformFlipHorizontal,
+            3 => WICBitmapTransformRotate180,
+            4 => WICBitmapTransformFlipVertical,
+            5 => both(WICBitmapTransformRotate90, WICBitmapTransformFlipHorizontal),
+            6 => WICBitmapTransformRotate90,
+            7 => both(WICBitmapTransformRotate90, WICBitmapTransformFlipVertical),
+            8 => WICBitmapTransformRotate270,
+            _ => WICBitmapTransformRotate0,
+        }
+    }
+
+    /// `src` developed, turned upright and fitted within `max_side`: width,
+    /// height and its pixels as BGRA.
+    pub fn develop(src: &Path, max_side: u32) -> anyhow::Result<(u32, u32, Vec<u8>)> {
+        let _com = Com(unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok());
+        unsafe {
+            let factory: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+            let decoder = factory
+                .CreateDecoderFromFilename(&HSTRING::from(src.as_os_str()), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Windows can't read this camera's photos ({}). Install Microsoft's free Raw Image \
+                         Extension from the Microsoft Store, or save the photo as a JPEG.",
+                        e.message()
+                    )
+                })?;
+            let frame = decoder.GetFrame(0)?;
+            let orientation = frame
+                .GetMetadataQueryReader()
+                .ok()
+                .and_then(|q| {
+                    let mut v = PROPVARIANT::default();
+                    q.GetMetadataByName(w!("System.Photo.Orientation"), &mut v).ok()?;
+                    let o = PropVariantToUInt16(&v).ok();
+                    let _ = PropVariantClear(&mut v);
+                    o
+                })
+                .unwrap_or(1);
+            let turned = factory.CreateBitmapFlipRotator()?;
+            turned.Initialize(&frame, transform(orientation))?;
+            let (mut w, mut h) = (0u32, 0u32);
+            turned.GetSize(&mut w, &mut h)?;
+            anyhow::ensure!(w > 0 && h > 0, "the photo has no picture in it");
+            let fit = (max_side as f64 / w.max(h) as f64).min(1.0);
+            let (tw, th) = (((w as f64 * fit).round() as u32).max(1), ((h as f64 * fit).round() as u32).max(1));
+            let sized: IWICBitmapSource = if fit < 1.0 {
+                let s = factory.CreateBitmapScaler()?;
+                s.Initialize(&turned, tw, th, WICBitmapInterpolationModeFant)?;
+                s.cast()?
+            } else {
+                turned.cast()?
+            };
+            let bgra = factory.CreateFormatConverter()?;
+            bgra.Initialize(
+                &sized,
+                &GUID_WICPixelFormat32bppBGRA,
+                WICBitmapDitherTypeNone,
+                None::<&IWICPalette>,
+                0.0,
+                WICBitmapPaletteTypeCustom,
+            )?;
+            let mut px = vec![0u8; (tw * th * 4) as usize];
+            bgra.CopyPixels(std::ptr::null(), tw * 4, &mut px)?;
+            Ok((tw, th, px))
+        }
+    }
 }
 
 /// Whether `path` is a still picture rather than footage, the one test both
@@ -344,13 +516,18 @@ pub const AUDIO_EXTS: &[&str] = &[
 /// without colour management. A GIF is imported as a picture or a video by
 /// whether it moves; see [`is_still`].
 ///
+/// SVG and camera RAW this ffmpeg can't read: the app's window draws an SVG
+/// ([`is_drawn`]), Windows develops a RAW ([`is_camera_raw`]).
+///
 /// Left out: OpenEXR, Radiance HDR and DPX store linear or film-log light,
-/// which would come out dark or flat without tone mapping; SVG and camera
-/// RAW, which this ffmpeg can't decode at all.
+/// which would come out dark or flat without tone mapping.
 pub const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "jpe", "jfif", "webp", "bmp", "gif", "tif", "tiff", "heic", "heif",
     "hif", "avif", "jxl", "jp2", "j2k", "psd", "tga", "ico", "qoi", "dds", "pcx", "ppm", "pgm",
-    "pbm", "pam", "sgi", "ras", "xbm", "xpm", "xwd",
+    "pbm", "pam", "sgi", "ras", "xbm", "xpm", "xwd", "svg",
+    "3fr", "ari", "arw", "bay", "cap", "cr2", "cr3", "crw", "dcr", "dcs", "dng", "drf", "eip",
+    "erf", "fff", "iiq", "k25", "kdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "ori", "pef", "ptx",
+    "pxn", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f",
 ];
 
 #[derive(Debug, Clone, serde::Serialize)]

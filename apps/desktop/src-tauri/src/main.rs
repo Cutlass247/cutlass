@@ -413,6 +413,12 @@ fn picture_source(path: &Path) -> anyhow::Result<PathBuf> {
     if !media::needs_conversion(&s) {
         return Ok(path.to_path_buf());
     }
+    if media::is_drawn(&s) {
+        // drawn by the window as it's imported (`store_drawn_picture`)
+        let drawn = media::drawn_picture(path);
+        anyhow::ensure!(drawn.exists(), "this SVG hasn't been drawn; import it again");
+        return Ok(drawn);
+    }
     let layout = cutlass_engine::tile_grid(&s)?.map(|g| media::TileLayout { tiles: g.tiles, crop: g.crop });
     media::convert_picture(path, layout.as_ref())
 }
@@ -792,6 +798,28 @@ fn get_project(state: State<AppState>) -> serde_json::Value {
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(err_str)
+}
+
+/// Keep the window's drawing of the SVG at `path` (a PNG, base64), which is
+/// what preview and export then show of it: ffmpeg can't read SVG. See
+/// `media::is_drawn`.
+#[tauri::command]
+fn store_drawn_picture(path: String, png: String) -> Result<(), String> {
+    use base64::Engine as _;
+    save_drawn_picture(Path::new(&path), &base64::engine::general_purpose::STANDARD.decode(png).map_err(err_str)?)
+        .map_err(err_str)
+}
+
+fn save_drawn_picture(src: &Path, png: &[u8]) -> anyhow::Result<()> {
+    anyhow::ensure!(media::is_drawn(&src.to_string_lossy()), "only an SVG is drawn by the window");
+    anyhow::ensure!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "the SVG's drawing isn't a PNG");
+    let out = media::drawn_picture(src);
+    std::fs::create_dir_all(out.parent().unwrap())?;
+    // whole or not at all: a half-written picture would be shown as it is
+    let tmp = out.with_extension("png.part");
+    std::fs::write(&tmp, png)?;
+    std::fs::rename(&tmp, &out)?;
+    Ok(())
 }
 
 /// Whether something is already at `path`. The exporter overwrites (`-y`), so
@@ -3136,6 +3164,7 @@ fn main() {
             remove_track,
             reveal_file,
             read_text_file,
+            store_drawn_picture,
             path_exists,
             open_url,
             cancel_export,
@@ -3200,6 +3229,99 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The format test's red card (320x240, a hole of radius 50 in the
+    /// middle) as an SVG. The window's drawing of it was checked against the
+    /// card in a browser, through svg.ts's `drawSvg`.
+    const CARD_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240"><path fill="#ff0000" fill-rule="evenodd" d="M0 0H320V240H0Z M210 120A50 50 0 1 0 110 120A50 50 0 1 0 210 120Z"/></svg>"##;
+
+    /// A camera RAW photo as a DNG at its simplest: a 16-bit RGGB sensor
+    /// mosaic, `w` x `h`, of `scene(x, y)` (linear light), from a camera that
+    /// sees as linear sRGB does, marked to be shown turned per EXIF
+    /// `orientation`. DNG is the one RAW type a test can make; the others are
+    /// cameras' own, read by the same Windows decoder.
+    fn dng(w: usize, h: usize, orientation: u16, scene: impl Fn(usize, usize) -> [f64; 3]) -> Vec<u8> {
+        let mut mosaic = Vec::with_capacity(w * h * 2);
+        for y in 0..h {
+            for x in 0..w {
+                let [r, g, b] = scene(x, y);
+                let c = match (x % 2, y % 2) {
+                    (0, 0) => r,
+                    (1, 1) => b,
+                    _ => g,
+                };
+                mosaic.extend(((c.clamp(0.0, 1.0) * 65535.0) as u16).to_le_bytes());
+            }
+        }
+        type Entry = (u16, u32, Vec<u8>); // TIFF type, count, bytes
+        let short = |v: &[u16]| -> Entry { (3, v.len() as u32, v.iter().flat_map(|x| x.to_le_bytes()).collect()) };
+        let long = |v: &[u32]| -> Entry { (4, v.len() as u32, v.iter().flat_map(|x| x.to_le_bytes()).collect()) };
+        let byte = |v: &[u8]| -> Entry { (1, v.len() as u32, v.to_vec()) };
+        let ascii = |s: &str| -> Entry { (2, s.len() as u32 + 1, [s.as_bytes(), &[0]].concat()) };
+        let ratio = |kind: u16, v: &[f64]| -> Entry {
+            let b = v.iter().flat_map(|x| [((x * 10000.0).round() as i32).to_le_bytes(), 10000i32.to_le_bytes()].concat());
+            (kind, v.len() as u32, b.collect())
+        };
+        let tags: Vec<(u16, Entry)> = vec![
+            (254, long(&[0])),
+            (256, long(&[w as u32])),
+            (257, long(&[h as u32])),
+            (258, short(&[16])),
+            (259, short(&[1])),     // uncompressed
+            (262, short(&[32803])), // a colour filter array
+            (271, ascii("Cutlass")),
+            (272, ascii("Test Camera")),
+            (273, long(&[0])), // where the mosaic is: set below
+            (274, short(&[orientation])),
+            (277, short(&[1])),
+            (278, long(&[h as u32])),
+            (279, long(&[mosaic.len() as u32])),
+            (284, short(&[1])),
+            (33421, short(&[2, 2])),
+            (33422, byte(&[0, 1, 1, 2])), // RGGB
+            (50706, byte(&[1, 4, 0, 0])),
+            (50707, byte(&[1, 1, 0, 0])),
+            (50708, ascii("Cutlass Test Camera")),
+            (50714, short(&[0])),
+            (50717, long(&[65535])),
+            // XYZ to this camera: linear sRGB's
+            (50721, ratio(10, &[3.2406, -1.5372, -0.4986, -0.9689, 1.8758, 0.0415, 0.0557, -0.2040, 1.0570])),
+            (50728, ratio(5, &[1.0, 1.0, 1.0])),
+            (50778, short(&[21])), // D65
+        ];
+        let extra_at = 8 + 2 + 12 * tags.len() + 4;
+        let mut extra = Vec::new();
+        let mut at = Vec::new();
+        for (_, (_, _, data)) in &tags {
+            if data.len() > 4 {
+                at.push(Some(extra_at + extra.len()));
+                extra.extend(data);
+                if extra.len() % 2 == 1 {
+                    extra.push(0);
+                }
+            } else {
+                at.push(None);
+            }
+        }
+        let strip_at = (extra_at + extra.len()) as u32;
+        let mut f = b"II*\0".to_vec();
+        f.extend(8u32.to_le_bytes());
+        f.extend((tags.len() as u16).to_le_bytes());
+        for ((tag, (kind, count, data)), at) in tags.iter().zip(at) {
+            f.extend(tag.to_le_bytes());
+            f.extend(kind.to_le_bytes());
+            f.extend(count.to_le_bytes());
+            match at {
+                Some(off) => f.extend((off as u32).to_le_bytes()),
+                None if *tag == 273 => f.extend(strip_at.to_le_bytes()),
+                None => f.extend([data.as_slice(), &[0; 4][..4 - data.len()]].concat()),
+            }
+        }
+        f.extend([0; 4]);
+        f.extend(extra);
+        f.extend(mosaic);
+        f
+    }
 
     /// Opening covers three outcomes, and they must not be confused with each
     /// other: a good file opens, a damaged one falls back to the backup, and
@@ -3960,10 +4082,23 @@ mod tests {
             ("psd", "-"),
             ("dds", "-"),
             ("xpm", "-"),
+            // drawn by the window, not read by ffmpeg: see below
+            ("svg", "-"),
+            // developed by Windows, not read by ffmpeg: see `dng`
+            ("dng", "-"),
         ];
         let heif_exts = ["heic", "heif", "hif"];
-        let tested: Vec<&str> =
-            samples.iter().map(|s| s.0).chain(pictures.iter().map(|p| p.0)).chain(heif_exts).collect();
+        // Camera RAW: a DNG is made and checked whole; the other 35 are
+        // cameras' own formats, which only a camera can make, read by the same
+        // Windows decoder through the same path. Taken as tested here; real
+        // files of them are what would prove more.
+        let tested: Vec<&str> = samples
+            .iter()
+            .map(|s| s.0)
+            .chain(pictures.iter().map(|p| p.0))
+            .chain(heif_exts)
+            .chain(media::RAW_EXTS.iter().copied())
+            .collect();
         for ext in media::VIDEO_EXTS.iter().chain(media::AUDIO_EXTS).chain(media::IMAGE_EXTS) {
             assert!(tested.contains(ext), ".{ext} is offered but has no sample here");
         }
@@ -4289,6 +4424,26 @@ mod tests {
                 "psd" => std::fs::write(&out, &psd).unwrap(),
                 "dds" => std::fs::write(&out, &dds).unwrap(),
                 "xpm" => std::fs::write(&out, &xpm).unwrap(),
+                // the card's halves, red and blue, as a camera's sensor saw them
+                "dng" => std::fs::write(
+                    &out,
+                    dng(w, h, 1, |x, _| if x < w / 2 { [0.6, 0.0, 0.0] } else { [0.0, 0.0, 0.6] }),
+                )
+                .unwrap(),
+                "svg" => {
+                    // the card as shapes: red, with the hole in the middle
+                    std::fs::write(&out, CARD_SVG).unwrap();
+                    // Unread until the window has drawn it: export would get
+                    // an SVG ffmpeg can't open.
+                    let _ = std::fs::remove_file(media::drawn_picture(&out));
+                    if import_any(&out).is_ok() {
+                        failures.push(".svg: imported before it was drawn".into());
+                    }
+                    // The window's drawing, as `store_drawn_picture` keeps
+                    // it; the card is what it draws (checked in a browser:
+                    // svg.ts and CARD_SVG). The size it's drawn at is its own.
+                    save_drawn_picture(&out, &std::fs::read(&card).unwrap()).unwrap();
+                }
                 _ => {
                     let made = std::process::Command::new(&ff)
                         .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-i"])
@@ -4352,6 +4507,43 @@ mod tests {
         for (ext, _) in pictures {
             let want = if *ext == "ico" { (256, 192) } else { (320, 240) };
             check_picture(&format!(".{ext}"), &dir.join(format!("sample.{ext}")), want, &mut failures);
+        }
+        // kept with the app's data, not in this folder
+        let _ = std::fs::remove_file(media::drawn_picture(&dir.join("sample.svg")));
+
+        // A RAW photo is shown the way the camera was held. Windows' decoder
+        // leaves that to the app, so each turn a camera records (none, a
+        // half, a quarter either way), on a photo whose top-left quarter is
+        // green: the quarter it lands in, and the size, turned or not.
+        // (Quarters: top-left, top-right, bottom-left, bottom-right.) The four
+        // mirrored orientations no camera writes; the decoder reports them as
+        // none (measured), so they show as Windows' Photos shows them.
+        for (o, quarter) in [(1u16, 0usize), (3, 3), (6, 1), (8, 2)] {
+            let p = dir.join(format!("turned{o}.dng"));
+            let scene = |x: usize, y: usize| if x < w / 2 && y < h / 2 { [0.0, 0.5, 0.0] } else { [0.5, 0.0, 0.0] };
+            std::fs::write(&p, dng(w, h, o, scene)).unwrap();
+            let label = format!("a .dng to be shown with EXIF orientation {o}");
+            let m = match import_any(&p) {
+                Ok(m) => m,
+                Err(e) => {
+                    failures.push(format!("{label}: import failed: {e:#}"));
+                    continue;
+                }
+            };
+            let want = if o >= 5 { (h as u32, w as u32) } else { (w as u32, h as u32) };
+            if (m.width, m.height) != want {
+                failures.push(format!("{label}: read as {}x{}, not {}x{}", m.width, m.height, want.0, want.1));
+            }
+            let Some(preview) = m.thumb_paths.first() else {
+                failures.push(format!("{label}: no preview picture"));
+                continue;
+            };
+            // the picture in four, each its quarter's colour
+            let four = ffmpeg_frame(preview, 0.0, 2, 2, false);
+            let green: Vec<usize> = (0..4).filter(|i| four.get(i * 4 + 1).is_some_and(|g| *g > 100 && four[i * 4] < 100)).collect();
+            if green != vec![quarter] {
+                failures.push(format!("{label}: its green quarter is at {green:?}, not [{quarter}]"));
+            }
         }
         // A phone photo taken upright: a landscape JPEG whose EXIF says to turn
         // it a quarter (orientation 6). ffmpeg turns it wherever it's drawn
