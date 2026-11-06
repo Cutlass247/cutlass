@@ -89,6 +89,7 @@ fn main() -> anyhow::Result<()> {
         start: 15.5,
         fx: ClipFx::default(),
         audio_only: false,
+        lut: String::new(),
         kf: Default::default(),
     };
     let ti = Title {

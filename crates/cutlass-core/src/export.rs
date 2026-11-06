@@ -158,11 +158,14 @@ fn piece_fades(fx: &ClipFx, len: f64, kind: FadeKind) -> Option<String> {
 }
 
 /// Keyframed params export follows frame by frame, as the player does:
-/// movement through per-frame expressions (see [`transform`]), hue and
-/// saturation through `hue`'s. The others (brightness, blur, a blur box's
-/// place, ...) have no per-frame form in this ffmpeg and are sampled every
-/// [`KF_STEP_S`] instead.
-pub const SMOOTH_KF: &[&str] = &["scale", "rot", "pos_x", "pos_y", "hue", "saturation"];
+/// movement through per-frame expressions (see [`transform`]), the look
+/// through `hue`'s and a command list for the rest (see [`look_filters`]),
+/// volume through `volume`'s (see [`clip_audio_chain`]). The others (a blur
+/// box's place, vignette, grain, ...) are sampled every [`KF_STEP_S`] instead.
+pub const SMOOTH_KF: &[&str] = &[
+    "scale", "rot", "pos_x", "pos_y", "hue", "saturation", "brightness", "contrast",
+    "temperature", "tint", "blur", "volume",
+];
 
 impl Default for ClipFx {
     fn default() -> Self {
@@ -410,9 +413,11 @@ pub struct Overlay {
     pub start: f64,
     pub fx: ClipFx,
     pub audio_only: bool,
-    /// Keyframes, param → (clip-relative time, value), as on [`ExportClip`].
-    /// Movement (position, scale, rotation) and hue/saturation follow them
-    /// frame by frame; see [`overlay_placement`].
+    /// .cube LUT path, empty = none, as on [`ExportClip`].
+    pub lut: String,
+    /// Keyframes, param → (clip-relative time, value), as on [`ExportClip`],
+    /// all followed frame by frame: movement by [`overlay_placement`], the
+    /// look by [`look_filters`], volume by [`clip_audio_chain`].
     pub kf: BTreeMap<String, Vec<(f64, f64)>>,
 }
 
@@ -622,6 +627,177 @@ fn transition_window(
     )
 }
 
+/// A clip's frames from 0, at its speed: the source span was `len * speed`,
+/// and `/speed` compresses it to `len`. Then back to the export's rate: a 2x
+/// clip leaves setpts at twice it, and the output's constant-rate conversion
+/// only drops frames once it is more than a frame behind, so the picture of
+/// everything after a fast clip ran about two frames late of its sound
+/// (measured). `fps` picks the nearest frame for every tick instead.
+fn retime(speed: f64, fps: u32) -> String {
+    if (speed - 1.0).abs() < 1e-9 {
+        "setpts=PTS-STARTPTS".to_string()
+    } else {
+        format!("setpts=(PTS-STARTPTS)/{speed:.5},fps={fps}")
+    }
+}
+
+/// `s` as one option value in a filter graph, through both of ffmpeg's
+/// unquoting passes: the graph's, which ends a value at `[],;`, and the
+/// filter options', which ends one at `:`. Each takes a backslash as
+/// "the next character is literal".
+fn ff_value(s: &str) -> String {
+    let pass = |s: &str, special: &str| {
+        let mut o = String::with_capacity(s.len() + 16);
+        for c in s.chars() {
+            if c == '\\' || c == '\'' || special.contains(c) {
+                o.push('\\');
+            }
+            o.push(c);
+        }
+        o
+    };
+    pass(&pass(s, ":"), "[],;")
+}
+
+/// Brightness and contrast as `lutyuv`'s luma expression. `eq` would be the
+/// obvious filter but it is GPL-only and absent from the LGPL ffmpeg we ship
+/// (shipping a GPL build would impose GPL terms on Cutlass). lutyuv is LGPL
+/// and does the same job: pivot contrast around mid-grey, then offset by
+/// brightness.
+fn bc_expr(brightness: f64, contrast: f64) -> String {
+    format!(
+        "clip((val-(maxval+1)/2)*{contrast:.4}+(maxval+1)/2+({brightness:.4})*maxval,minval,maxval)"
+    )
+}
+
+/// Temperature and tint as `lutrgb`'s red, green and blue expressions: a
+/// midtone colour-balance shift (warm = +red/-blue).
+///
+/// What remains of its cost is the yuv -> rgb -> yuv conversion these
+/// filters force, not the arithmetic: measured at 4K60, nothing 1.01x,
+/// this 0.65x, and the bare conversion with no filter between accounts for
+/// most of the gap. Doing the same shift on the chroma planes instead stays
+/// in YUV and runs at 1.05x, but it is a different colour model -- 31 dB
+/// against this one, which is a visible change to every existing project --
+/// so the accurate version is deliberately kept.
+///
+/// Nor is the GPU the answer here, which is worth recording because it
+/// looks like it should be. A custom OpenCL kernel doing this whole grade
+/// in one pass measured 0.44x at 4K60 against 0.41x for the CPU chain --
+/// and uploading and downloading the frames with NO kernel at all also
+/// measured 0.44x. The kernel is free; the round trip is the entire cost.
+/// Keeping frames on the GPU end to end would avoid it, but hardware
+/// decoders emit nv12, program_opencl consumes rgba, and this LGPL build
+/// has no GPU-side conversion between them, via either D3D11 or QSV.
+///
+/// This is exactly what `colorbalance` computes, but written as a lookup
+/// table so it is evaluated 256 times per channel instead of once per pixel.
+/// colorbalance is the single most expensive thing a Look can switch on:
+/// measured at 4K60 it took the export from 0.87x realtime to 0.44x, while
+/// this form holds 0.64x — 1.45x faster, matching to 45.6 dB PSNR, which is
+/// indistinguishable. (Both still pay for the RGB round trip these filters
+/// require; the rest of the grade stays in YUV.)
+fn warmth_exprs(temperature: f64, tint: f64) -> [String; 3] {
+    // colorbalance's midtone weight: a tent peaking at mid-grey, so the
+    // shift fades out toward black and white rather than casting them.
+    let mid = |m: f64| {
+        format!(
+            "clip((val/255+({m:.4})*clip((val/255-0.333)*4+0.5,0,1)\
+             *clip((1-val/255-0.333)*4+0.5,0,1)*0.7)*255,0,255)"
+        )
+    };
+    [mid(temperature / 200.0), mid(-tint / 200.0), mid(-temperature / 200.0)]
+}
+
+/// A clip's look as export draws it, in the preview's order (a LUT on the
+/// picture, then `fxStyle`'s brightness, contrast, saturation, hue, warmth
+/// and blur), as filters each ending in a comma, or empty. One builder for
+/// the base track, its dissolves and the tracks above, so none of them can
+/// leave a setting out: the tracks above used to drop the LUT, temperature
+/// and tint, and held brightness, contrast and blur still however they were
+/// keyframed.
+///
+/// Keyframes in `kf` are followed frame by frame: hue and saturation through
+/// `hue`'s own expressions of time; brightness, contrast, warmth and blur,
+/// whose filters take none, by a `sendcmd` list ahead of them that sets each
+/// at every one of the clip's frames (`len` seconds at `fps`, its own time
+/// from 0) where its value changes. `tag` keeps this clip's filters apart from
+/// every other's in the graph, as the commands find them by name.
+fn look_filters(fx: &ClipFx, kf: &Keyframes, lut: &str, len: f64, fps: u32, tag: &str) -> String {
+    let keyed = |p: &str| kf.get(p).filter(|v| !v.is_empty());
+    let at = |p: &str, base: f64, t: f64| {
+        keyed(p).and_then(|pts| crate::project::interp(pts, t)).unwrap_or(base)
+    };
+    let frames = ((len * fps as f64).ceil() as usize).max(1);
+    // (time, "target command 'value'") wherever a keyed value changes
+    let mut cmds: Vec<(f64, String)> = Vec::new();
+    let mut follow = |target: &str, cmd: &str, value: &dyn Fn(f64) -> String| {
+        let mut last = value(0.0);
+        for i in 1..frames {
+            let t = i as f64 / fps as f64;
+            let v = value(t);
+            if v != last {
+                cmds.push((t, format!("{target} {cmd} '{v}'")));
+                last = v;
+            }
+        }
+    };
+    let mut f = String::new();
+    if !lut.is_empty() {
+        // same path escaping drawtext uses for fontfile
+        f.push_str(&format!("lut3d=file='{}',", ff_path(lut)));
+    }
+    let bc = |t: f64| bc_expr(at("brightness", fx.brightness, t), at("contrast", fx.contrast, t));
+    let bc_keyed = keyed("brightness").is_some() || keyed("contrast").is_some();
+    if bc_keyed || fx.brightness.abs() > 1e-9 || (fx.contrast - 1.0).abs() > 1e-9 {
+        let name = format!("lutyuv@bc{tag}");
+        f.push_str(&format!("{name}=y='{}',", bc(0.0)));
+        if bc_keyed {
+            follow(&name, "y", &bc);
+        }
+    }
+    // saturation rides the (LGPL) hue filter's `s` param — eq's job again;
+    // keyframed, through its per-frame expressions
+    if keyed("hue").is_some() || keyed("saturation").is_some() {
+        let pts = |p: &str, base: f64| keyed(p).cloned().unwrap_or_else(|| vec![(0.0, base)]);
+        f.push_str(&format!(
+            "hue=h='{}':s='max(0,{})',",
+            kf_expr(&pts("hue", fx.hue), "t", 1.0),
+            kf_expr(&pts("saturation", fx.saturation), "t", 1.0)
+        ));
+    } else if fx.hue != 0.0 || (fx.saturation - 1.0).abs() > 1e-9 {
+        f.push_str(&format!("hue=h={:.2}:s={:.4},", fx.hue, fx.saturation.max(0.0)));
+    }
+    let warmth = |t: f64| warmth_exprs(at("temperature", fx.temperature, t), at("tint", fx.tint, t));
+    let warmth_keyed = keyed("temperature").is_some() || keyed("tint").is_some();
+    if warmth_keyed || fx.temperature != 0.0 || fx.tint != 0.0 {
+        let name = format!("lutrgb@tt{tag}");
+        let [r, g, b] = warmth(0.0);
+        f.push_str(&format!("{name}=r='{r}':g='{g}':b='{b}',"));
+        if warmth_keyed {
+            for (i, ch) in ["r", "g", "b"].into_iter().enumerate() {
+                follow(&name, ch, &|t| warmth(t)[i].clone());
+            }
+        }
+    }
+    let blur = |t: f64| format!("{:.2}", at("blur", fx.blur, t).max(0.0));
+    if keyed("blur").is_some() {
+        let name = format!("gblur@bl{tag}");
+        f.push_str(&format!("{name}=sigma={},", blur(0.0)));
+        follow(&name, "sigma", &blur);
+    } else if fx.blur > 0.01 {
+        f.push_str(&format!("gblur=sigma={:.2},", fx.blur));
+    }
+    if cmds.is_empty() {
+        return f;
+    }
+    // ahead of the filters it drives: a command reaches its filter before
+    // the frame it is timed for does
+    cmds.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let list: Vec<String> = cmds.iter().map(|(t, c)| format!("{t:.4} {c}")).collect();
+    format!("sendcmd=c={},{f}", ff_value(&list.join(";")))
+}
+
 fn clip_video_chain(
     vi: u32,
     k: usize,
@@ -635,74 +811,7 @@ fn clip_video_chain(
     rx: f64,
     ry: f64,
 ) -> String {
-    // retime: source span was len*speed; /speed compresses it to len. Then
-    // back to the export's rate: a 2x clip leaves setpts at twice it, and the
-    // output's constant-rate conversion only drops frames once it is more
-    // than a frame behind, so the picture of everything after a fast clip ran
-    // about two frames late of its sound (measured). `fps` picks the nearest
-    // frame for every tick instead.
-    let setpts = if (fx.speed - 1.0).abs() < 1e-9 {
-        "setpts=PTS-STARTPTS".to_string()
-    } else {
-        format!("setpts=(PTS-STARTPTS)/{:.5},fps={fps}", fx.speed)
-    };
-    // Temperature/tint as a midtone colour-balance shift (warm = +red/-blue).
-    //
-    // What remains of its cost is the yuv -> rgb -> yuv conversion these
-    // filters force, not the arithmetic: measured at 4K60, nothing 1.01x,
-    // this 0.65x, and the bare conversion with no filter between accounts for
-    // most of the gap. Doing the same shift on the chroma planes instead stays
-    // in YUV and runs at 1.05x, but it is a different colour model -- 31 dB
-    // against this one, which is a visible change to every existing project --
-    // so the accurate version is deliberately kept.
-    //
-    // Nor is the GPU the answer here, which is worth recording because it
-    // looks like it should be. A custom OpenCL kernel doing this whole grade
-    // in one pass measured 0.44x at 4K60 against 0.41x for the CPU chain --
-    // and uploading and downloading the frames with NO kernel at all also
-    // measured 0.44x. The kernel is free; the round trip is the entire cost.
-    // Keeping frames on the GPU end to end would avoid it, but hardware
-    // decoders emit nv12, program_opencl consumes rgba, and this LGPL build
-    // has no GPU-side conversion between them, via either D3D11 or QSV.
-    //
-    // This is exactly what `colorbalance` computes, but written as a lookup
-    // table so it is evaluated 256 times per channel instead of once per pixel.
-    // colorbalance is the single most expensive thing a Look can switch on:
-    // measured at 4K60 it took the export from 0.87x realtime to 0.44x, while
-    // this form holds 0.64x — 1.45x faster, matching to 45.6 dB PSNR, which is
-    // indistinguishable. (Both still pay for the RGB round trip these filters
-    // require; the rest of the grade stays in YUV.)
-    let cb = if fx.temperature != 0.0 || fx.tint != 0.0 {
-        // colorbalance's midtone weight: a tent peaking at mid-grey, so the
-        // shift fades out toward black and white rather than casting them.
-        let mid = |m: f64| {
-            format!(
-                "clip((val/255+({m:.4})*clip((val/255-0.333)*4+0.5,0,1)\
-                 *clip((1-val/255-0.333)*4+0.5,0,1)*0.7)*255,0,255)"
-            )
-        };
-        format!(
-            ",lutrgb=r='{}':g='{}':b='{}'",
-            mid(fx.temperature / 200.0),
-            mid(-fx.tint / 200.0),
-            mid(-fx.temperature / 200.0)
-        )
-    } else {
-        String::new()
-    };
-    // Brightness/contrast on luma. NB: `eq` would be the obvious filter but
-    // it is GPL-only and absent from the LGPL ffmpeg we ship (shipping a GPL
-    // build would impose GPL terms on Cutlass). lutyuv is LGPL and does the
-    // same job: pivot contrast around mid-grey, then offset by brightness.
-    let bc = if (fx.brightness).abs() > 1e-9 || (fx.contrast - 1.0).abs() > 1e-9 {
-        format!(
-            ",lutyuv=y='clip((val-(maxval+1)/2)*{c:.4}+(maxval+1)/2+({b:.4})*maxval,minval,maxval)'",
-            c = fx.contrast,
-            b = fx.brightness
-        )
-    } else {
-        String::new()
-    };
+    let setpts = retime(fx.speed, fps);
     // out_range=tv pins the frames to limited (broadcast) range. Without it
     // a full-range source reaches the encoder untagged and some encoders —
     // h264_amf notably — silently convert full→limited, washing the image
@@ -715,12 +824,12 @@ fn clip_video_chain(
         Reframe::Letterbox => format!(
             "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,\
              pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},{setpts},\
-             format=yuv420p{bc}{cb}[cf{k}];",
+             format=yuv420p[cf{k}];",
         ),
         Reframe::Fill => format!(
             "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=increase:out_range=tv,\
              crop={w}:{h}:(iw-{w})*{rx:.4}:(ih-{h})*{ry:.4},fps={fps},{setpts},\
-             format=yuv420p{bc}{cb}[cf{k}];",
+             format=yuv420p[cf{k}];",
         ),
         Reframe::Blur => format!(
             "[{vi}:v]split=2[rb{k}][rf{k}];\
@@ -728,36 +837,12 @@ fn clip_video_chain(
              crop={w}:{h},gblur=sigma=24,colorchannelmixer=rr=0.72:gg=0.72:bb=0.72[rbg{k}];\
              [rf{k}]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv[rff{k}];\
              [rbg{k}][rff{k}]overlay=(W-w)/2:(H-h)/2,fps={fps},{setpts},\
-             format=yuv420p{bc}{cb}[cf{k}];",
+             format=yuv420p[cf{k}];",
         ),
     };
     let mut cur = format!("cf{k}");
-    // stylize: LUT, hue/saturation, gaussian blur, mirror flips
-    let mut stylize = String::new();
-    if !lut.is_empty() {
-        // same path escaping drawtext uses for fontfile
-        stylize.push_str(&format!("lut3d=file='{}',", ff_path(lut)));
-    }
-    // saturation rides the (LGPL) hue filter's `s` param — eq's job again;
-    // keyframed, through its per-frame expressions
-    let keyed = |p: &str| fx.motion.get(p).filter(|v| !v.is_empty());
-    if keyed("hue").is_some() || keyed("saturation").is_some() {
-        let pts = |p: &str, base: f64| keyed(p).cloned().unwrap_or_else(|| vec![(0.0, base)]);
-        stylize.push_str(&format!(
-            "hue=h='{}':s='max(0,{})',",
-            kf_expr(&pts("hue", fx.hue), "t", 1.0),
-            kf_expr(&pts("saturation", fx.saturation), "t", 1.0)
-        ));
-    } else if fx.hue != 0.0 || (fx.saturation - 1.0).abs() > 1e-9 {
-        stylize.push_str(&format!(
-            "hue=h={:.2}:s={:.4},",
-            fx.hue,
-            fx.saturation.max(0.0)
-        ));
-    }
-    if fx.blur > 0.01 {
-        stylize.push_str(&format!("gblur=sigma={:.2},", fx.blur));
-    }
+    // stylize: the look (LUT, grade, blur), sharpen, grain, mirror flips
+    let mut stylize = look_filters(fx, &fx.motion, lut, len, fps, &format!("c{k}"));
     if fx.sharpen > 0.01 {
         // luma unsharp; amount scales 0..~2.5
         stylize.push_str(&format!("unsharp=5:5:{:.3}:5:5:0,", fx.sharpen * 2.5));
@@ -950,12 +1035,12 @@ fn transform(
     (f, x, y)
 }
 
-/// Everything an overlay clip's own settings do to it, as export draws it:
-/// flips and blur, its [`transform`], and fades on its transparency. Export
-/// used to apply none of this above the base track, so a logo shrunk into a
-/// corner came out filling the frame, as did any picture-in-picture, and
-/// keyframed movement there played in the player and not in the export. `t0`
-/// is when the clip starts on the timeline.
+/// Where an overlay clip goes and how it fades, as export draws it: flips,
+/// its [`transform`], and fades on its transparency (its look comes before,
+/// from [`look_filters`]). Export used to apply none of this above the base
+/// track, so a logo shrunk into a corner came out filling the frame, as did
+/// any picture-in-picture, and keyframed movement there played in the player
+/// and not in the export. `t0` is when the clip starts on the timeline.
 fn overlay_placement(
     fx: &ClipFx,
     kf: &BTreeMap<String, Vec<(f64, f64)>>,
@@ -967,22 +1052,19 @@ fn overlay_placement(
     // overlay's x/y see the program's time; the keyframes are the clip's
     let (moved, x, y) = transform(fx, kf, w, h, &format!("(t-{t0:.3})"));
     Placement {
-        filters: format!("{}{moved}{}", fx_flips_and_blur(fx), fade_alpha(fx, len)),
+        filters: format!("{}{moved}{}", fx_flips(fx), fade_alpha(fx, len)),
         x,
         y,
     }
 }
 
-fn fx_flips_and_blur(fx: &ClipFx) -> String {
+fn fx_flips(fx: &ClipFx) -> String {
     let mut f = String::new();
     if fx.flip_h > 0.5 {
         f.push_str("hflip,");
     }
     if fx.flip_v > 0.5 {
         f.push_str("vflip,");
-    }
-    if fx.blur > 0.01 {
-        f.push_str(&format!("gblur=sigma={:.2},", fx.blur));
     }
     f
 }
@@ -992,6 +1074,55 @@ fn fade_alpha(fx: &ClipFx, len: f64) -> String {
     piece_fades(fx, len, FadeKind::Alpha).map(|f| f + ",").unwrap_or_default()
 }
 
+
+/// A clip's sound, `len` long on the timeline, read `span` seconds from `src`
+/// of `path`, which is input `vi`.
+struct Sound<'a> {
+    vi: u32,
+    path: &'a str,
+    src: f64,
+    span: f64,
+    len: f64,
+    fx: &'a ClipFx,
+    /// the label it comes out as, `[a{own}]`
+    own: usize,
+}
+
+impl Sound<'_> {
+    /// Add the clip's sound to the graph through its own audio chain, from
+    /// its file or, when its music is removed and a separation covers it,
+    /// from the separated vocals (same timeline as the source); `false`, and
+    /// nothing added, when the file has no sound.
+    fn add(&self, cmd: &mut FfmpegCommand, filters: &mut String, input_idx: &mut u32) -> bool {
+        let vocals = if self.fx.music_removed > 0.5 {
+            crate::media::vocals_covering(std::path::Path::new(self.path), self.src, self.src + self.span)
+        } else {
+            None
+        };
+        if let Some((vp, file_start)) = vocals {
+            // the vocals file starts at `file_start` in source time
+            let off = (self.src - file_start).max(0.0);
+            cmd.args(["-ss", &format!("{off:.3}"), "-t", &format!("{:.3}", self.span)]);
+            cmd.input(vp.to_string_lossy());
+            filters.push_str(&clip_audio_chain(*input_idx, self.own, self.len, self.fx));
+            *input_idx += 1;
+            true
+        } else if has_audio(self.path) {
+            filters.push_str(&clip_audio_chain(self.vi, self.own, self.len, self.fx));
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// `len` seconds of silence as `[a{own}]`.
+fn silence(cmd: &mut FfmpegCommand, filters: &mut String, input_idx: &mut u32, len: f64, own: usize) {
+    cmd.args(["-f", "lavfi", "-t", &format!("{len:.3}")]);
+    cmd.input("anullsrc=r=48000:cl=stereo");
+    filters.push_str(&format!("[{}:a]acopy[a{own}];", *input_idx));
+    *input_idx += 1;
+}
 
 /// Build a clip's audio chain `[{vi}:a] → [a{k}]`: resample, gain, fades.
 fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
@@ -1024,7 +1155,11 @@ fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
         c.push(',');
         c.push_str(&atempo_chain(fx.speed));
     }
-    if fx.volume != 1.0 {
+    if let Some(pts) = fx.motion.get("volume").filter(|v| !v.is_empty()) {
+        // keyframed: evaluated every audio frame (about 20ms), in the clip's
+        // own time, which the timestamps are from here on
+        c.push_str(&format!(",volume='max(0,{})':eval=frame", kf_expr(pts, "t", 1.0)));
+    } else if fx.volume != 1.0 {
         c.push_str(&format!(",volume={:.4}", fx.volume));
     }
     if let Some(fades) = piece_fades(fx, len, FadeKind::Sound) {
@@ -1802,11 +1937,12 @@ fn slice_overlay(ov: &Overlay, t0: f64, t1: f64) -> Option<Overlay> {
     if end - start <= 1e-6 {
         return None;
     }
-    // if the overlay began before this chunk, it's that far into itself
+    // if the overlay began before this chunk, it's that far into itself, and
+    // that much times its speed into its footage
     let into = start - ov.start;
     Some(Overlay {
         path: ov.path.clone(),
-        src_in: ov.src_in + into,
+        src_in: ov.src_in + into * ov.fx.speed,
         len: end - start,
         start: start - t0,
         // its fades fall where they do in the whole clip, not at each part
@@ -1816,6 +1952,7 @@ fn slice_overlay(ov: &Overlay, t0: f64, t1: f64) -> Option<Overlay> {
             ..ov.fx.clone()
         },
         audio_only: ov.audio_only,
+        lut: ov.lut.clone(),
         // keyframe times are the clip's own, so they move back by as much
         kf: ov
             .kf
@@ -2287,34 +2424,9 @@ fn run_export(
                     s.reframe_y,
                 );
                 filters.push_str(&if still { over_black(vi, chain, path) } else { chain });
-                // "Remove music": when the flag is on and a separated vocals
-                // track exists for this source, take the clip's audio from that
-                // WAV (same timeline as the source) instead of the file's own
-                // mixed audio. Falls back to the original if no separation ran.
-                let vocals = if fx.music_removed > 0.5 {
-                    crate::media::vocals_covering(
-                        std::path::Path::new(path),
-                        *src_in,
-                        src_in + src_dur,
-                    )
-                } else {
-                    None
-                };
-                if let Some((vp, file_start)) = vocals {
-                    // the vocals file starts at `file_start` in source time
-                    let off = (src_in - file_start).max(0.0);
-                    cmd.args(["-ss", &format!("{off:.3}"), "-t", &format!("{src_dur:.3}")]);
-                    cmd.input(vp.to_string_lossy());
-                    let ai = input_idx;
-                    input_idx += 1;
-                    filters.push_str(&clip_audio_chain(ai, k, *len, fx));
-                } else if has_audio(path) {
-                    filters.push_str(&clip_audio_chain(vi, k, *len, fx));
-                } else {
-                    cmd.args(["-f", "lavfi", "-t", &format!("{len:.3}")]);
-                    cmd.input("anullsrc=r=48000:cl=stereo");
-                    filters.push_str(&format!("[{input_idx}:a]acopy[a{k}];"));
-                    input_idx += 1;
+                let sound = Sound { vi, path, src: *src_in, span: src_dur, len: *len, fx, own: k };
+                if !sound.add(&mut cmd, &mut filters, &mut input_idx) {
+                    silence(&mut cmd, &mut filters, &mut input_idx, *len, k);
                 }
             }
             Segment::Gap { len } => {
@@ -2373,31 +2485,17 @@ fn run_export(
                 // audio: crossfade both windows' sound, each through its
                 // clip's own audio chain (speed, denoise, volume, sync offset,
                 // music removal), silence where a side has none
-                let mut window_audio = |vi: u32, path: &str, src: f64, span: f64, fx: &ClipFx, own: usize| {
-                    let vocals = if fx.music_removed > 0.5 {
-                        crate::media::vocals_covering(std::path::Path::new(path), src, src + span)
-                    } else {
-                        None
-                    };
-                    if let Some((vp, file_start)) = vocals {
-                        let off = (src - file_start).max(0.0);
-                        cmd.args(["-ss", &format!("{off:.3}"), "-t", &format!("{span:.3}")]);
-                        cmd.input(vp.to_string_lossy());
-                        filters.push_str(&clip_audio_chain(input_idx, own, *dur, fx));
-                        input_idx += 1;
-                    } else if has_audio(path) {
-                        filters.push_str(&clip_audio_chain(vi, own, *dur, fx));
-                    } else {
-                        cmd.args(["-f", "lavfi", "-t", &format!("{dur:.3}")]);
-                        cmd.input("anullsrc=r=48000:cl=stereo");
-                        filters.push_str(&format!("[{input_idx}:a]acopy[a{own}];"));
-                        input_idx += 1;
+                for (vi, path, src, span, fx, own) in [
+                    (ai, a_path, *a_src, a_span, a_fx, 1_000_000 + k * 2),
+                    (bi, b_path, *b_src, b_span, b_fx, 1_000_000 + k * 2 + 1),
+                ] {
+                    let sound = Sound { vi, path, src, span, len: *dur, fx, own };
+                    if !sound.add(&mut cmd, &mut filters, &mut input_idx) {
+                        silence(&mut cmd, &mut filters, &mut input_idx, *dur, own);
                     }
-                    format!("[a{own}]")
-                };
-                let a_audio = window_audio(ai, a_path, *a_src, a_span, a_fx, 1_000_000 + k * 2);
-                let b_audio = window_audio(bi, b_path, *b_src, b_span, b_fx, 1_000_000 + k * 2 + 1);
-                filters.push_str(&format!("{a_audio}{b_audio}acrossfade=d={dur:.3}[a{k}];"));
+                }
+                let (a_own, b_own) = (1_000_000 + k * 2, 1_000_000 + k * 2 + 1);
+                filters.push_str(&format!("[a{a_own}][a{b_own}]acrossfade=d={dur:.3}[a{k}];"));
             }
         }
         concat_inputs.push_str(&format!("[v{k}][a{k}]"));
@@ -2413,14 +2511,21 @@ fn run_export(
     let mut overlay_audio: Vec<String> = Vec::new();
     for (j, ov) in overlays.iter().enumerate() {
         let still = !ov.audio_only && crate::media::is_still(&ov.path);
-        add_source(&mut cmd, &ov.path, still, ov.src_in, ov.len, fps);
+        // a retimed clip covers `len * speed` of its footage, as on the base
+        // track; these used to read `len` of it at normal speed
+        let span = if still { ov.len } else { ov.len * ov.fx.speed };
+        add_source(&mut cmd, &ov.path, still, ov.src_in, span, fps);
         let vi = input_idx;
         input_idx += 1;
         let (t0, t1) = (ov.start, ov.start + ov.len);
+        // every keyframe an overlay has is followed frame by frame
+        let fx = ClipFx { motion: ov.kf.clone(), ..ov.fx.clone() };
         // audio beds carry no picture; only higher video tracks composite
         if !ov.audio_only {
             // green-screen key: colorkey so the base shows through the keyed
-            // pixels
+            // pixels. On the picture as it comes, before the look, as the
+            // preview keys it: graded first, the green it looks for may not
+            // be there any more.
             let key = if ov.fx.chroma > 0.5 {
                 format!(
                     "colorkey=0x00D000:similarity={:.3}:blend=0.10,",
@@ -2429,33 +2534,7 @@ fn run_export(
             } else {
                 String::new()
             };
-            // grade the overlay with the SAME LGPL-safe filters as the main
-            // program — `eq` is GPL-only and absent from the ffmpeg we ship,
-            // so use lutyuv (brightness/contrast) + hue (saturation).
-            let mut grade = String::new();
-            if ov.fx.brightness.abs() > 1e-9 || (ov.fx.contrast - 1.0).abs() > 1e-9 {
-                grade.push_str(&format!(
-                    "lutyuv=y='clip((val-(maxval+1)/2)*{c:.4}+(maxval+1)/2+({b:.4})*maxval,minval,maxval)',",
-                    c = ov.fx.contrast,
-                    b = ov.fx.brightness
-                ));
-            }
-            let keyed = |p: &str| ov.kf.get(p).filter(|v| !v.is_empty());
-            if keyed("hue").is_some() || keyed("saturation").is_some() {
-                // keyframed: per frame, as the player shows it
-                let pts = |p: &str, base: f64| keyed(p).cloned().unwrap_or_else(|| vec![(0.0, base)]);
-                grade.push_str(&format!(
-                    "hue=h='{}':s='max(0,{})',",
-                    kf_expr(&pts("hue", ov.fx.hue), "t", 1.0),
-                    kf_expr(&pts("saturation", ov.fx.saturation), "t", 1.0)
-                ));
-            } else if (ov.fx.saturation - 1.0).abs() > 1e-9 || ov.fx.hue != 0.0 {
-                grade.push_str(&format!(
-                    "hue=h={:.2}:s={:.4},",
-                    ov.fx.hue,
-                    ov.fx.saturation.max(0.0)
-                ));
-            }
+            let look = look_filters(&fx, &ov.kf, &ov.lut, ov.len, fps, &format!("o{j}"));
             let place = overlay_placement(&ov.fx, &ov.kf, ov.len, t0, w, h);
             // Fitted to the frame the way the preview's layer is, with the
             // spare room transparent: it used to be opaque black, so a logo
@@ -2464,23 +2543,25 @@ fn run_export(
             // PNG's own, through to the overlay.
             filters.push_str(&format!(
                 "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,format=yuva420p,\
-                 pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps={fps},setpts=PTS-STARTPTS,\
-                 {grade}{key}{}setpts=PTS+{t0:.3}/TB[ov{j}];\
+                 pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps={fps},{},\
+                 {key}{look}{}setpts=PTS+{t0:.3}/TB[ov{j}];\
                  [{base}][ov{j}]overlay=x={}:y={}:eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
-                place.filters, place.x, place.y,
+                retime(if still { 1.0 } else { ov.fx.speed }, fps),
+                place.filters,
+                place.x,
+                place.y,
             ));
             base = format!("ovd{j}");
         }
-        if has_audio(&ov.path) {
+        // its sound through the same chain as a base clip's (speed, voice
+        // cleanup, volume and its keyframes, fades, sync offset, music
+        // removal); these used to get the volume and nothing else, so a
+        // music bed faded out in the Inspector played to the end at full
+        let own = 2_000_000 + j;
+        let sound = Sound { vi, path: &ov.path, src: ov.src_in, span, len: ov.len, fx: &fx, own };
+        if sound.add(&mut cmd, &mut filters, &mut input_idx) {
             let ms = (ov.start * 1000.0).round() as i64;
-            let vol = if ov.fx.volume != 1.0 {
-                format!(",volume={:.4}", ov.fx.volume)
-            } else {
-                String::new()
-            };
-            filters.push_str(&format!(
-                "[{vi}:a]aresample=48000{vol},adelay={ms}|{ms}[oa{j}];"
-            ));
+            filters.push_str(&format!("[a{own}]adelay=delays={ms}:all=1[oa{j}];"));
             overlay_audio.push(format!("[oa{j}]"));
         }
     }
@@ -3206,13 +3287,57 @@ mod tests {
         }
     }
 
-    /// A look with no per-frame form (brightness here) still steps: sampled
+    /// Brightness, contrast, warmth and blur keyframes follow every frame, as
+    /// movement does: a clip with only those stays one segment, and its look
+    /// is driven by a command list that changes the value at each frame of
+    /// the ramp and stops once it holds.
+    #[test]
+    fn a_keyframed_grade_follows_every_frame() {
+        let mut c = clip(0.0, 4.0, 0.0, 0.0);
+        c.kf.insert("brightness".into(), vec![(0.0, 0.0), (1.0, 0.3)]);
+        c.kf.insert("blur".into(), vec![(0.0, 0.0), (0.5, 4.0)]);
+        c.kf.insert("temperature".into(), vec![(2.0, 0.0), (3.0, 50.0)]);
+        let segs = build_segments(vec![c]);
+        assert_eq!(segs.len(), 1, "one segment, not 20 steps");
+        let Segment::Clip { fx, len, .. } = &segs[0] else { panic!() };
+        let look = look_filters(fx, &fx.motion, "", *len, 30, "c0");
+        assert!(look.starts_with("sendcmd=c="), "commands ahead of the filters: {look}");
+        // the filters start at the clip's first values
+        assert!(look.contains("lutyuv@bcc0=y='clip((val-(maxval+1)/2)*1.0000+(maxval+1)/2+(0.0000)*maxval"), "{look}");
+        assert!(look.contains("gblur@blc0=sigma=0.00,") && look.contains("lutrgb@ttc0=r='"), "{look}");
+        let count = |what: &str| look.matches(what).count();
+        // brightness ramps over 30 frames, blur over 15, warmth over 30 in red
+        // and blue (green is tint's, which holds); each a command per frame
+        // after the first, and no more once they hold. +1 for each filter's
+        // own setting.
+        assert_eq!(count("lutyuv@bcc0"), 30 + 1, "{look}");
+        assert_eq!(count("gblur@blc0"), 15 + 1, "{look}");
+        assert_eq!(count("lutrgb@ttc0"), 30 * 2 + 1, "{look}");
+        // in the preview's order: brightness, then warmth, then blur
+        let (b, t, bl) = (look.find("lutyuv@bcc0=").unwrap(), look.find("lutrgb@ttc0=").unwrap(), look.find("gblur@blc0=").unwrap());
+        assert!(b < t && t < bl, "{look}");
+    }
+
+    /// A command list reaches its commands through two rounds of ffmpeg's
+    /// unquoting, the graph's and the options'. Checked against the shipped
+    /// ffmpeg when this was written; this pins the form.
+    #[test]
+    fn a_command_list_is_escaped_for_both_unquoting_passes() {
+        assert_eq!(
+            ff_value("0.5 lutyuv@x y 'clip(val,0,255)';1.0 gblur@b sigma 2"),
+            r"0.5 lutyuv@x y \\\'clip(val\,0\,255)\\\'\;1.0 gblur@b sigma 2"
+        );
+        // the options' pass ends a value at a colon; the graph's doesn't
+        assert_eq!(ff_value("a:b"), r"a\\:b");
+    }
+
+    /// A setting with no per-frame form (vignette here) still steps: sampled
     /// at each 0.2s step's middle. Movement on the same clip still runs
     /// smooth, its keyframes moved to each step's own start.
     #[test]
     fn a_keyframed_look_samples_into_steps_and_movement_rides_along() {
         let mut c = clip(0.0, 4.0, 0.0, 0.0);
-        c.kf.insert("brightness".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
+        c.kf.insert("vignette".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
         c.kf.insert("pos_x".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
         let segs = build_segments(vec![c]);
         // 4s / 0.2 = 20 sub-segments
@@ -3223,7 +3348,7 @@ mod tests {
             Segment::Clip { fx, .. } => fx.clone(),
             _ => panic!(),
         };
-        assert!(fx(19).brightness > fx(0).brightness + 0.3, "brightness steps up");
+        assert!(fx(19).vignette > fx(0).vignette + 0.3, "vignette steps up");
         // the tenth step starts 1.8s in, so its keyframes start 1.8s early
         let pos = &fx(9).motion["pos_x"];
         assert!((pos[0].0 + 1.8).abs() < 1e-9 && (pos[1].0 - 2.2).abs() < 1e-9, "{pos:?}");
@@ -3325,7 +3450,7 @@ mod tests {
         let mut c = clip(0.0, 4.0, 0.0, 0.0);
         c.fx.fade_in = 1.0;
         c.fx.fade_out = 1.0;
-        c.kf.insert("brightness".into(), vec![(0.0, 0.0), (4.0, 0.3)]);
+        c.kf.insert("vignette".into(), vec![(0.0, 0.0), (4.0, 0.3)]);
         let segs = build_segments(vec![c]);
         let fades: Vec<Option<String>> = segs
             .iter()

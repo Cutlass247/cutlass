@@ -2718,6 +2718,10 @@ async fn export_project(
             .collect();
         let all = project.clips_state();
         use cutlass_core::export::{ClipFx, ExportClip, Title};
+        // a clip's keyframes as export takes them, param → (time, value)
+        let kf_of = |c: &cutlass_core::project::Clip| -> std::collections::BTreeMap<String, Vec<(f64, f64)>> {
+            c.kf.keys().map(|p| (p.clone(), cutlass_core::project::kf_points(&c.kf, p))).collect()
+        };
         let titles: Vec<Title> = all
             .iter()
             .filter(|c| !c.text.is_empty())
@@ -2756,11 +2760,7 @@ async fn export_project(
                     lut: c.lut.clone(),
                     trans_dur: c.fx.get("trans_dur").copied().unwrap_or(0.0),
                     trans_dip: c.fx.get("trans_dip").copied().unwrap_or(0.0) > 0.5,
-                    kf: c
-                        .kf
-                        .keys()
-                        .map(|p| (p.clone(), cutlass_core::project::kf_points(&c.kf, p)))
-                        .collect(),
+                    kf: kf_of(c),
                 })
             })
             .collect();
@@ -2785,13 +2785,12 @@ async fn export_project(
                     start: c.start,
                     fx: ClipFx::from_map(&c.fx),
                     audio_only: false,
+                    // left out, a LUT above the base track graded the player
+                    // and not the export
+                    lut: c.lut.clone(),
                     // left out, keyframed movement above the base track
                     // played in the player and was dropped from the export
-                    kf: c
-                        .kf
-                        .keys()
-                        .map(|p| (p.clone(), cutlass_core::project::kf_points(&c.kf, p)))
-                        .collect(),
+                    kf: kf_of(c),
                 })
             })
             .collect();
@@ -2807,7 +2806,9 @@ async fn export_project(
                     start: c.start,
                     fx: ClipFx::from_map(&c.fx),
                     audio_only: true,
-                    kf: Default::default(),
+                    lut: String::new(),
+                    // its volume keyframes: a music bed dipped under a voice
+                    kf: kf_of(c),
                 });
             }
         }
@@ -4131,6 +4132,7 @@ mod tests {
                 start: 0.0,
                 fx: ClipFx::default(),
                 audio_only: true,
+                lut: String::new(),
                 kf: Default::default(),
             }],
             &[],
@@ -4399,6 +4401,7 @@ mod tests {
             start: 0.5,
             fx: ClipFx::default(),
             audio_only: false,
+            lut: String::new(),
             kf: Default::default(),
         };
 

@@ -4,6 +4,21 @@
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
 
+## New in 0.2.6
+
+- **Clips above V1 export with everything you gave them.** Keyframed movement, scale and rotation now export there, and so do speed, a LUT, temperature and tint, which were left out, and brightness, contrast and blur keyframes, which used to stay at their first value.
+- **Keyframes glide in the export, as they do in the player.** Movement, colour, blur and volume keyframes used to export in fifth-of-a-second steps, so a slide came out jerky and a fade-up on a logo stepped. They now change on every frame.
+- **Music on an audio track exports with its settings.** Fade in and out, speed, volume keyframes, voice cleanup, audio sync and music removal were all ignored on audio tracks, so a music bed you faded out played to the end at full volume. Only its volume came through before.
+- **Dissolves keep each clip's look, speed and sound.** A graded clip flashed ungraded for the length of a dissolve. A sped-up clip slowed to normal speed and jumped back in its footage. Its sound lost its cleanup, sync and music removal.
+- **Sped-up clips stay in sync.** After a clip at 2x, the picture of everything that followed ran about two frames behind its sound.
+- **Transitions show while playing**, not only when paused or scrubbing.
+- **iPhone HDR video looks right.** It showed and exported washed out and grey. Cutlass now makes a standard-range copy in the background when you import it.
+- **The player's colours match the export.** Most HD and 4K footage previewed slightly off what the export renders.
+- **Keyframes stay on the footage** when you split, trim or retime a clip. The right half of a split lost its animation, and trimming the left edge slid it against the picture.
+- **Deleting words from a sped-up clip cuts the right footage.** In a clip at 2x, removing words from the transcript cut the wrong part.
+- **A keyframed clip with a fade fades once.** It flickered through black five times a second.
+- **A clip turns about its own centre on V1**, as in the player, so a clip both moved and turned lands where you put it.
+
 ## New in 0.2.5
 
 - **iPhone photos.** HEIC and HEIF pictures now import, whole and the right way up. An iPhone saves a photo as a grid of tiles with its rotation stored separately, so Cutlass puts the tiles together and turns the picture once, when you import it. Your original file isn't changed.
@@ -110,7 +125,8 @@ Your video never leaves your machine. The AI features send only your audio or tr
 - Windows only. macOS and Linux are on the roadmap.
 - SmartScreen reputation is still building, and so is the reputation the installer needs with antivirus software.
 - 4K exports are slow by nature. Export at 1080p for long videos.
-- Keyframed movement on tracks above V1 plays in the player but isn't exported yet. A clip there exports in place, but without the movement.
+- Vignette, film grain, sharpen and blur-box keyframes export in fifth-of-a-second steps rather than gliding. On tracks above V1, those four aren't exported yet at all.
+- Volume keyframes and audio fades are heard in the export but not yet while playing in the player.
 - Not supported: SVG and camera RAW files (.cr2, .nef, .arw and the like); export them as PNG or JPEG first. OpenEXR and HDR pictures are left out too, because without tone mapping they'd look wrong.
 - Collaboration isn't available in this build.
 - The offline moment finder has no comprehension — it can't tell you *why* a moment works the way the AI can. A good fallback, not a replacement.

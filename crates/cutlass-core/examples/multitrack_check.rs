@@ -26,6 +26,7 @@ fn main() -> anyhow::Result<()> {
             start: 2.0,
             fx: ClipFx { scale: 0.4, pos_x: 0.25, pos_y: -0.25, ..Default::default() },
             audio_only: false,
+            lut: String::new(),
             kf: Default::default(),
         },
         Overlay {
@@ -35,6 +36,7 @@ fn main() -> anyhow::Result<()> {
             start: 0.0,
             fx: ClipFx { volume: 0.5, ..Default::default() },
             audio_only: true,
+            lut: String::new(),
             kf: Default::default(),
         },
     ];

@@ -18,6 +18,7 @@ fn main() -> anyhow::Result<()> {
         start: 0.0,
         fx: ClipFx { chroma: 1.0, chroma_sim: 0.35, ..Default::default() },
         audio_only: false,
+        lut: String::new(),
         kf: Default::default(),
     }];
     let out = std::env::temp_dir().join("cutlass_chroma_check.mp4");

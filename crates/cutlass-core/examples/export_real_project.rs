@@ -57,6 +57,7 @@ fn main() -> anyhow::Result<()> {
                 start: c.start,
                 fx: ClipFx::from_map(&c.fx),
                 audio_only: c.track.starts_with('A'),
+                lut: String::new(),
                 kf: Default::default(),
             });
         }
