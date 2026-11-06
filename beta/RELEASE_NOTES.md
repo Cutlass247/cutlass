@@ -1,4 +1,4 @@
-# Cutlass 0.2.5
+# Cutlass 0.2.6
 
 **Cut sharper. Own everything.**
 
@@ -87,7 +87,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.2.5_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.2.6_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
