@@ -2260,10 +2260,21 @@ export default function App() {
 
   // keep the playhead on screen — the timeline follows it (page-flips
   // forward during playback, recenters on a seek) instead of letting it
-  // march off the right edge. Skipped while dragging a clip.
+  // march off the right edge.
+  // Only a playhead that MOVED (or a zoom) brings the view to it, and not a
+  // move made by dragging a clip: the playhead rides on the dragged clip's
+  // edge, and the view stays where you're working. This used to catch up
+  // whenever a drag ended, and every click on a clip is a drag that ends — so
+  // scrolling over to a clip and clicking it threw the view back to wherever
+  // the playhead had been left, and dropping a long clip grabbed far from its
+  // start threw the view back to its start.
+  const followed = useRef({ playhead: -1, pps: -1 });
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || drag) return;
+    if (!el) return;
+    const last = followed.current;
+    followed.current = { playhead, pps };
+    if (drag || (last.playhead === playhead && last.pps === pps)) return;
     const x = playhead * pps;
     const left = el.scrollLeft;
     const view = el.clientWidth;
@@ -2341,17 +2352,19 @@ export default function App() {
   // Where a clip press started. Nothing moves until the pointer has travelled
   // past DRAG_SLOP_PX from it, so the wobble in an ordinary click selects the
   // clip instead of nudging it a pixel's worth of time.
-  const pressAt = useRef<{ x: number; y: number; live: boolean } | null>(null);
+  // `seek`: a plain left click, which puts the playhead where it landed when
+  // it turns out to be a click rather than a drag (see onClipPointerUp).
+  const pressAt = useRef<{ x: number; y: number; live: boolean; seek: boolean } | null>(null);
   const DRAG_SLOP_PX = 4;
 
   const onClipPointerDown = useCallback(
     (e: React.PointerEvent, clip: Clip) => {
       e.stopPropagation();
-      pressAt.current = { x: e.clientX, y: e.clientY, live: false };
       // selection: Ctrl/Cmd/Shift toggles into a multi-selection; a plain click
       // on a clip already in the selection keeps the group (so you can drag it),
       // otherwise it selects just this clip.
       const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+      pressAt.current = { x: e.clientX, y: e.clientY, live: false, seek: e.button === 0 && !additive };
       let selNow: string[];
       setSelectedIds((prev) => {
         if (additive) selNow = prev.includes(clip.id) ? prev.filter((id) => id !== clip.id) : [...prev, clip.id];
@@ -2452,7 +2465,12 @@ export default function App() {
   );
 
   const onClipPointerUp = useCallback(async () => {
+    const press = pressAt.current;
     pressAt.current = null;
+    // A click on a clip (no drag) selects it AND puts the playhead where you
+    // clicked, as the ruler does. Playback keeps rolling from there. A drag
+    // already carries the playhead with the clip's edge, so it's left alone.
+    if (press?.seek && !press.live) scrubTo(press.x);
     if (!drag) return;
     setDrag(null);
     // Tidy float noise only. This used to round to 0.01s, which moved any clip
@@ -2487,7 +2505,7 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
-  }, [drag, applyEdit, project.clips]);
+  }, [drag, applyEdit, project.clips, scrubTo]);
 
   // Marquee (rubber-band) select: pointer-down on empty lane space drags a box
   // and selects every clip it touches. Clips stopPropagation, so this only
