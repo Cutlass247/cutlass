@@ -709,13 +709,30 @@ fn warmth_exprs(temperature: f64, tint: f64) -> [String; 3] {
     [mid(temperature / 200.0), mid(-tint / 200.0), mid(-temperature / 200.0)]
 }
 
-/// A clip's look as export draws it, in the preview's order (a LUT on the
-/// picture, then `fxStyle`'s brightness, contrast, saturation, hue, warmth
-/// and blur), as filters each ending in a comma, or empty. One builder for
-/// the base track, its dissolves and the tracks above, so none of them can
-/// leave a setting out: the tracks above used to drop the LUT, temperature
-/// and tint, and held brightness, contrast and blur still however they were
-/// keyframed.
+/// A clip's LUT, as a filter ending in a comma, or empty. It goes on the
+/// picture before anything else, as the preview applies it, and before the
+/// picture is made 8-bit: on log footage one 8-bit step comes out of the LUT
+/// as about three, so applied after, as it was, a LUT doubled its error
+/// against the same LUT at full precision and banded gradients (measured on
+/// Apple Log: 145 of 219 levels left in a grey ramp, against 200 at the
+/// footage's own 10 bits). And before letterbox bars, which a LUT that lifts
+/// blacks used to turn grey.
+fn lut_filter(lut: &str) -> String {
+    if lut.is_empty() {
+        String::new()
+    } else {
+        // same path escaping drawtext uses for fontfile
+        format!("lut3d=file='{}',", ff_path(lut))
+    }
+}
+
+/// A clip's look as export draws it, after its LUT ([`lut_filter`]), in the
+/// preview's order (`fxStyle`'s brightness, contrast, saturation, hue,
+/// warmth, blur), as filters each ending in a comma, or empty. One builder
+/// for the base track, its dissolves and the tracks above, so none of them
+/// can leave a setting out: the tracks above used to drop the LUT,
+/// temperature and tint, and held brightness, contrast and blur still
+/// however they were keyframed.
 ///
 /// Keyframes in `kf` are followed frame by frame: hue and saturation through
 /// `hue`'s own expressions of time; brightness, contrast, warmth and blur,
@@ -723,7 +740,7 @@ fn warmth_exprs(temperature: f64, tint: f64) -> [String; 3] {
 /// at every one of the clip's frames (`len` seconds at `fps`, its own time
 /// from 0) where its value changes. `tag` keeps this clip's filters apart from
 /// every other's in the graph, as the commands find them by name.
-fn look_filters(fx: &ClipFx, kf: &Keyframes, lut: &str, len: f64, fps: u32, tag: &str) -> String {
+fn look_filters(fx: &ClipFx, kf: &Keyframes, len: f64, fps: u32, tag: &str) -> String {
     let keyed = |p: &str| kf.get(p).filter(|v| !v.is_empty());
     let at = |p: &str, base: f64, t: f64| {
         keyed(p).and_then(|pts| crate::project::interp(pts, t)).unwrap_or(base)
@@ -743,10 +760,6 @@ fn look_filters(fx: &ClipFx, kf: &Keyframes, lut: &str, len: f64, fps: u32, tag:
         }
     };
     let mut f = String::new();
-    if !lut.is_empty() {
-        // same path escaping drawtext uses for fontfile
-        f.push_str(&format!("lut3d=file='{}',", ff_path(lut)));
-    }
     let bc = |t: f64| bc_expr(at("brightness", fx.brightness, t), at("contrast", fx.contrast, t));
     let bc_keyed = keyed("brightness").is_some() || keyed("contrast").is_some();
     if bc_keyed || fx.brightness.abs() > 1e-9 || (fx.contrast - 1.0).abs() > 1e-9 {
@@ -820,29 +833,33 @@ fn clip_video_chain(
     // clip in a 9:16 Short). LGPL-safe filters only (scale/crop/gblur/overlay).
     let rx = rx.clamp(0.0, 1.0);
     let ry = ry.clamp(0.0, 1.0);
+    // the LUT on the fitted picture at its own bit depth, inside the bars
+    let lut = lut_filter(lut);
     let mut s = match reframe {
         Reframe::Letterbox => format!(
             "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,\
-             pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},{setpts},\
+             {lut}pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={fps},{setpts},\
              format=yuv420p[cf{k}];",
         ),
         Reframe::Fill => format!(
             "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=increase:out_range=tv,\
-             crop={w}:{h}:(iw-{w})*{rx:.4}:(ih-{h})*{ry:.4},fps={fps},{setpts},\
+             crop={w}:{h}:(iw-{w})*{rx:.4}:(ih-{h})*{ry:.4},{lut}fps={fps},{setpts},\
              format=yuv420p[cf{k}];",
         ),
+        // both copies graded, the blurred one behind as well
         Reframe::Blur => format!(
             "[{vi}:v]split=2[rb{k}][rf{k}];\
              [rb{k}]scale={w}:{h}:force_original_aspect_ratio=increase:out_range=tv,\
-             crop={w}:{h},gblur=sigma=24,colorchannelmixer=rr=0.72:gg=0.72:bb=0.72[rbg{k}];\
-             [rf{k}]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv[rff{k}];\
+             crop={w}:{h},{lut}gblur=sigma=24,colorchannelmixer=rr=0.72:gg=0.72:bb=0.72[rbg{k}];\
+             [rf{k}]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv{}[rff{k}];\
              [rbg{k}][rff{k}]overlay=(W-w)/2:(H-h)/2,fps={fps},{setpts},\
              format=yuv420p[cf{k}];",
+            if lut.is_empty() { String::new() } else { format!(",{}", lut.trim_end_matches(',')) },
         ),
     };
     let mut cur = format!("cf{k}");
-    // stylize: the look (LUT, grade, blur), sharpen, grain, mirror flips
-    let mut stylize = look_filters(fx, &fx.motion, lut, len, fps, &format!("c{k}"));
+    // stylize: the look (grade, blur), sharpen, grain, mirror flips
+    let mut stylize = look_filters(fx, &fx.motion, len, fps, &format!("c{k}"));
     if fx.sharpen > 0.01 {
         // luma unsharp; amount scales 0..~2.5
         stylize.push_str(&format!("unsharp=5:5:{:.3}:5:5:0,", fx.sharpen * 2.5));
@@ -2534,7 +2551,7 @@ fn run_export(
             } else {
                 String::new()
             };
-            let look = look_filters(&fx, &ov.kf, &ov.lut, ov.len, fps, &format!("o{j}"));
+            let look = look_filters(&fx, &ov.kf, ov.len, fps, &format!("o{j}"));
             let place = overlay_placement(&ov.fx, &ov.kf, ov.len, t0, w, h);
             // Fitted to the frame the way the preview's layer is, with the
             // spare room transparent: it used to be opaque black, so a logo
@@ -2542,10 +2559,13 @@ fn run_export(
             // preview didn't show. yuva420p carries that transparency, and a
             // PNG's own, through to the overlay.
             filters.push_str(&format!(
-                "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,format=yuva420p,\
+                "[{vi}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,{}format=yuva420p,\
                  pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black@0,fps={fps},{},\
                  {key}{look}{}setpts=PTS+{t0:.3}/TB[ov{j}];\
                  [{base}][ov{j}]overlay=x={}:y={}:eof_action=pass:enable='between(t,{t0:.3},{t1:.3})'[ovd{j}];",
+                // keyed after the LUT: on flat log footage the screen isn't
+                // the green the key looks for until the LUT has made it so
+                lut_filter(&ov.lut),
                 retime(if still { 1.0 } else { ov.fx.speed }, fps),
                 place.filters,
                 place.x,
@@ -2616,9 +2636,15 @@ fn run_export(
             overlay_audio.len() + 1
         ));
     }
+    // what the program is: Rec.709. The encoder is told so (color_tag_args),
+    // but ffmpeg 7 takes primaries and transfer from the frames, so footage
+    // tagged otherwise (Apple Log's BT.2020) passed its tags through a LUT
+    // to Rec.709 and the file claimed BT.2020, which a colour-managed player
+    // shows oversaturated. The matrix it does convert to, so it's left be.
+    const PROGRAM_TAGS: &str = "setparams=color_primaries=bt709:color_trc=bt709";
     // titles: chain drawtext over the program during each title's window
     if titles.is_empty() {
-        filters.push_str(&format!("[{base}]null[outv]"));
+        filters.push_str(&format!("[{base}]{PROGRAM_TAGS}[outv]"));
     } else {
         let font = ff_path(&title_font());
         let mut cur = base.clone();
@@ -2659,7 +2685,7 @@ fn run_export(
             ));
             cur = out_lbl;
         }
-        filters.push_str(&format!("[{cur}]null[outv]"));
+        filters.push_str(&format!("[{cur}]{PROGRAM_TAGS}[outv]"));
     }
 
     let out_args = output_args(
@@ -3300,7 +3326,7 @@ mod tests {
         let segs = build_segments(vec![c]);
         assert_eq!(segs.len(), 1, "one segment, not 20 steps");
         let Segment::Clip { fx, len, .. } = &segs[0] else { panic!() };
-        let look = look_filters(fx, &fx.motion, "", *len, 30, "c0");
+        let look = look_filters(fx, &fx.motion, *len, 30, "c0");
         assert!(look.starts_with("sendcmd=c="), "commands ahead of the filters: {look}");
         // the filters start at the clip's first values
         assert!(look.contains("lutyuv@bcc0=y='clip((val-(maxval+1)/2)*1.0000+(maxval+1)/2+(0.0000)*maxval"), "{look}");

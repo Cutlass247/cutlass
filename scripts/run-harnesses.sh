@@ -61,6 +61,9 @@ run export_check    "$CLIP" "$CLIP"
 # drawtext never wraps: a caption wider than a vertical frame was cut off at
 # both edges. Renders every clip shape and finds the caption by frame diff.
 run title_fit_check "$CLIP" "$OUT/titles"
+# Apple Log through a LUT, made from Apple's published curve: the LUT ran on
+# 8-bit pictures and the export claimed BT.2020 primaries over Rec.709.
+run log_lut_check   "$OUT/log"
 
 # Every file type the Import dialog offers, made by the shipped ffmpeg, then
 # imported, previewed, played and exported the way the app does it. A test in
