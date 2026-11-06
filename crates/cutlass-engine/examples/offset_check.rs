@@ -16,6 +16,9 @@ fn main() -> anyhow::Result<()> {
         volume: 1.0,
         speed: 1.0,
         audio_offset: off,
+        fade_in: 0.0,
+        fade_out: 0.0,
+        volume_kf: Vec::new(),
     };
     let mut tr = TrackReader::new(vec![clip], rate, 0.0);
     let mut total = 0usize; // stereo frames emitted

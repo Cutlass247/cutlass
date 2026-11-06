@@ -177,7 +177,9 @@ function PixelFill(p: { src: string | null; x: number; y: number; w: number; h: 
   return <canvas ref={ref} className="censor-fill" />;
 }
 
-export type CensorItem = Censor & { slot: number };
+/// A box on screen: `owner` is its clip, `locked` when that isn't the clip
+/// being edited (shown, as export draws it, but not draggable).
+export type CensorItem = Censor & { slot: number; owner?: string; locked?: boolean };
 
 /// One draggable/resizable censor box inside the shared stage. Coords are
 /// normalised to the stage (which matches the displayed video's aspect box),
@@ -223,15 +225,21 @@ function CensorBoxEl(p: {
     height: `${h * 100}%`,
   };
   const blurPx = 4 + str * 22;
+  const locked = !!p.censor.locked;
   return (
-    <div className={`censor-box style-${style}`} style={boxStyle} onPointerDown={(e) => drag(e, "move")} title="Drag to move · corner to resize">
-      <span className="censor-num">{slot + 1}</span>
+    <div
+      className={`censor-box style-${style}${locked ? " locked" : ""}`}
+      style={boxStyle}
+      onPointerDown={locked ? undefined : (e) => drag(e, "move")}
+      title={locked ? undefined : "Drag to move · corner to resize"}
+    >
+      {!locked && <span className="censor-num">{slot + 1}</span>}
       {style === 1 && (
         <div className="censor-fill" style={{ backdropFilter: `blur(${blurPx}px)`, WebkitBackdropFilter: `blur(${blurPx}px)` }} />
       )}
       {style === 2 && <PixelFill src={p.frameSrc} x={x} y={y} w={w} h={h} str={str} />}
       {style === 3 && <div className="censor-fill solid" style={{ background: hexColor(color) }} />}
-      <div className="censor-handle" onPointerDown={(e) => drag(e, "resize")} />
+      {!locked && <div className="censor-handle" onPointerDown={(e) => drag(e, "resize")} />}
     </div>
   );
 }
@@ -248,7 +256,7 @@ function CensorLayer(p: {
     <div className="censor-stage" ref={stageRef} style={{ aspectRatio: `${p.resolution.w} / ${p.resolution.h}` }}>
       {p.censors.map((c) => (
         <CensorBoxEl
-          key={c.slot}
+          key={`${c.owner ?? ""}:${c.slot}`}
           censor={c}
           stageRef={stageRef}
           frameSrc={p.frameSrc}

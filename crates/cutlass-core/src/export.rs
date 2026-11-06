@@ -160,11 +160,15 @@ fn piece_fades(fx: &ClipFx, len: f64, kind: FadeKind) -> Option<String> {
 /// Keyframed params export follows frame by frame, as the player does:
 /// movement through per-frame expressions (see [`transform`]), the look
 /// through `hue`'s and a command list for the rest (see [`look_filters`]),
-/// volume through `volume`'s (see [`clip_audio_chain`]). The others (a blur
-/// box's place, vignette, grain, ...) are sampled every [`KF_STEP_S`] instead.
+/// volume through `volume`'s (see [`clip_audio_chain`]), vignette through its
+/// own, a blur box's place through crop's and overlay's (see
+/// [`censor_chain`]). The others, whose filters can't change once running
+/// (grain, sharpen, a blur box's size or strength), are sampled every
+/// [`KF_STEP_S`] instead.
 pub const SMOOTH_KF: &[&str] = &[
     "scale", "rot", "pos_x", "pos_y", "hue", "saturation", "brightness", "contrast",
-    "temperature", "tint", "blur", "volume",
+    "temperature", "tint", "blur", "volume", "vignette", "censor_x", "censor_y", "censor2_x",
+    "censor2_y", "censor3_x", "censor3_y",
 ];
 
 impl Default for ClipFx {
@@ -548,12 +552,38 @@ pub fn fit_title(text: &str, fs: f64, frame_w: f64) -> (Vec<String>, f64) {
 /// blur / pixelate / black it, and overlay it back exactly in place. Returns
 /// the appended filter string and the new `cur` label, or None when off.
 /// LGPL-safe filters only (crop, gblur, scale-mosaic, drawbox, overlay).
+/// Where a blur box is drawn and on what. A box is placed on the frame, in
+/// its fractions, as it's dragged in the monitor.
+struct BoxOn<'a> {
+    /// the picture's own time as an expression: "t" for a clip's chain,
+    /// "(t-2.500)" for one starting 2.5s into the program
+    local: &'a str,
+    /// the clip's stretch of the picture, when the picture outlasts it (an
+    /// overlay's boxes go on the program while it's on screen)
+    window: Option<(f64, f64)>,
+    /// how long the picture runs
+    span: f64,
+}
+
+/// A clip's blur box `slot` over the picture at `cur`, as `(filters, out)`.
+///
+/// A box moved by keyframes (the motion tracker writes them, following a
+/// face) follows them every frame: `crop` and `overlay` both re-evaluate x
+/// and y per frame. It used to be sampled into 0.2s steps, so a box tracking
+/// a moving face could leave it showing between steps. Its size, strength
+/// and colour are as given (`c`; a keyframed size steps, see SMOOTH_KF).
+/// `drawbox` takes its place once, so a moving solid box is a picture of its
+/// colour laid over instead.
+#[allow(clippy::too_many_arguments)]
 fn censor_chain(
-    k: usize,
+    k: &str,
     slot: usize,
     c: &CensorSlot,
+    kf: &Keyframes,
     w: u32,
     h: u32,
+    fps: u32,
+    on: &BoxOn,
     cur: &str,
 ) -> Option<(String, String)> {
     let cen = c.style.round() as i32;
@@ -564,14 +594,36 @@ fn censor_chain(
     let ih = h as i64;
     let cw = ((c.w.clamp(0.02, 1.0) * w as f64) as i64 & !1).clamp(2, iw);
     let ch = ((c.h.clamp(0.02, 1.0) * h as f64) as i64 & !1).clamp(2, ih);
-    let cx = (((c.x.clamp(0.0, 1.0) * w as f64 - cw as f64 / 2.0) as i64).clamp(0, iw - cw)) & !1;
-    let cy = (((c.y.clamp(0.0, 1.0) * h as f64 - ch as f64 / 2.0) as i64).clamp(0, ih - ch)) & !1;
+    let prefix = ["censor", "censor2", "censor3"][slot.min(2)];
+    let keyed = |axis: &str| kf.get(&format!("{prefix}_{axis}")).filter(|v| !v.is_empty());
+    // its left (top) edge: centred on x (y), kept in the frame, even
+    let edge = |axis: &str, centre: f64, size: i64, full: i64| match keyed(axis) {
+        Some(pts) => format!(
+            "'trunc(clip({}-{},0,{})/2)*2'",
+            kf_expr(pts, on.local, full as f64),
+            size as f64 / 2.0,
+            full - size
+        ),
+        None => ((((centre.clamp(0.0, 1.0) * full as f64 - size as f64 / 2.0) as i64).clamp(0, full - size)) & !1)
+            .to_string(),
+    };
+    let (cx, cy) = (edge("x", c.x, cw, iw), edge("y", c.y, ch, ih));
+    let moving = keyed("x").is_some() || keyed("y").is_some();
+    let enable = on.window.map(|(a, b)| format!(":enable='between(t,{a:.3},{b:.3})'")).unwrap_or_default();
     let st = c.strength.clamp(0.0, 1.0);
     let out = format!("cs{k}_{slot}");
     let f = match cen {
         3 => {
             let rgb = (c.color.round() as i64).clamp(0, 0xFF_FFFF);
-            format!("[{cur}]drawbox=x={cx}:y={cy}:w={cw}:h={ch}:color=0x{rgb:06X}:t=fill[{out}];")
+            if moving {
+                format!(
+                    "color=c=0x{rgb:06X}:s={cw}x{ch}:r={fps}:d={:.3}[cq{k}_{slot}];\
+                     [{cur}][cq{k}_{slot}]overlay=x={cx}:y={cy}:eof_action=pass{enable}[{out}];",
+                    on.span + 1.0 / fps as f64
+                )
+            } else {
+                format!("[{cur}]drawbox=x={cx}:y={cy}:w={cw}:h={ch}:color=0x{rgb:06X}:t=fill{enable}[{out}];")
+            }
         }
         2 => {
             let block = (4.0 + st * 36.0) as i64;
@@ -580,7 +632,7 @@ fn censor_chain(
             format!(
                 "[{cur}]split=2[cb{k}_{slot}][cc{k}_{slot}];\
                  [cc{k}_{slot}]crop={cw}:{ch}:{cx}:{cy},scale={dw}:{dh}:flags=neighbor,scale={cw}:{ch}:flags=neighbor[cp{k}_{slot}];\
-                 [cb{k}_{slot}][cp{k}_{slot}]overlay={cx}:{cy}[{out}];"
+                 [cb{k}_{slot}][cp{k}_{slot}]overlay={cx}:{cy}{enable}[{out}];"
             )
         }
         _ => {
@@ -588,11 +640,62 @@ fn censor_chain(
             format!(
                 "[{cur}]split=2[cb{k}_{slot}][cc{k}_{slot}];\
                  [cc{k}_{slot}]crop={cw}:{ch}:{cx}:{cy},gblur=sigma={sigma:.1}[cp{k}_{slot}];\
-                 [cb{k}_{slot}][cp{k}_{slot}]overlay={cx}:{cy}[{out}];"
+                 [cb{k}_{slot}][cp{k}_{slot}]overlay={cx}:{cy}{enable}[{out}];"
             )
         }
     };
     Some((f, out))
+}
+
+/// Vignette over the picture, as a filter ending in a comma, or empty.
+/// ffmpeg's `angle` IS the strength: 0 = none, larger = darker corners (its
+/// default PI/5 ≈ 0.63 is already pronounced). This used to be inverted — 0.2
+/// strength produced 0.78, darker than the default, while 1.0 produced 0.30 —
+/// so exports came out far darker than the preview's 20%-opacity overlay.
+/// Keyframed, it follows them every frame, in the picture's time `local`.
+fn vignette_filter(fx: &ClipFx, kf: &Keyframes, local: &str, enable: &str) -> String {
+    match kf.get("vignette").filter(|v| !v.is_empty()) {
+        Some(pts) => format!("vignette=angle='0.9*clip({},0,1)':eval=frame{enable},", kf_expr(pts, local, 1.0)),
+        None if fx.vignette > 0.01 => format!("vignette=angle={:.3}{enable},", fx.vignette.clamp(0.0, 1.0) * 0.9),
+        None => String::new(),
+    }
+}
+
+/// `filter(value)` for a setting whose filter can't change while it runs
+/// (grain's `noise`, sharpen's `unsharp`): as given, or keyframed, once per
+/// [`KF_STEP_S`] step of the clip's `len`, each switched on for its own step
+/// (`enable`, in the picture's time from `t0`). Each ends in a comma. `on`
+/// says whether a value draws anything.
+fn stepped(
+    base: f64,
+    pts: Option<&Vec<(f64, f64)>>,
+    len: f64,
+    t0: f64,
+    on: impl Fn(f64) -> bool,
+    filter: impl Fn(f64) -> String,
+) -> String {
+    let Some(pts) = pts.filter(|p| !p.is_empty()) else {
+        return if on(base) { format!("{},", filter(base)) } else { String::new() };
+    };
+    let n = ((len / KF_STEP_S).ceil() as usize).clamp(1, KF_MAX_SEGS);
+    let step = len / n as f64;
+    (0..n)
+        .filter_map(|i| {
+            let v = crate::project::interp(pts, (i as f64 + 0.5) * step).unwrap_or(base);
+            let (a, b) = (t0 + i as f64 * step, t0 + (i + 1) as f64 * step);
+            on(v).then(|| format!("{}:enable='gte(t,{a:.4})*lt(t,{b:.4})',", filter(v)))
+        })
+        .collect()
+}
+
+/// Film grain: temporal noise, so it moves.
+fn grain_filter(v: f64) -> String {
+    format!("noise=alls={}:allf=t", (v * 22.0).round() as i64)
+}
+
+/// Sharpen: luma unsharp, its amount 0..~2.5.
+fn sharpen_filter(v: f64) -> String {
+    format!("unsharp=5:5:{:.3}:5:5:0", v * 2.5)
 }
 
 /// One side of a dissolve (input `vi`), labelled `[{tag}{k}]` for xfade: the
@@ -861,15 +964,10 @@ fn clip_video_chain(
     // stylize: the look (grade, blur), sharpen, grain, mirror flips
     let mut stylize = look_filters(fx, &fx.motion, len, fps, &format!("c{k}"));
     if fx.sharpen > 0.01 {
-        // luma unsharp; amount scales 0..~2.5
-        stylize.push_str(&format!("unsharp=5:5:{:.3}:5:5:0,", fx.sharpen * 2.5));
+        stylize.push_str(&format!("{},", sharpen_filter(fx.sharpen)));
     }
     if fx.grain > 0.01 {
-        // temporal noise = animated film grain
-        stylize.push_str(&format!(
-            "noise=alls={}:allf=t,",
-            (fx.grain * 22.0).round() as i64
-        ));
+        stylize.push_str(&format!("{},", grain_filter(fx.grain)));
     }
     if fx.flip_h > 0.5 {
         stylize.push_str("hflip,");
@@ -898,19 +996,15 @@ fn clip_video_chain(
         ));
         cur = format!("tf{k}");
     }
-    if fx.vignette > 0.01 {
-        // ffmpeg's `angle` IS the strength: 0 = none, larger = darker corners
-        // (its default PI/5 ≈ 0.63 is already pronounced). This used to be
-        // inverted — 0.2 strength produced 0.78, darker than the default,
-        // while 1.0 produced 0.30 — so exports came out far darker than the
-        // preview's 20%-opacity overlay.
-        let ang = fx.vignette.clamp(0.0, 1.0) * 0.9;
-        s.push_str(&format!("[{cur}]vignette=angle={ang:.3}[vg{k}];"));
+    let vignette = vignette_filter(fx, &fx.motion, "t", "");
+    if !vignette.is_empty() {
+        s.push_str(&format!("[{cur}]{}[vg{k}];", vignette.trim_end_matches(',')));
         cur = format!("vg{k}");
     }
     // censor: up to 3 rectangular regions, applied in order over the frame.
+    let on = BoxOn { local: "t", window: None, span: len };
     for (slot, c) in fx.censor.iter().enumerate() {
-        if let Some((f, out)) = censor_chain(k, slot, c, w, h, &cur) {
+        if let Some((f, out)) = censor_chain(&k.to_string(), slot, c, &fx.motion, w, h, fps, &on, &cur) {
             s.push_str(&f);
             cur = out;
         }
@@ -1173,9 +1267,15 @@ fn clip_audio_chain(vi: u32, k: usize, len: f64, fx: &ClipFx) -> String {
         c.push_str(&atempo_chain(fx.speed));
     }
     if let Some(pts) = fx.motion.get("volume").filter(|v| !v.is_empty()) {
-        // keyframed: evaluated every audio frame (about 20ms), in the clip's
-        // own time, which the timestamps are from here on
-        c.push_str(&format!(",volume='max(0,{})':eval=frame", kf_expr(pts, "t", 1.0)));
+        // keyframed: evaluated once per audio frame, in the clip's own time,
+        // which the timestamps are from here on. A file's frames can be
+        // thousands of samples (a WAV's ran 85ms), so they're cut to 5ms
+        // first: whole, a dip under a voice came out in steps, 7% of full
+        // louder than the player mid-ramp (playback_gain_check).
+        c.push_str(&format!(
+            ",asetnsamples=n=240:p=0,volume='max(0,{})':eval=frame",
+            kf_expr(pts, "t", 1.0)
+        ));
     } else if fx.volume != 1.0 {
         c.push_str(&format!(",volume={:.4}", fx.volume));
     }
@@ -2551,7 +2651,9 @@ fn run_export(
             } else {
                 String::new()
             };
-            let look = look_filters(&fx, &ov.kf, ov.len, fps, &format!("o{j}"));
+            let mut look = look_filters(&fx, &ov.kf, ov.len, fps, &format!("o{j}"));
+            // sharpen is the clip's own picture's; keyframed, it steps
+            look.push_str(&stepped(ov.fx.sharpen, ov.kf.get("sharpen"), ov.len, 0.0, |v| v > 0.01, sharpen_filter));
             let place = overlay_placement(&ov.fx, &ov.kf, ov.len, t0, w, h);
             // Fitted to the frame the way the preview's layer is, with the
             // spare room transparent: it used to be opaque black, so a logo
@@ -2572,6 +2674,32 @@ fn run_export(
                 place.y,
             ));
             base = format!("ovd{j}");
+            // Vignette, grain and blur boxes are the frame's, as the preview
+            // draws them (over the whole picture, a box where it was dragged
+            // on the monitor): on the program while the clip is on screen.
+            // Above V1 they used to be left out of the export altogether.
+            let local = format!("(t-{t0:.3})");
+            let during = format!(":enable='between(t,{t0:.3},{t1:.3})'");
+            let mut finish = vignette_filter(&ov.fx, &ov.kf, &local, &during);
+            finish.push_str(&match ov.kf.get("grain").filter(|p| !p.is_empty()) {
+                Some(pts) => stepped(ov.fx.grain, Some(pts), ov.len, t0, |v| v > 0.01, grain_filter),
+                None if ov.fx.grain > 0.01 => format!("{}{during},", grain_filter(ov.fx.grain)),
+                None => String::new(),
+            });
+            if !finish.is_empty() {
+                filters.push_str(&format!("[{base}]{}[ovf{j}];", finish.trim_end_matches(',')));
+                base = format!("ovf{j}");
+            }
+            // a box's size and strength as they are midway (keyframed, they
+            // would step; nothing writes them but a hand on the slider)
+            let mid = ov.fx.sampled_at(&ov.kf, ov.len / 2.0);
+            let on = BoxOn { local: &local, window: Some((t0, t1)), span: total };
+            for (slot, c) in mid.censor.iter().enumerate() {
+                if let Some((f, out)) = censor_chain(&format!("o{j}"), slot, c, &ov.kf, w, h, fps, &on, &base) {
+                    filters.push_str(&f);
+                    base = out;
+                }
+            }
         }
         // its sound through the same chain as a base clip's (speed, voice
         // cleanup, volume and its keyframes, fades, sync offset, music
@@ -3357,13 +3485,51 @@ mod tests {
         assert_eq!(ff_value("a:b"), r"a\\:b");
     }
 
-    /// A setting with no per-frame form (vignette here) still steps: sampled
+    /// A blur box the tracker moved follows it every frame: the clip stays
+    /// one segment, and the box is cut out and put back at the same
+    /// per-frame place. One that isn't moved is drawn as it always was.
+    #[test]
+    fn a_tracked_blur_box_follows_every_frame() {
+        let mut c = clip(0.0, 2.0, 0.0, 0.0);
+        c.fx.censor[0] = CensorSlot { style: 1.0, w: 0.25, h: 0.25, ..Default::default() };
+        c.kf.insert("censor_x".into(), vec![(0.0, 0.2), (2.0, 0.8)]);
+        let segs = build_segments(vec![c]);
+        assert_eq!(segs.len(), 1, "one segment, not 10 steps");
+        let Segment::Clip { fx, len, .. } = &segs[0] else { panic!() };
+        let on = BoxOn { local: "t", window: None, span: *len };
+        let (f, _) = censor_chain("0", 0, &fx.censor[0], &fx.motion, 640, 360, 30, &on, "in").unwrap();
+        let x = "'trunc(clip(if(lt(t,0.000000),128.000000,if(lt(t,2.000000),128.000000+(384.000000)*(t-(0.000000))/2.000000,512.000000))-80,0,480)/2)*2'";
+        assert!(f.contains(&format!("crop=160:90:{x}:")) && f.contains(&format!("overlay={x}:")), "{f}");
+        // and y, not keyframed, stays a number
+        assert!(f.contains(":134,gblur") && f.contains(":134[cs0_0]"), "{f}");
+
+        let still = CensorSlot { style: 1.0, ..Default::default() };
+        let (f, _) = censor_chain("0", 0, &still, &Keyframes::new(), 640, 360, 30, &on, "in").unwrap();
+        assert!(f.contains("crop=160:90:240:134,gblur") && f.contains("overlay=240:134[cs0_0]"), "{f}");
+    }
+
+    /// On a clip above V1 a box goes on the program, only while the clip is
+    /// on screen, in the clip's own time; a moving solid one is a picture of
+    /// its colour, as drawbox can't move.
+    #[test]
+    fn an_overlay_box_is_on_the_program_while_its_clip_is() {
+        let mut kf = Keyframes::new();
+        kf.insert("censor_y".into(), vec![(0.0, 0.3), (1.0, 0.7)]);
+        let solid = CensorSlot { style: 3.0, color: 255.0, ..Default::default() };
+        let on = BoxOn { local: "(t-2.000)", window: Some((2.0, 3.0)), span: 10.0 };
+        let (f, out) = censor_chain("o1", 0, &solid, &kf, 640, 360, 30, &on, "ovd1").unwrap();
+        assert_eq!(out, "cso1_0");
+        assert!(f.starts_with("color=c=0x0000FF:s=160x90:r=30:d=10.033[cqo1_0];"), "{f}");
+        assert!(f.contains("lt((t-2.000),1.000000)") && f.contains(":enable='between(t,2.000,3.000)'[cso1_0];"), "{f}");
+    }
+
+    /// A setting with no per-frame form (grain here) still steps: sampled
     /// at each 0.2s step's middle. Movement on the same clip still runs
     /// smooth, its keyframes moved to each step's own start.
     #[test]
     fn a_keyframed_look_samples_into_steps_and_movement_rides_along() {
         let mut c = clip(0.0, 4.0, 0.0, 0.0);
-        c.kf.insert("vignette".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
+        c.kf.insert("grain".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
         c.kf.insert("pos_x".into(), vec![(0.0, 0.0), (4.0, 0.4)]);
         let segs = build_segments(vec![c]);
         // 4s / 0.2 = 20 sub-segments
@@ -3374,7 +3540,7 @@ mod tests {
             Segment::Clip { fx, .. } => fx.clone(),
             _ => panic!(),
         };
-        assert!(fx(19).vignette > fx(0).vignette + 0.3, "vignette steps up");
+        assert!(fx(19).grain > fx(0).grain + 0.3, "grain steps up");
         // the tenth step starts 1.8s in, so its keyframes start 1.8s early
         let pos = &fx(9).motion["pos_x"];
         assert!((pos[0].0 + 1.8).abs() < 1e-9 && (pos[1].0 - 2.2).abs() < 1e-9, "{pos:?}");
@@ -3476,7 +3642,7 @@ mod tests {
         let mut c = clip(0.0, 4.0, 0.0, 0.0);
         c.fx.fade_in = 1.0;
         c.fx.fade_out = 1.0;
-        c.kf.insert("vignette".into(), vec![(0.0, 0.0), (4.0, 0.3)]);
+        c.kf.insert("grain".into(), vec![(0.0, 0.0), (4.0, 0.3)]);
         let segs = build_segments(vec![c]);
         let fades: Vec<Option<String>> = segs
             .iter()

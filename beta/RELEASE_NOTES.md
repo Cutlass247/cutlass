@@ -11,6 +11,9 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 - **Apple Log footage through a LUT exports cleanly.** The LUT used to be applied after the picture was cut down to 8 bits, which doubled its error and could band smooth skies and walls. It now runs on the footage's full 10 bits. The export was also labelled as wide-gamut BT.2020 when its colours were standard Rec.709, so QuickTime, Safari and other colour-managed players showed it oversaturated. It's now labelled what it is.
 - **Clips above V1 export with everything you gave them.** Keyframed movement, scale and rotation now export there, and so do speed, a LUT, temperature and tint, which were left out, and brightness, contrast and blur keyframes, which used to stay at their first value.
 - **Keyframes glide in the export, as they do in the player.** Movement, colour, blur and volume keyframes used to export in fifth-of-a-second steps, so a slide came out jerky and a fade-up on a logo stepped. They now change on every frame.
+- **Blur boxes follow a tracked face smoothly.** A box moved by the motion tracker used to jump five times a second in the export, so a face moving quickly could show between jumps. It now moves with every frame.
+- **Vignette, film grain, sharpen and blur boxes work above V1.** They were left out of the export on V2 and higher. The player also shows every visible clip's vignette and blur boxes now: a logo on V2 used to hide V1's vignette, and only the selected clip's boxes were shown.
+- **You hear fades and volume keyframes while playing.** They used to be heard only in the export.
 - **Music on an audio track exports with its settings.** Fade in and out, speed, volume keyframes, voice cleanup, audio sync and music removal were all ignored on audio tracks, so a music bed you faded out played to the end at full volume. Only its volume came through before.
 - **Dissolves keep each clip's look, speed and sound.** A graded clip flashed ungraded for the length of a dissolve. A sped-up clip slowed to normal speed and jumped back in its footage. Its sound lost its cleanup, sync and music removal.
 - **Sped-up clips stay in sync.** After a clip at 2x, the picture of everything that followed ran about two frames behind its sound.
@@ -128,8 +131,8 @@ Your video never leaves your machine. The AI features send only your audio or tr
 - Windows only. macOS and Linux are on the roadmap.
 - SmartScreen reputation is still building, and so is the reputation the installer needs with antivirus software.
 - 4K exports are slow by nature. Export at 1080p for long videos.
-- Vignette, film grain, sharpen and blur-box keyframes export in fifth-of-a-second steps rather than gliding. On tracks above V1, those four aren't exported yet at all.
-- Volume keyframes and audio fades are heard in the export but not yet while playing in the player.
+- Film grain, sharpen, and a blur box's size or strength, when keyframed, change in fifth-of-a-second steps rather than gliding. (A box's movement glides.)
+- Sharpen shows in the export, not in the player's preview.
 - Camera RAW photos need Microsoft's free Raw Image Extension from the Microsoft Store; Cutlass tells you if it's missing. They're developed with Windows' default look, like a camera's own JPEG; for your own edit, develop them in a photo editor first.
 - With Apple Log footage and a LUT, the player's preview is a few shades off the export (the export is the accurate one).
 - Not supported: OpenEXR and HDR pictures, because without tone mapping they'd look wrong.

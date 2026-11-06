@@ -155,6 +155,17 @@ fn play_transitions(snap: &serde_json::Value, media: &HashMap<String, MediaInfo>
         .collect()
 }
 
+/// A clip's keyframes for `param` from a project snapshot, sorted, as
+/// `project::kf_points` reads them from the project (time keys as text).
+fn snapshot_kf(clip: &serde_json::Value, param: &str) -> Vec<(f64, f64)> {
+    let mut pts: Vec<(f64, f64)> = clip["kf"][param]
+        .as_object()
+        .map(|m| m.iter().filter_map(|(t, v)| Some((t.parse::<f64>().ok()?, v.as_f64()?))).collect())
+        .unwrap_or_default();
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    pts
+}
+
 /// Track names are "V1".."Vn" (video, composited bottom→top) or
 /// "A1".."An" (audio-only beds). These parse the kind and z-order.
 fn track_is_audio(t: &str) -> bool {
@@ -2495,6 +2506,9 @@ fn play(
                                     volume: c["fx"]["volume"].as_f64().unwrap_or(1.0),
                                     speed: c["fx"]["speed"].as_f64().unwrap_or(1.0),
                                     audio_offset: c["fx"]["audio_offset"].as_f64().unwrap_or(0.0),
+                                    fade_in: c["fx"]["fade_in"].as_f64().unwrap_or(0.0),
+                                    fade_out: c["fx"]["fade_out"].as_f64().unwrap_or(0.0),
+                                    volume_kf: snapshot_kf(c, "volume"),
                                 })
                             })
                             .collect()

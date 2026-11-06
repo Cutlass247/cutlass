@@ -2405,6 +2405,13 @@ button {
   cursor: move;
   pointer-events: auto;
 }
+/* another clip's box: what it hides, without the editing frame */
+.censor-box.locked {
+  border: none;
+  outline: none;
+  cursor: default;
+  pointer-events: none;
+}
 .censor-fill {
   position: absolute;
   inset: 0;

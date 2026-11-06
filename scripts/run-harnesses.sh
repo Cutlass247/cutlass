@@ -35,7 +35,7 @@ pass=0; fail=0
 run() {
   local name="$1"; shift
   printf '\n=== %s ===\n' "$name"
-  if cargo run -q -p cutlass-core --example "$name" -- "$@" 2>&1 | tee "$OUT/$name.log"; then
+  if cargo run -q -p "${PKG:-cutlass-core}" --example "$name" -- "$@" 2>&1 | tee "$OUT/$name.log"; then
     # These print PASS/FAIL per case rather than setting an exit code, so the
     # output is what has to be read.
     if grep -q "FAIL" "$OUT/$name.log"; then
@@ -64,6 +64,9 @@ run title_fit_check "$CLIP" "$OUT/titles"
 # Apple Log through a LUT, made from Apple's published curve: the LUT ran on
 # 8-bit pictures and the export claimed BT.2020 primaries over Rec.709.
 run log_lut_check   "$OUT/log"
+# The player against the export, for fades and volume keyframes, which the
+# player used to ignore. In the engine, which can see export; not the reverse.
+PKG=cutlass-engine run playback_gain_check "$OUT/gain"
 
 # Every file type the Import dialog offers, made by the shipped ffmpeg, then
 # imported, previewed, played and exported the way the app does it. A test in

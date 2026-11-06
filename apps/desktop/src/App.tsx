@@ -1069,15 +1069,22 @@ export default function App() {
     });
   }, [videoLayers, footageIdx, playing, playFrame, hq, hqKey, layerStyle, selectedIds, fxDraft, lutCache]);
 
-  // vignette is a monitor overlay (not a CSS filter) — driven by the
-  // topmost clip, honouring the selected clip's live drag draft
+  // Vignette and grain are drawn over the whole picture (not CSS filters), as
+  // export lays them on the frame, from every clip on screen: vignettes
+  // darken on each other, the strongest grain shows. They used to come from
+  // the topmost clip alone, so a logo on V2 hid V1's vignette here while the
+  // export kept it. Keyframes and the selected clip's live drag draft count.
   const monitorOverlay = useMemo(() => {
-    const clip = underPlayhead?.clip;
-    if (!clip) return { vignette: 0, grain: 0 };
-    const draft = selectedIds.includes(clip.id) ? fxDraft : {};
-    const val = (k: string) => draft[k] ?? clip.fx?.[k] ?? 0;
-    return { vignette: val("vignette"), grain: val("grain") };
-  }, [underPlayhead, selectedIds, fxDraft]);
+    let clear = 1;
+    let grain = 0;
+    for (const l of videoLayers) {
+      const draft = selectedIds.includes(l.clip.id) ? fxDraft : {};
+      const at = (k: string) => draft[k] ?? fxValueAt(l.clip, k, playhead - l.clip.start);
+      clear *= 1 - Math.min(1, Math.max(0, at("vignette")));
+      grain = Math.max(grain, at("grain"));
+    }
+    return { vignette: 1 - clear, grain };
+  }, [videoLayers, selectedIds, fxDraft, playhead]);
 
   const onFxPreview = useCallback(
     (key: string, v: number) => setFxDraft((d) => ({ ...d, [key]: v })),
@@ -1336,27 +1343,48 @@ export default function App() {
     [selected, applyEdit]
   );
 
-  // Censor box shown in the Monitor for the selected clip when it's under
-  // the playhead. Position/size are keyframe-aware (fxValueAt), so the box
-  // sits where the animation puts it; the live drag draft wins while dragging.
+  // Censor boxes shown in the Monitor for every clip on screen, as export
+  // draws them; only the selected clip's can be dragged. Only the selected
+  // clip's used to show, so playing a censored video back, unselected, showed
+  // the faces export hides. Position/size are keyframe-aware (fxValueAt), so a
+  // box sits where the animation puts it; the live drag draft wins while
+  // dragging.
   const monitorCensors = useMemo((): CensorItem[] => {
-    if (!selectedClip || selectedClip.text) return [];
-    const onScreen =
-      playhead >= selectedClip.start && playhead < selectedClip.start + selectedClip.len;
-    if (!onScreen) return [];
     const prefixes = ["censor", "censor2", "censor3"];
     const out: CensorItem[] = [];
-    prefixes.forEach((pre, slot) => {
-      const style = Math.round(fxDraft[pre] ?? selectedClip.fx?.[pre] ?? 0);
-      if (style <= 0) return;
-      const at = (suf: string) => {
-        const key = pre + suf;
-        return fxDraft[key] ?? fxValueAt(selectedClip, key, clipTime);
-      };
-      out.push({ slot, style, x: at("_x"), y: at("_y"), w: at("_w"), h: at("_h"), str: at("_str"), color: at("_color") });
-    });
+    const onScreen = videoLayers.map((l) => l.clip);
+    if (selectedClip && !selectedClip.text && !onScreen.some((c) => c.id === selectedClip.id)) {
+      // a selected clip under the playhead but hidden by a track toggle has
+      // no layer; its boxes are still where they'd be edited
+      if (playhead >= selectedClip.start && playhead < selectedClip.start + selectedClip.len) onScreen.push(selectedClip);
+    }
+    for (const clip of onScreen) {
+      if (clip.text) continue;
+      const mine = clip.id === selectedClip?.id;
+      const draft = mine ? fxDraft : {};
+      prefixes.forEach((pre, slot) => {
+        const style = Math.round(draft[pre] ?? clip.fx?.[pre] ?? 0);
+        if (style <= 0) return;
+        const at = (suf: string) => {
+          const key = pre + suf;
+          return draft[key] ?? fxValueAt(clip, key, playhead - clip.start);
+        };
+        out.push({
+          slot,
+          owner: clip.id,
+          locked: !mine,
+          style,
+          x: at("_x"),
+          y: at("_y"),
+          w: at("_w"),
+          h: at("_h"),
+          str: at("_str"),
+          color: at("_color"),
+        });
+      });
+    }
     return out;
-  }, [selectedClip, fxDraft, playhead, clipTime]);
+  }, [videoLayers, selectedClip, fxDraft, playhead]);
 
   // Drag/resize a box from the Monitor. Preview merges into the fx draft; on
   // commit each param writes a keyframe at the playhead if it's already

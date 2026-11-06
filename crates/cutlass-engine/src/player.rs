@@ -41,6 +41,52 @@ pub struct AudioClip {
     /// to correct baked-in A/V sync; 0 when absent.
     #[serde(default)]
     pub audio_offset: f64,
+    /// fade in and out, seconds, as export's (linear); 0 when absent
+    #[serde(default)]
+    pub fade_in: f64,
+    #[serde(default)]
+    pub fade_out: f64,
+    /// volume keyframes, (clip time, gain), sorted; empty = `volume` all
+    /// through. Played back as export renders them; both used to be heard
+    /// only in the export, so a music bed dipped under a voice, or faded out,
+    /// played at full here.
+    #[serde(default)]
+    pub volume_kf: Vec<(f64, f64)>,
+}
+
+impl AudioClip {
+    /// The gain `u` seconds into the clip's sound, as export's chain applies
+    /// it: volume (keyframed or not) and fades, in the clip's own time, which
+    /// its sync offset then slides (so this is evaluated at `u - offset`).
+    pub fn gain_at(&self, u: f64) -> f64 {
+        let u = u - self.audio_offset;
+        let volume = interp(&self.volume_kf, u).unwrap_or(self.volume).max(0.0);
+        let mut fade = 1.0f64;
+        if self.fade_in > 1e-6 {
+            fade = fade.min((u / self.fade_in).clamp(0.0, 1.0));
+        }
+        if self.fade_out > 1e-6 {
+            fade = fade.min(((self.len - u) / self.fade_out).clamp(0.0, 1.0));
+        }
+        volume * fade
+    }
+}
+
+/// A keyframed value at `t`: linear between points, held before the first
+/// and after the last, as `cutlass_core::project::interp` (which export uses)
+/// and the preview's `interp`. None without points.
+fn interp(points: &[(f64, f64)], t: f64) -> Option<f64> {
+    let (first, last) = (points.first()?, points.last()?);
+    if t <= first.0 {
+        return Some(first.1);
+    }
+    if t >= last.0 {
+        return Some(last.1);
+    }
+    points.windows(2).find(|w| t >= w[0].0 && t <= w[1].0).map(|w| {
+        let ((t0, v0), (t1, v1)) = (w[0], w[1]);
+        if t1 - t0 < 1e-9 { v0 } else { v0 + (v1 - v0) * (t - t0) / (t1 - t0) }
+    })
 }
 
 fn unity_gain() -> f64 {
@@ -163,7 +209,10 @@ impl TrackReader {
                     let a = self.active.as_mut().unwrap();
                     let until_end = (((clip_end - self.t) * self.rate as f64).ceil() as usize).max(1);
                     let want = need_frames.min(until_end);
-                    let gain = clip.volume as f32;
+                    // per frame: a fade or a keyframed volume changes as it goes
+                    let rate = self.rate as f64;
+                    let u0 = self.t - clip.start;
+                    let gain = |n: usize| clip.gain_at(u0 + n as f64 / rate) as f32;
                     // buffer enough source frames to yield `want` output frames
                     // at this speed (1 source frame per output at 1×).
                     let want_src = a.frac as usize + (want as f64 * speed).ceil() as usize + 1;
@@ -179,8 +228,9 @@ impl TrackReader {
                     while produced < want {
                         let sidx = a.frac as usize;
                         if sidx * 2 + 1 < a.buf.len() {
-                            out.push(a.buf[sidx * 2] * gain);
-                            out.push(a.buf[sidx * 2 + 1] * gain);
+                            let g = gain(produced);
+                            out.push(a.buf[sidx * 2] * g);
+                            out.push(a.buf[sidx * 2 + 1] * g);
                         } else if a.exhausted {
                             out.push(0.0); // source ran short: pad silence
                             out.push(0.0);
@@ -365,4 +415,39 @@ fn push_ring(samples: &[f32], shared: &Shared) -> bool {
         offset += n;
     }
     true
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clip() -> AudioClip {
+        AudioClip {
+            path: String::new(),
+            start: 0.0,
+            len: 4.0,
+            src_in: 0.0,
+            volume: 0.8,
+            speed: 1.0,
+            audio_offset: 0.0,
+            fade_in: 0.0,
+            fade_out: 0.0,
+            volume_kf: Vec::new(),
+        }
+    }
+
+    /// Playback's gain is export's: the volume, its keyframes (linear, held
+    /// at the ends) and linear fades, in the clip's own time.
+    #[test]
+    fn playback_gain_follows_fades_and_volume_keyframes() {
+        let c = AudioClip { fade_in: 1.0, fade_out: 2.0, ..clip() };
+        let g = |u: f64| (c.gain_at(u) * 1000.0).round() / 1000.0;
+        assert_eq!([g(0.0), g(0.5), g(1.5), g(3.0), g(4.0)], [0.0, 0.4, 0.8, 0.4, 0.0]);
+
+        let c = AudioClip { volume_kf: vec![(1.0, 1.0), (2.0, 0.25)], ..clip() };
+        assert_eq!([c.gain_at(0.0), c.gain_at(1.5), c.gain_at(3.0)], [1.0, 0.625, 0.25]);
+
+        // sync offset slides the faded sound as it does in export: 0.5s later
+        let c = AudioClip { fade_in: 1.0, audio_offset: 0.5, ..clip() };
+        assert!((c.gain_at(1.0) - 0.4).abs() < 1e-9);
+    }
 }

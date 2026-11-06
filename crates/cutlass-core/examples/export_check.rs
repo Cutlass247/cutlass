@@ -129,7 +129,8 @@ fn main() -> anyhow::Result<()> {
     let probe = Probe::new()?;
     let dissolve = dissolve_keeps_speed(&probe)?;
     let overlays = overlays_keep_their_settings(&probe)?;
-    anyhow::ensure!(dissolve && overlays, "see the FAIL lines above");
+    let finish = boxes_and_finish_follow(&probe)?;
+    anyhow::ensure!(dissolve && overlays && finish, "see the FAIL lines above");
 
     println!("OK");
     Ok(())
@@ -420,6 +421,96 @@ fn overlays_keep_their_settings(probe: &Probe) -> anyhow::Result<bool> {
     ok &= report(tail < 0.2, format!("music bed's fade-out: {tail:.2} of full near its end"));
     let after = rms_at(&samples, 3.2, 0.5) / full;
     ok &= report(after < 0.01, format!("music bed ends with its clip: {after:.3} of full after it"));
+    Ok(ok)
+}
+
+/// A tracked blur box follows its keyframes every frame, and a clip above V1
+/// brings its vignette, grain and blur boxes to the frame while it's on
+/// screen. The box used to move in 0.2s steps, so one tracking a face could
+/// leave it showing between them; above V1 all three were left out.
+fn boxes_and_finish_follow(probe: &Probe) -> anyhow::Result<bool> {
+    use cutlass_core::export::{build_segments, CensorSlot, ClipFx, ExportClip};
+    let dir = std::env::temp_dir();
+    let grey = dir.join("cutlass_export_grey.mkv"); // made by overlays_keep_their_settings
+    let grey_s = grey.to_string_lossy().into_owned();
+    // V1, 6s of grey: a solid red box 0.2 of the frame across, tracked from
+    // 0.2 to 0.8 of the width over its first 2s
+    let mut fx = ClipFx::default();
+    fx.censor[0] = CensorSlot { style: 3.0, y: 0.5, w: 0.2, h: 0.2, color: 0xFF0000 as f64, ..Default::default() };
+    let segs = build_segments(vec![ExportClip {
+        start: 0.0,
+        len: 6.0,
+        src_in: 0.0,
+        path: grey_s.clone(),
+        fx,
+        lut: String::new(),
+        trans_dur: 0.0,
+        trans_dip: false,
+        kf: [("censor_x".to_string(), vec![(0.0, 0.2), (2.0, 0.8)])].into_iter().collect(),
+    }]);
+    // V2, 3s..5s, grey over grey: vignette, grain, and a blue box at the top left
+    let mut ofx = ClipFx { vignette: 0.8, grain: 0.6, ..Default::default() };
+    ofx.censor[0] = CensorSlot { style: 3.0, x: 0.25, y: 0.25, w: 0.2, h: 0.2, color: 0x0000FF as f64, ..Default::default() };
+    let ov = Overlay {
+        path: grey_s,
+        src_in: 0.0,
+        len: 2.0,
+        start: 3.0,
+        fx: ofx,
+        audio_only: false,
+        lut: String::new(),
+        kf: Default::default(),
+    };
+    let out = dir.join("cutlass_export_finish.mov");
+    export(&segs, &[ov], &[], &out, &Probe::settings(), &mut |_| {}, &std::sync::atomic::AtomicBool::new(false))?;
+
+    // every frame as RGB
+    let (w, h) = (640usize, 360usize);
+    let raw = std::process::Command::new(&probe.ff)
+        .args(["-v", "error", "-i"])
+        .arg(&out)
+        .args(["-vf", "scale=in_color_matrix=bt709:in_range=tv,format=rgb24", "-f", "rawvideo", "-"])
+        .output()?
+        .stdout;
+    let frames: Vec<&[u8]> = raw.chunks_exact(w * h * 3).collect();
+    let px = |f: &[u8], x: usize, y: usize| [f[(y * w + x) * 3], f[(y * w + x) * 3 + 1], f[(y * w + x) * 3 + 2]];
+    let mut ok = true;
+
+    // the red box's middle, frame by frame, against where its keyframes put it
+    let mut worst = (0.0f64, 0usize);
+    for (n, f) in frames.iter().enumerate().take(60) {
+        let red: Vec<usize> = (0..w).filter(|&x| {
+            let [r, g, b] = px(f, x, h / 2);
+            r > 150 && g < 80 && b < 80
+        }).collect();
+        let want = (0.2 + 0.6 * n as f64 / 60.0) * w as f64;
+        let got = red.first().zip(red.last()).map(|(a, b)| (a + b) as f64 / 2.0).unwrap_or(f64::NAN);
+        let off = (got - want).abs();
+        if !(off <= worst.0) {
+            worst = (off, n);
+        }
+    }
+    ok &= report(worst.0 <= 3.0, format!("tracked box follows every frame: furthest {:.1}px from its keyframes (frame {})", worst.0, worst.1));
+
+    // the frame while the V2 clip is on (4.0s) and after it (5.5s)
+    let mean = |f: &[u8], x0: usize, y0: usize, n: usize| {
+        (0..n * n).map(|i| px(f, x0 + i % n, y0 + i / n)[1] as f64).sum::<f64>() / (n * n) as f64
+    };
+    let noise = |a: &[u8], b: &[u8]| {
+        // frame-to-frame change over a flat patch: grain moves
+        (0..1600).map(|i| (px(a, 400 + i % 40, 280 + i / 40)[1] as f64 - px(b, 400 + i % 40, 280 + i / 40)[1] as f64).abs()).sum::<f64>() / 1600.0
+    };
+    for (t, on) in [(4.0, true), (5.5, false)] {
+        let n = (t * 30.0) as usize;
+        let (f, g) = (frames[n], frames[n + 1]);
+        let darker = mean(f, w / 2 - 10, h / 2 + 60, 20) - mean(f, 0, h - 20, 20);
+        let blue = { let [r, _, b] = px(f, w / 4, h / 4); b > 150 && r < 80 };
+        let moved = noise(f, g);
+        let what = if on { "while the V2 clip is on" } else { "after it" };
+        ok &= report((darker > 15.0) == on, format!("V2 vignette {what}: corner {darker:.0} levels darker than the middle"));
+        ok &= report((moved > 2.0) == on, format!("V2 grain {what}: {moved:.1} levels of change frame to frame"));
+        ok &= report(blue == on, format!("V2 blur box {what}: {}", if blue { "there" } else { "not there" }));
+    }
     Ok(ok)
 }
 
