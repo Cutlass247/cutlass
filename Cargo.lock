@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "cutlass-core"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "automerge",
@@ -1138,7 +1138,7 @@ dependencies = [
 
 [[package]]
 name = "cutlass-desktop"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "automerge",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "cutlass-engine"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "cpal",
@@ -1182,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "cutlass-license"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "cutlass-license-server"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "cutlass-sync-server"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "automerge",

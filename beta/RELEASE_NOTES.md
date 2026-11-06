@@ -1,8 +1,13 @@
-# Cutlass 0.2.6
+# Cutlass 0.2.7
 
 **Cut sharper. Own everything.**
 
 Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** No subscription, no watermark.
+
+## New in 0.2.7
+
+- **Clicking a clip puts the playhead there, and the timeline stays where you scrolled it.** If you scrolled along the timeline to a clip past the playhead and clicked it, the timeline jumped back to wherever the playhead was, and the playhead stayed behind. A click now selects the clip and moves the playhead to the spot you clicked, as clicking the ruler does.
+- **Moving a long clip keeps your place.** Drag a clip by grabbing it far from its start, and the timeline used to jump back to the clip's start when you let go. It now stays where you were working.
 
 ## New in 0.2.6
 
@@ -87,7 +92,7 @@ Windows 10/11 · 64-bit. Free 7-day trial, then **$49 once — yours forever.** 
 
 ## Download
 
-**Cutlass_0.2.6_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
+**Cutlass_0.2.7_x64-setup.exe** (Windows 10/11, 64-bit) — attached below.
 
 Code-signed: Windows shows the publisher as **Isaiah Aniemeka**. SmartScreen may warn on a new release while its reputation builds — **More info → Run anyway**.
 
